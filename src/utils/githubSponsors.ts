@@ -1111,7 +1111,7 @@ async function isUserContributorOfPrivateRepo(
 		process.env.GITHUB_CONTRIBUTOR_REPO_OWNER?.trim() ?? "minesa-org";
 	const repo =
 		process.env.GITHUB_CONTRIBUTOR_REPO_NAME?.trim() ??
-		"dungeon-blitz-typescript";
+		"dungeon-blitz-r";
 
 	const normalizedUsername = normalizeLogin(githubUsername);
 
