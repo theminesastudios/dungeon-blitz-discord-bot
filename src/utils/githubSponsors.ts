@@ -1,7 +1,22 @@
 import { MiniDatabase } from "@minesa-org/mini-interaction";
 
 const DEFAULT_TARGETS = ["minesa-org"];
-const MANUAL_PAST_SPONSORS = ["Lawly14", "kebap999", "darkneesglow", "neodevils", "butimar408", "nillion0", "ewaai21", "etyboo", "nevastuica8", "mecnunnemo-pixel", "andrepda51-wq", "Tw1xxye", "Prince-159", "HiTKiLL600"];
+const MANUAL_PAST_SPONSORS = [
+	"lawly14",
+	"kebap999",
+	"darkneesglow",
+	"neodevils",
+	"butimar408",
+	"nillion0",
+	"ewaai21",
+	"etyboo",
+	"nevastuica8",
+	"mecnunnemo-pixel",
+	"andrepda51-wq",
+	"tw1xxye",
+	"prince-159",
+	"hitkill600",
+];
 const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 const DEFAULT_SPONSOR_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 15 * 60 * 1000;
