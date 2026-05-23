@@ -39,23 +39,21 @@ type SponsorsResponse = {
 
 type SponsorsOwner = {
 	__typename?: "User" | "Organization" | string;
-	userSponsorships?: SponsorsNode;
-	organizationSponsorships?: SponsorsNode;
+	userSponsorships?: SponsorsConnection;
+	organizationSponsorships?: SponsorsConnection;
 } | null;
 
-type SponsorsNode = {
-	sponsorshipsAsMaintainer: {
-		pageInfo: {
-			hasNextPage: boolean;
-			endCursor: string | null;
-		};
-		nodes: Array<{
-			isActive: boolean;
-			sponsorEntity: {
-				login: string;
-			} | null;
-		}>;
+type SponsorsConnection = {
+	pageInfo: {
+		hasNextPage: boolean;
+		endCursor: string | null;
 	};
+	nodes: Array<{
+		isActive: boolean;
+		sponsorEntity: {
+			login: string;
+		} | null;
+	}>;
 } | null;
 
 type DiscordConnection = {
@@ -723,9 +721,7 @@ async function fetchSponsorPage(
 	}
 
 	const owner = payload.data?.repositoryOwner;
-	const source = owner?.userSponsorships?.sponsorshipsAsMaintainer
-		? owner.userSponsorships.sponsorshipsAsMaintainer
-		: owner?.organizationSponsorships?.sponsorshipsAsMaintainer;
+	const source = owner?.userSponsorships ?? owner?.organizationSponsorships;
 
 	if (!source) {
 		if (isSponsorDebugEnabled()) {
