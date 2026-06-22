@@ -2,6 +2,7 @@ import { MiniDatabase } from "@minesa-org/mini-interaction";
 
 const DEFAULT_TARGETS = ["minesa-org"];
 const MANUAL_PAST_SPONSORS = [
+	"sapha59-ai",
 	"monderucdere",
 	"renGoku-wq",
 	"lawly14",
