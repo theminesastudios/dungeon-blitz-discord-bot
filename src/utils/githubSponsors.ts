@@ -1,6 +1,6 @@
 import { MiniDatabase } from "@minesa-org/mini-interaction";
 
-const DEFAULT_TARGETS = ["minesa-org"];
+const DEFAULT_TARGETS = ["theminesastudios"];
 const MANUAL_PAST_SPONSORS = [
 	"sapha59-ai",
 	"monderucdere",
@@ -1170,7 +1170,7 @@ async function isUserContributorOfPrivateRepo(
 	}
 
 	const owner =
-		process.env.GITHUB_CONTRIBUTOR_REPO_OWNER?.trim() ?? "minesa-org";
+		process.env.GITHUB_CONTRIBUTOR_REPO_OWNER?.trim() ?? "theminesastudios";
 	const repo =
 		process.env.GITHUB_CONTRIBUTOR_REPO_NAME?.trim() ??
 		"dungeon-blitz-r";
