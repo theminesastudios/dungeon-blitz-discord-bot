@@ -20,6 +20,7 @@ const MANUAL_PAST_SPONSORS = [
 	"prince-159",
 	"hitkill600",
 	"y3olo",
+	"emkata-rgb"
 ];
 const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 const DEFAULT_SPONSOR_CACHE_TTL_MS = 5 * 60 * 1000;
