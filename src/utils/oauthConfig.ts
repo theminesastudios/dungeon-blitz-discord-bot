@@ -1,5 +1,5 @@
-const DEFAULT_REDIRECT_URI =
-	"https://discord-github-assistant-bot.vercel.app/api/discord-oauth-callback";
+const FALLBACK_REDIRECT_HOST = "discord-github-assistant-bot.vercel.app";
+const CALLBACK_PATH = "/api/discord-oauth-callback";
 
 function cleanEnvValue(value: string | undefined): string {
 	const trimmed = value?.trim() ?? "";
@@ -13,11 +13,69 @@ function cleanEnvValue(value: string | undefined): string {
 	return trimmed;
 }
 
+function normalizeVercelHost(value: string): string {
+	return value
+		.trim()
+		.replace(/^https?:\/\//i, "")
+		.replace(/\/$/, "");
+}
+
+function buildRedirectUriFromHost(host: string): string {
+	return `https://${normalizeVercelHost(host)}${CALLBACK_PATH}`;
+}
+
+function getDefaultRedirectUri(): string {
+	const productionHost = cleanEnvValue(process.env.VERCEL_PROJECT_PRODUCTION_URL);
+	if (productionHost) {
+		return buildRedirectUriFromHost(productionHost);
+	}
+
+	const deploymentHost = cleanEnvValue(process.env.VERCEL_URL);
+	if (deploymentHost) {
+		return buildRedirectUriFromHost(deploymentHost);
+	}
+
+	return buildRedirectUriFromHost(FALLBACK_REDIRECT_HOST);
+}
+
+function warnIfRedirectUriLooksWrong(redirectUri: string, source: string) {
+	if (!redirectUri.endsWith(CALLBACK_PATH)) {
+		console.warn(
+			`[discord-oauth] ${source} redirect URI does not end with "${CALLBACK_PATH}": ${redirectUri}`
+		);
+	}
+
+	if (redirectUri.includes("minesa-org")) {
+		console.warn(
+			`[discord-oauth] ${source} redirect URI still references the old organization name: ${redirectUri}`
+		);
+	}
+}
+
+function logResolvedRedirectUri(redirectUri: string, source: string) {
+	try {
+		const parsed = new URL(redirectUri);
+		console.info(
+			`[discord-oauth] Using ${source} redirect URI: ${parsed.host}${parsed.pathname}`
+		);
+	} catch {
+		console.warn(`[discord-oauth] Using ${source} redirect URI: ${redirectUri}`);
+	}
+}
+
 function resolveRedirectUri(): string {
 	const configuredRedirectUri = cleanEnvValue(process.env.DISCORD_REDIRECT_URI);
-	return configuredRedirectUri && !configuredRedirectUri.includes("localhost")
-		? configuredRedirectUri
-		: DEFAULT_REDIRECT_URI;
+	const source =
+		configuredRedirectUri && !configuredRedirectUri.includes("localhost")
+			? "configured"
+			: "Vercel-derived fallback";
+	const redirectUri =
+		source === "configured" ? configuredRedirectUri : getDefaultRedirectUri();
+
+	warnIfRedirectUriLooksWrong(redirectUri, source);
+	logResolvedRedirectUri(redirectUri, source);
+
+	return redirectUri;
 }
 
 function resolveAppId(): string {
