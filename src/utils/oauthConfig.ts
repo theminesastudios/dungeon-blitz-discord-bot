@@ -13,33 +13,11 @@ function cleanEnvValue(value: string | undefined): string {
 	return trimmed;
 }
 
-function ensureHttpsUrl(value: string): string {
-	const trimmed = value.trim();
-	if (/^https?:\/\//i.test(trimmed)) {
-		return trimmed;
-	}
-
-	return `https://${trimmed}`;
-}
-
 function normalizeVercelHost(value: string): string {
 	return value
 		.trim()
 		.replace(/^https?:\/\//i, "")
 		.replace(/\/$/, "");
-}
-
-function normalizeConfiguredRedirectUri(value: string): string {
-	const withProtocol = ensureHttpsUrl(value);
-	try {
-		const parsed = new URL(withProtocol);
-		if (parsed.pathname === "/" || parsed.pathname === "") {
-			parsed.pathname = CALLBACK_PATH;
-		}
-		return parsed.toString();
-	} catch {
-		return withProtocol;
-	}
 }
 
 function buildRedirectUriFromHost(host: string): string {
@@ -61,12 +39,6 @@ function getDefaultRedirectUri(): string {
 }
 
 function warnIfRedirectUriLooksWrong(redirectUri: string, source: string) {
-	if (!redirectUri.startsWith("https://")) {
-		console.warn(
-			`[discord-oauth] ${source} redirect URI is not HTTPS: ${redirectUri}`
-		);
-	}
-
 	if (!redirectUri.endsWith(CALLBACK_PATH)) {
 		console.warn(
 			`[discord-oauth] ${source} redirect URI does not end with "${CALLBACK_PATH}": ${redirectUri}`
@@ -84,7 +56,7 @@ function logResolvedRedirectUri(redirectUri: string, source: string) {
 	try {
 		const parsed = new URL(redirectUri);
 		console.info(
-			`[discord-oauth] Using ${source} redirect URI: ${parsed.protocol}//${parsed.host}${parsed.pathname}`
+			`[discord-oauth] Using ${source} redirect URI: ${parsed.host}${parsed.pathname}`
 		);
 	} catch {
 		console.warn(`[discord-oauth] Using ${source} redirect URI: ${redirectUri}`);
@@ -98,9 +70,7 @@ function resolveRedirectUri(): string {
 			? "configured"
 			: "Vercel-derived fallback";
 	const redirectUri =
-		source === "configured"
-			? normalizeConfiguredRedirectUri(configuredRedirectUri)
-			: getDefaultRedirectUri();
+		source === "configured" ? configuredRedirectUri : getDefaultRedirectUri();
 
 	warnIfRedirectUriLooksWrong(redirectUri, source);
 	logResolvedRedirectUri(redirectUri, source);
