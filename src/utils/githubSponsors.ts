@@ -2,6 +2,7 @@ import { MiniDatabase } from "@minesa-org/mini-interaction";
 
 const DEFAULT_TARGETS = ["theminesastudios"];
 const MANUAL_PAST_SPONSORS = [
+	"btuserglobal",
 	"rogueszou",
 	"axelnassi",
 	"joxzael",
@@ -62,6 +63,54 @@ type SponsorsConnection = {
 		} | null;
 	}>;
 } | null;
+
+export type SponsorDonationInfo = {
+	githubUsername: string;
+	targetLogin: string;
+	isActive: boolean;
+	isOneTimePayment: boolean;
+	createdAt: string;
+	tierSelectedAt: string | null;
+	amountInCents: number | null;
+	tierName: string | null;
+	estimatedTotalInCents: number | null;
+	totalEstimateStartsAt: string;
+	totalEstimateScope: "lifetime" | "current-tier" | "one-time";
+};
+
+function estimateSponsorTotal(
+	amountInCents: number | null,
+	isOneTimePayment: boolean,
+	createdAt: string,
+	tierSelectedAt: string | null
+) {
+	const estimateStart = tierSelectedAt || createdAt;
+	const scope = isOneTimePayment
+		? "one-time" as const
+		: tierSelectedAt && tierSelectedAt !== createdAt
+			? "current-tier" as const
+			: "lifetime" as const;
+	if (amountInCents === null || isOneTimePayment) {
+		return {
+			estimatedTotalInCents: amountInCents,
+			totalEstimateStartsAt: estimateStart,
+			totalEstimateScope: scope,
+		};
+	}
+
+	const start = new Date(estimateStart);
+	const now = new Date();
+	let completedMonthBoundaries =
+		(now.getUTCFullYear() - start.getUTCFullYear()) * 12 +
+		(now.getUTCMonth() - start.getUTCMonth());
+	if (now.getUTCDate() < start.getUTCDate()) completedMonthBoundaries -= 1;
+	const billedPeriods = Math.max(1, completedMonthBoundaries + 1);
+	return {
+		estimatedTotalInCents: amountInCents * billedPeriods,
+		totalEstimateStartsAt: estimateStart,
+		totalEstimateScope: scope,
+	};
+}
 
 type DiscordConnection = {
 	type?: string;
@@ -1160,6 +1209,142 @@ export async function getSponsorMatch(githubUsername: string) {
 		getSponsorCacheTtlMs()
 	);
 	return result;
+}
+
+export async function getSponsorDonationInfo(
+	githubUsername: string
+): Promise<SponsorDonationInfo | null> {
+	const normalizedUsername = normalizeLogin(githubUsername);
+	const token = getGitHubToken();
+
+	for (const targetLogin of getSponsorTargets()) {
+		let cursor: string | null = null;
+
+		for (let page = 0; page < 20; page += 1) {
+			const query = `
+				query SponsorDonationInfo(
+					$login: String!
+					$cursor: String
+					$includePrivate: Boolean!
+				) {
+					repositoryOwner(login: $login) {
+						... on User {
+							sponsorshipsAsMaintainer(
+								activeOnly: false
+								includePrivate: $includePrivate
+								first: 100
+								after: $cursor
+							) {
+								pageInfo { hasNextPage endCursor }
+								nodes {
+									isActive
+									isOneTimePayment
+									createdAt
+									tierSelectedAt
+									sponsorEntity { ... on User { login } ... on Organization { login } }
+									tier { name monthlyPriceInCents }
+								}
+							}
+						}
+						... on Organization {
+							sponsorshipsAsMaintainer(
+								activeOnly: false
+								includePrivate: $includePrivate
+								first: 100
+								after: $cursor
+							) {
+								pageInfo { hasNextPage endCursor }
+								nodes {
+									isActive
+									isOneTimePayment
+									createdAt
+									tierSelectedAt
+									sponsorEntity { ... on User { login } ... on Organization { login } }
+									tier { name monthlyPriceInCents }
+								}
+							}
+						}
+					}
+				}
+			`;
+
+			const response = await fetch(GITHUB_GRAPHQL_URL, {
+				method: "POST",
+				headers: {
+					...(token ? { Authorization: `Bearer ${token}` } : {}),
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					query,
+					variables: {
+						login: targetLogin,
+						cursor,
+						includePrivate: Boolean(token),
+					},
+				}),
+			});
+
+			if (!response.ok) {
+				throw new Error(
+					`GitHub sponsor information request failed (${response.status}): ${await response.text()}`
+				);
+			}
+
+			const payload = (await response.json()) as {
+				data?: { repositoryOwner?: Record<string, unknown> | null };
+				errors?: Array<{ message: string }>;
+			};
+			if (payload.errors?.length) {
+				throw new Error(payload.errors.map((error) => error.message).join(", "));
+			}
+
+			const owner = payload.data?.repositoryOwner as
+				| {
+						sponsorshipsAsMaintainer?: {
+							pageInfo: { hasNextPage: boolean; endCursor: string | null };
+							nodes: Array<{
+								isActive: boolean;
+								isOneTimePayment: boolean;
+								createdAt: string;
+								tierSelectedAt: string | null;
+								sponsorEntity: { login?: string } | null;
+								tier: { name: string; monthlyPriceInCents: number } | null;
+							}>;
+						};
+				  }
+				| null
+				| undefined;
+			const connection = owner?.sponsorshipsAsMaintainer;
+			const sponsorship = connection?.nodes.find(
+				(node) => normalizeLogin(node.sponsorEntity?.login ?? "") === normalizedUsername
+			);
+
+			if (sponsorship) {
+				const amountInCents = sponsorship.tier?.monthlyPriceInCents ?? null;
+				return {
+					githubUsername: normalizedUsername,
+					targetLogin: normalizeLogin(targetLogin),
+					isActive: sponsorship.isActive,
+					isOneTimePayment: sponsorship.isOneTimePayment,
+					createdAt: sponsorship.createdAt,
+					tierSelectedAt: sponsorship.tierSelectedAt,
+					amountInCents,
+					tierName: sponsorship.tier?.name ?? null,
+					...estimateSponsorTotal(
+						amountInCents,
+						sponsorship.isOneTimePayment,
+						sponsorship.createdAt,
+						sponsorship.tierSelectedAt
+					),
+				};
+			}
+
+			if (!connection?.pageInfo.hasNextPage || !connection.pageInfo.endCursor) break;
+			cursor = connection.pageInfo.endCursor;
+		}
+	}
+
+	return null;
 }
 
 async function isUserContributorOfPrivateRepo(

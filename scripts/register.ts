@@ -32,7 +32,7 @@ const response = await fetch(
 			Authorization: `Bot ${process.env.DISCORD_BOT_TOKEN}`,
 			"Content-Type": "application/json",
 		},
-		body: "[]",
+		body: JSON.stringify(mini.listCommandData()),
 	},
 );
 
@@ -60,4 +60,4 @@ if (!metadataResponse.ok) {
 	);
 }
 
-console.log("Command reset and linked role metadata sync complete!");
+console.log("Slash command and linked role metadata sync complete!");
