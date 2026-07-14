@@ -1,7 +1,20 @@
-import { MiniDatabase } from "@minesa-org/mini-interaction";
+import {
+	getDiscordUser,
+	getOAuthTokens,
+	MiniDatabase,
+} from "@minesa-org/mini-interaction";
 import { mini } from "./interactions.js";
 import { updateDiscordMetadata } from "../src/utils/database.js";
 import { discordOAuthConfig } from "../src/utils/oauthConfig.js";
+import {
+	accountOAuthStateMatchesUser,
+	isAccountOAuthState,
+	parseAccountOAuthState,
+} from "../src/utils/accountOAuth.js";
+import {
+	createGameAccountFromDiscord,
+	GameAccountConflictError,
+} from "../src/utils/gameAccount.js";
 
 const database = MiniDatabase.fromEnv();
 const failedPage = mini.failedOAuthPage("pages/failed.html");
@@ -23,6 +36,97 @@ function parseGameCb(state: unknown): string | null {
 		return cb.origin;
 	} catch {
 		return null;
+	}
+}
+
+function escapeHtml(value: unknown): string {
+	return String(value ?? "")
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&#039;");
+}
+
+function sendAccountPage(
+	res: any,
+	statusCode: number,
+	title: string,
+	message: string
+) {
+	res.statusCode = statusCode;
+	res.setHeader("content-type", "text/html; charset=utf-8");
+	res.setHeader("cache-control", "no-store");
+	res.setHeader("x-content-type-options", "nosniff");
+	res.end(`<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${escapeHtml(title)}</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #111827; color: #f9fafb; }
+    main { max-width: 34rem; margin: 1.5rem; padding: 2rem; border: 1px solid #374151; border-radius: 1rem; background: #1f2937; }
+    h1 { margin-top: 0; color: #a5b4fc; }
+    p { line-height: 1.6; margin-bottom: 0; }
+  </style>
+</head>
+<body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></main></body>
+</html>`);
+}
+
+async function handleAccountOAuth(req: any, res: any) {
+	const q = req?.query ?? {};
+	const state = parseAccountOAuthState(q.state);
+	if (!state) {
+		sendAccountPage(res, 400, "Bağlantı geçersiz", "OAuth bağlantısının süresi dolmuş veya bağlantı değiştirilmiş. Discord'da /create-account komutunu yeniden çalıştır.");
+		return;
+	}
+	if (typeof q.error === "string" && q.error) {
+		sendAccountPage(res, 400, "Yetkilendirme iptal edildi", "Dungeon Blitz hesabı oluşturulmadı. İstersen Discord'daki bağlantıyı yeniden açabilirsin.");
+		return;
+	}
+	if (typeof q.code !== "string" || !q.code) {
+		sendAccountPage(res, 400, "Kod eksik", "Discord OAuth kodu alınamadı. /create-account komutunu yeniden çalıştır.");
+		return;
+	}
+
+	try {
+		const tokens = await getOAuthTokens(q.code, discordOAuthConfig);
+		const scopes = String(tokens.scope ?? "").split(/\s+/).filter(Boolean);
+		if (!scopes.includes("identify") || !scopes.includes("email")) {
+			throw new GameAccountConflictError("Discord OAuth izinlerinde identify ve email kapsamları gerekli.");
+		}
+		const user = await getDiscordUser(tokens.access_token);
+		if (!accountOAuthStateMatchesUser(state, user.id)) {
+			sendAccountPage(res, 403, "Discord hesabı eşleşmedi", "OAuth bağlantısını yalnızca /create-account komutunu çalıştıran Discord hesabı tamamlayabilir.");
+			return;
+		}
+
+		const result = await createGameAccountFromDiscord({
+			id: user.id,
+			username: user.username,
+			email: user.email,
+			emailVerified: user.verified === true,
+			avatar: user.avatar,
+		});
+		const message = result.account.passwordConfigured
+			? `Discord hesabın zaten ${result.account.email} adresiyle bağlı. Hesabını Discord'daki /account view komutuyla görüntüleyebilirsin.`
+			: `Hesabın ${result.account.email} adresiyle hazır. Discord'a dön ve /create-account mesajındaki “İlk parolayı ayarla” düğmesine bas.`;
+		sendAccountPage(
+			res,
+			200,
+			result.status === "created" ? "Dungeon Blitz hesabın oluşturuldu" : "Dungeon Blitz hesabın zaten bağlı",
+			message
+		);
+	} catch (error) {
+		if (error instanceof GameAccountConflictError) {
+			sendAccountPage(res, 409, "Hesap oluşturulamadı", error.message);
+			return;
+		}
+		console.error("[account-oauth] Account creation failed:", error);
+		sendAccountPage(res, 500, "Hesap oluşturulamadı", "Beklenmeyen bir hata oluştu. Lütfen daha sonra /create-account komutuyla tekrar dene.");
 	}
 }
 
@@ -69,6 +173,9 @@ const linkedRolesHandler = mini.discordOAuthCallback({
 
 export default async function handler(req: any, res: any) {
 	const q = req?.query ?? {};
+	if (isAccountOAuthState(q.state)) {
+		return handleAccountOAuth(req, res);
+	}
 	const origin = parseGameCb(q.state);
 	if (origin) {
 		const target = new URL("/api/discord-linked-roles/callback", origin);

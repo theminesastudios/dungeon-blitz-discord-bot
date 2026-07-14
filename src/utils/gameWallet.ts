@@ -132,8 +132,18 @@ async function getWalletCollections(): Promise<Array<{ source: WalletSource; col
 		{
 			source: "wallets",
 			collection: client
-				.db(process.env.GAME_MONGODB_DB_NAME?.trim() || "dungeon_blitz_r")
-				.collection<RawWallet>(process.env.GAME_WALLET_COLLECTION?.trim() || "wallets"),
+				.db(
+					process.env.GAME_MONGODB_DB_NAME?.trim() ||
+						process.env.MONGODB_DB_NAME?.trim() ||
+						process.env.MONGO_DB_NAME?.trim() ||
+						"dungeon_blitz_r"
+				)
+				.collection<RawWallet>(
+					process.env.GAME_WALLET_COLLECTION?.trim() ||
+						process.env.MONGODB_WALLET_COLLECTION?.trim() ||
+						process.env.MONGO_COLLECTION_NAME?.trim() ||
+						"wallets"
+				),
 		},
 	];
 }
