@@ -1,6 +1,6 @@
 {
 	"name": "@minesa-org/mini-app",
-	"version": "1.4.3",
+	"version": "1.5.0",
 	"description": "Mini-Interaction <3",
 	"main": "index.js",
 	"scripts": {
