@@ -21,7 +21,7 @@ The wallet command uses `MONGODB_URI` by default and recognizes the game server'
 
 ## Game account database
 
-`/create-account` writes the complete account and save records to the game MongoDB database after Discord OAuth verifies the invoking user's email. It uses `GAME_MONGODB_URI` (falling back to `MONGODB_URI`) and `GAME_MONGODB_DB_NAME` (falling back to `MONGODB_DB_NAME`, legacy `MONGO_DB_NAME`, then `dungeon_blitz_r`). Optional collection overrides are:
+`/create-account` writes the complete account and save records to the game MongoDB database after Discord OAuth verifies the invoking user's email. It uses `GAME_MONGODB_URI` (falling back to `MONGODB_URI`) and `GAME_MONGODB_DB_NAME` (falling back to `MONGODB_DB_NAME`, then `minidb`). The legacy sponsor database variable `MONGO_DB_NAME` is deliberately not used for game accounts. Optional collection overrides are:
 
 - `MONGODB_ACCOUNTS_COLLECTION` (default `accounts`)
 - `MONGODB_SAVES_COLLECTION` (default `saves`)

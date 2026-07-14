@@ -133,8 +133,7 @@ async function getCollections(): Promise<{
 	const db = client.db(
 		process.env.GAME_MONGODB_DB_NAME?.trim() ||
 			process.env.MONGODB_DB_NAME?.trim() ||
-			process.env.MONGO_DB_NAME?.trim() ||
-			"dungeon_blitz_r"
+			"minidb"
 	);
 	return {
 		accounts: db.collection<AccountDocument>(
