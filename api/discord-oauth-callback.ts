@@ -1,5 +1,4 @@
 import {
-	getDiscordUser,
 	getOAuthTokens,
 	MiniDatabase,
 } from "@minesa-org/mini-interaction";
@@ -15,6 +14,7 @@ import {
 	createGameAccountFromDiscord,
 	GameAccountConflictError,
 } from "../src/utils/gameAccount.js";
+import { getVerifiedDiscordOAuthUser } from "../src/utils/discordOAuthUser.js";
 
 const database = MiniDatabase.fromEnv();
 const failedPage = mini.failedOAuthPage("pages/failed.html");
@@ -98,7 +98,7 @@ async function handleAccountOAuth(req: any, res: any) {
 		if (!scopes.includes("identify") || !scopes.includes("email")) {
 			throw new GameAccountConflictError("Discord OAuth izinlerinde identify ve email kapsamları gerekli.");
 		}
-		const user = await getDiscordUser(tokens.access_token);
+		const user = await getVerifiedDiscordOAuthUser(tokens.access_token);
 		if (!accountOAuthStateMatchesUser(state, user.id)) {
 			sendAccountPage(res, 403, "Discord hesabı eşleşmedi", "OAuth bağlantısını yalnızca /create-account komutunu çalıştıran Discord hesabı tamamlayabilir.");
 			return;
@@ -107,6 +107,7 @@ async function handleAccountOAuth(req: any, res: any) {
 		const result = await createGameAccountFromDiscord({
 			id: user.id,
 			username: user.username,
+			globalName: user.global_name,
 			email: user.email,
 			emailVerified: user.verified === true,
 			avatar: user.avatar,
