@@ -1,6 +1,14 @@
 import dotenv from "dotenv";
 dotenv.config();
 
+if (
+	process.env.VERCEL_ENV === "preview" &&
+	process.env.ALLOW_PREVIEW_COMMAND_REGISTRATION !== "true"
+) {
+	console.log("Preview deployment detected. Skipping global Discord command registration.");
+	process.exit(0);
+}
+
 if (!process.env.DISCORD_BOT_TOKEN) {
 	console.log("⚠️ DISCORD_BOT_TOKEN not found. Skipping command registration.");
 	process.exit(0);
