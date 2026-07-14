@@ -10,6 +10,9 @@ This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord 
 - `/sponsor-info github_username` lets administrators inspect the visible GitHub sponsorship tier, status, and estimated total.
 - `/idols player operation amount` lets administrators atomically add or subtract Mammoth Idols. Player autocomplete displays the character's current Idols, Gold, and Dragon Keys.
 - `/profile player` lets administrators inspect a linked Discord/GitHub profile and the player's current wallet values across both game wallet stores.
+- `/maintenance seconds` lets administrators start the in-game maintenance countdown and broadcasts the start time into every connected player's game chat.
+
+The maintenance command requires matching `DISCORD_MAINTENANCE_API_SECRET` values in the bot and game-server environments, plus `GAME_SERVER_BASE_URL` in the bot deployment.
 
 ## Game wallet database
 
