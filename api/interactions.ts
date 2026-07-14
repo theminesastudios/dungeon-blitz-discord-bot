@@ -53,8 +53,8 @@ function passwordModal(customId: string, title: string) {
 		.setTitle(title)
 		.addComponents(
 			new LabelBuilder()
-				.setLabel("Yeni parola")
-				.setDescription("Dungeon Blitz'e girişte kullanacağın 6-128 karakterlik parola.")
+				.setLabel("New password")
+				.setDescription("A 6-128 character password for signing in to Dungeon Blitz.")
 				.setComponent(
 					new TextInputBuilder()
 						.setCustomId(PASSWORD_INPUT_ID)
@@ -64,7 +64,7 @@ function passwordModal(customId: string, title: string) {
 						.setRequired(true)
 				),
 			new LabelBuilder()
-				.setLabel("Parolayı doğrula")
+				.setLabel("Confirm password")
 				.setComponent(
 					new TextInputBuilder()
 						.setCustomId(PASSWORD_CONFIRM_INPUT_ID)
@@ -82,12 +82,12 @@ async function handlePasswordModal(
 ) {
 	const discordId = interactionDiscordId(interaction);
 	if (!discordId) {
-		return interaction.reply({ content: "Discord hesabın doğrulanamadı.", flags: 64 });
+		return interaction.reply({ content: "Your Discord account could not be verified.", flags: 64 });
 	}
 	const password = interaction.getTextFieldValue(PASSWORD_INPUT_ID) ?? "";
 	const confirmation = interaction.getTextFieldValue(PASSWORD_CONFIRM_INPUT_ID) ?? "";
 	if (password !== confirmation) {
-		return interaction.reply({ content: "Parolalar eşleşmiyor.", flags: 64 });
+		return interaction.reply({ content: "The passwords do not match.", flags: 64 });
 	}
 
 	interaction.deferReply({ flags: 64 });
@@ -95,18 +95,18 @@ async function handlePasswordModal(
 		const result = await updateGameAccountPassword(discordId, password, { initialOnly });
 		if (result.status === "not-found") {
 			return interaction.editReply({
-				content: "Önce `/create-account` komutundaki Discord OAuth bağlantısını tamamla.",
+				content: "Complete the Discord OAuth link from `/create-account` first.",
 			});
 		}
 		if (result.status === "already-configured") {
 			return interaction.editReply({
-				content: "İlk parolan zaten ayarlanmış. Değiştirmek için `/account reset-password` kullan.",
+				content: "Your initial password is already set. Use `/account reset-password` to change it.",
 			});
 		}
 		return interaction.editReply({
 			content: initialOnly
-				? `İlk parolan ayarlandı. Oyuna **${result.account.email}** adresiyle giriş yapabilirsin.`
-				: `Parolan yenilendi. Oyuna **${result.account.email}** adresiyle giriş yapabilirsin.`,
+				? `Your initial password has been set. You can sign in to the game with **${result.account.email}**.`
+				: `Your password has been reset. You can sign in to the game with **${result.account.email}**.`,
 		});
 	} catch (error) {
 		if (error instanceof GameAccountConflictError) {
@@ -114,7 +114,7 @@ async function handlePasswordModal(
 		}
 		console.error("[account] Password update failed:", error);
 		return interaction.editReply({
-			content: "Parola şu anda güncellenemedi. Lütfen daha sonra tekrar dene.",
+			content: "Your password could not be updated right now. Please try again later.",
 		});
 	}
 }
@@ -122,24 +122,24 @@ async function handlePasswordModal(
 function handleCreateAccountCommand(interaction: CommandInteraction) {
 	const discordId = interactionDiscordId(interaction);
 	if (!discordId) {
-		return interaction.reply({ content: "Discord hesabın doğrulanamadı.", flags: 64 });
+		return interaction.reply({ content: "Your Discord account could not be verified.", flags: 64 });
 	}
 	const oauthUrl = createAccountOAuthUrl(discordId);
 	const row = new ActionRowBuilder<APIButtonComponent>().addComponents(
 		new ButtonBuilder()
 			.setStyle(ButtonStyle.Link)
-			.setLabel("Discord ile doğrula")
+			.setLabel("Verify with Discord")
 			.setURL(oauthUrl),
 		new ButtonBuilder()
 			.setStyle(ButtonStyle.Primary)
-			.setLabel("İlk parolayı ayarla")
+			.setLabel("Set initial password")
 			.setCustomId(INITIAL_PASSWORD_BUTTON_ID)
 	);
 	return interaction.reply({
 		content: [
-			"Dungeon Blitz hesabını oluşturmak için önce Discord OAuth doğrulamasını tamamla.",
-			"Hesap, Discord'daki **doğrulanmış e-posta adresinle** oluşturulacak.",
-			"OAuth tamamlandıktan sonra bu mesaja dönüp **İlk parolayı ayarla** düğmesine bas.",
+			"Complete Discord OAuth verification to create your Dungeon Blitz account.",
+			"The account will use your **verified Discord email address**.",
+			"After OAuth is complete, return to this message and select **Set initial password**.",
 		].join("\n"),
 		components: [row],
 		flags: 64,
@@ -149,33 +149,33 @@ function handleCreateAccountCommand(interaction: CommandInteraction) {
 mini.useCommand({
 	data: new CommandBuilder()
 		.setName("create-account")
-		.setDescription("Doğrulanmış Discord e-postanla Dungeon Blitz hesabı oluştur"),
+		.setDescription("Create a Dungeon Blitz account with your verified Discord email"),
 	handler: handleCreateAccountCommand,
 });
 
 mini.useCommand({
 	data: new CommandBuilder()
 		.setName("account")
-		.setDescription("Dungeon Blitz hesabını yönet")
+		.setDescription("Manage your Dungeon Blitz account")
 		.addSubcommand((subcommand) =>
 			subcommand
 				.setName("create")
-				.setDescription("Doğrulanmış Discord e-postanla oyun hesabı oluştur")
+				.setDescription("Create a game account with your verified Discord email")
 		)
 		.addSubcommand((subcommand) =>
 			subcommand
 				.setName("reset-password")
-				.setDescription("Dungeon Blitz parolanı yenile")
+				.setDescription("Reset your Dungeon Blitz password")
 		)
 		.addSubcommand((subcommand) =>
 			subcommand
 				.setName("view")
-				.setDescription("Bağlı Dungeon Blitz hesabını görüntüle")
+				.setDescription("View your linked Dungeon Blitz account")
 		),
 	handler: async (interaction: CommandInteraction) => {
 		const discordId = interactionDiscordId(interaction);
 		if (!discordId) {
-			return interaction.reply({ content: "Discord hesabın doğrulanamadı.", flags: 64 });
+			return interaction.reply({ content: "Your Discord account could not be verified.", flags: 64 });
 		}
 		const subcommand = interaction.options.getSubcommand(true);
 
@@ -184,7 +184,7 @@ mini.useCommand({
 		}
 
 		if (subcommand === "reset-password") {
-			return interaction.showModal(passwordModal(RESET_PASSWORD_MODAL_ID, "Dungeon Blitz parolasını yenile"));
+			return interaction.showModal(passwordModal(RESET_PASSWORD_MODAL_ID, "Reset Dungeon Blitz password"));
 		}
 
 		interaction.deferReply({ flags: 64 });
@@ -192,19 +192,19 @@ mini.useCommand({
 			const account = await getGameAccountByDiscordId(discordId);
 			if (!account) {
 				return interaction.editReply({
-					content: "Discord hesabına bağlı bir Dungeon Blitz hesabı yok. `/create-account` ile oluşturabilirsin.",
+					content: "No Dungeon Blitz account is linked to your Discord account. Create one with `/create-account`.",
 				});
 			}
 			return interaction.editReply({
 				embeds: [{
 					color: 0x5865f2,
-					title: "Dungeon Blitz hesabın",
+					title: "Your Dungeon Blitz account",
 					fields: [
-						{ name: "E-posta", value: account.email },
+						{ name: "Email", value: account.email },
 						{ name: "User ID", value: String(account.userId), inline: true },
 						{
-							name: "Parola",
-							value: account.passwordConfigured ? "Ayarlı" : "İlk parola bekleniyor",
+							name: "Password",
+							value: account.passwordConfigured ? "Set" : "Waiting for initial password",
 							inline: true,
 						},
 					],
@@ -213,7 +213,7 @@ mini.useCommand({
 		} catch (error) {
 			console.error("[account] Account view failed:", error);
 			return interaction.editReply({
-				content: "Hesap bilgileri şu anda yüklenemedi. Lütfen daha sonra tekrar dene.",
+				content: "Account information could not be loaded right now. Please try again later.",
 			});
 		}
 	},
@@ -222,7 +222,7 @@ mini.useCommand({
 mini.useComponent({
 	customId: INITIAL_PASSWORD_BUTTON_ID,
 	handler: (interaction: ButtonInteraction) =>
-		interaction.showModal(passwordModal(INITIAL_PASSWORD_MODAL_ID, "İlk Dungeon Blitz parolan")),
+		interaction.showModal(passwordModal(INITIAL_PASSWORD_MODAL_ID, "Your initial Dungeon Blitz password")),
 });
 
 mini.useModal({

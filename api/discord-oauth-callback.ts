@@ -59,7 +59,7 @@ function sendAccountPage(
 	res.setHeader("cache-control", "no-store");
 	res.setHeader("x-content-type-options", "nosniff");
 	res.end(`<!doctype html>
-<html lang="tr">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -80,15 +80,15 @@ async function handleAccountOAuth(req: any, res: any) {
 	const q = req?.query ?? {};
 	const state = parseAccountOAuthState(q.state);
 	if (!state) {
-		sendAccountPage(res, 400, "Bağlantı geçersiz", "OAuth bağlantısının süresi dolmuş veya bağlantı değiştirilmiş. Discord'da /create-account komutunu yeniden çalıştır.");
+		sendAccountPage(res, 400, "Invalid link", "The OAuth link has expired or was modified. Run /create-account again in Discord.");
 		return;
 	}
 	if (typeof q.error === "string" && q.error) {
-		sendAccountPage(res, 400, "Yetkilendirme iptal edildi", "Dungeon Blitz hesabı oluşturulmadı. İstersen Discord'daki bağlantıyı yeniden açabilirsin.");
+		sendAccountPage(res, 400, "Authorization cancelled", "The Dungeon Blitz account was not created. You can reopen the link from Discord.");
 		return;
 	}
 	if (typeof q.code !== "string" || !q.code) {
-		sendAccountPage(res, 400, "Kod eksik", "Discord OAuth kodu alınamadı. /create-account komutunu yeniden çalıştır.");
+		sendAccountPage(res, 400, "Missing code", "The Discord OAuth code was not received. Run /create-account again.");
 		return;
 	}
 
@@ -96,11 +96,11 @@ async function handleAccountOAuth(req: any, res: any) {
 		const tokens = await getOAuthTokens(q.code, discordOAuthConfig);
 		const scopes = String(tokens.scope ?? "").split(/\s+/).filter(Boolean);
 		if (!scopes.includes("identify") || !scopes.includes("email")) {
-			throw new GameAccountConflictError("Discord OAuth izinlerinde identify ve email kapsamları gerekli.");
+			throw new GameAccountConflictError("Discord OAuth requires the identify and email scopes.");
 		}
 		const user = await getVerifiedDiscordOAuthUser(tokens.access_token);
 		if (!accountOAuthStateMatchesUser(state, user.id)) {
-			sendAccountPage(res, 403, "Discord hesabı eşleşmedi", "OAuth bağlantısını yalnızca /create-account komutunu çalıştıran Discord hesabı tamamlayabilir.");
+			sendAccountPage(res, 403, "Discord account mismatch", "Only the Discord account that ran /create-account can complete this OAuth link.");
 			return;
 		}
 
@@ -113,21 +113,21 @@ async function handleAccountOAuth(req: any, res: any) {
 			avatar: user.avatar,
 		});
 		const message = result.account.passwordConfigured
-			? `Discord hesabın zaten ${result.account.email} adresiyle bağlı. Hesabını Discord'daki /account view komutuyla görüntüleyebilirsin.`
-			: `Hesabın ${result.account.email} adresiyle hazır. Discord'a dön ve /create-account mesajındaki “İlk parolayı ayarla” düğmesine bas.`;
+			? `Your Discord account is already linked to ${result.account.email}. You can view it with /account view in Discord.`
+			: `Your account is ready with ${result.account.email}. Return to Discord and select “Set initial password” in the /create-account message.`;
 		sendAccountPage(
 			res,
 			200,
-			result.status === "created" ? "Dungeon Blitz hesabın oluşturuldu" : "Dungeon Blitz hesabın zaten bağlı",
+			result.status === "created" ? "Your Dungeon Blitz account was created" : "Your Dungeon Blitz account is already linked",
 			message
 		);
 	} catch (error) {
 		if (error instanceof GameAccountConflictError) {
-			sendAccountPage(res, 409, "Hesap oluşturulamadı", error.message);
+			sendAccountPage(res, 409, "Account could not be created", error.message);
 			return;
 		}
 		console.error("[account-oauth] Account creation failed:", error);
-		sendAccountPage(res, 500, "Hesap oluşturulamadı", "Beklenmeyen bir hata oluştu. Lütfen daha sonra /create-account komutuyla tekrar dene.");
+		sendAccountPage(res, 500, "Account could not be created", "An unexpected error occurred. Please try /create-account again later.");
 	}
 }
 

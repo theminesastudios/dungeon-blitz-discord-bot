@@ -240,7 +240,7 @@ export async function createGameAccountFromDiscord(
 	if (!discordId) throw new Error("Discord user id is required");
 	if (discord.emailVerified !== true || !isValidAccountEmail(email)) {
 		throw new GameAccountConflictError(
-			"Dungeon Blitz hesabı için Discord hesabında doğrulanmış bir e-posta adresi gerekli."
+			"A verified email address on your Discord account is required for a Dungeon Blitz account."
 		);
 	}
 
@@ -256,7 +256,7 @@ export async function createGameAccountFromDiscord(
 	} as Document);
 	if (existingEmail) {
 		throw new GameAccountConflictError(
-			"Discord e-posta adresin başka bir Dungeon Blitz hesabı tarafından kullanılıyor."
+			"Your Discord email address is already used by another Dungeon Blitz account."
 		);
 	}
 
@@ -301,7 +301,7 @@ export async function createGameAccountFromDiscord(
 				return { status: "existing", account: publicAccount(racedAccount) };
 			}
 			throw new GameAccountConflictError(
-				"Discord e-posta adresin başka bir Dungeon Blitz hesabı tarafından kullanılıyor."
+				"Your Discord email address is already used by another Dungeon Blitz account."
 			);
 		}
 		throw error;
@@ -318,7 +318,7 @@ export async function updateGameAccountPassword(
 	const discordId = String(discordIdInput ?? "").trim();
 	if (!discordId) throw new Error("Discord user id is required");
 	if (!isValidGamePassword(plainPassword)) {
-		throw new GameAccountConflictError("Parola 6 ile 128 karakter arasında olmalıdır.");
+		throw new GameAccountConflictError("The password must be between 6 and 128 characters.");
 	}
 
 	await ensureIndexes();
