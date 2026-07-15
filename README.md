@@ -16,7 +16,7 @@ The maintenance command requires matching `DISCORD_MAINTENANCE_API_SECRET` value
 
 ## Game wallet database
 
-The wallet commands use `MONGODB_URI` by default. The current game schema is read from the `saves` collection, where each account document contains a `characters[]` array. Legacy flat `minidb` and `wallets` documents remain supported for compatibility. A separate game database can be selected with:
+The wallet commands use `MONGODB_URI` by default. The current game schema is read from the `saves` collection, where each account document contains a `characters[]` array. Legacy flat `minidb` and `wallets` documents remain supported for compatibility. Production deployments are sourced from the repository's `main` branch. A separate game database can be selected with:
 
 - `GAME_MONGODB_URI`
 - `GAME_MONGODB_DB_NAME`
