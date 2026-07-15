@@ -9,18 +9,19 @@ This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord 
 - `/account view` privately shows the linked account's Discord email, game user ID, and password setup state.
 - `/sponsor-info github_username` lets administrators inspect the visible GitHub sponsorship tier, status, and estimated total.
 - `/idols player operation amount` lets administrators atomically add or subtract Mammoth Idols. Player autocomplete displays the character's current Idols, Gold, and Dragon Keys.
-- `/profile player` lets administrators inspect a linked Discord/GitHub profile and the player's current wallet values across both game wallet stores.
+- `/profile player` lets administrators inspect a linked Discord/GitHub profile and the player's current wallet values across the current game saves and legacy wallet stores.
 - `/maintenance seconds` lets administrators start the in-game maintenance countdown and broadcasts the start time into every connected player's game chat.
 
 The maintenance command requires matching `DISCORD_MAINTENANCE_API_SECRET` values in the bot and game-server environments, plus `GAME_SERVER_BASE_URL` in the bot deployment.
 
 ## Game wallet database
 
-The wallet command uses `MONGODB_URI` by default and recognizes the game server's `MONGODB_DB_NAME` / `MONGODB_WALLET_COLLECTION` variables and the deployment's legacy `MONGO_DB_NAME` / `MONGO_COLLECTION_NAME` variables. A separate game database can be selected with:
+The wallet commands use `MONGODB_URI` by default. The current game schema is read from the `saves` collection, where each account document contains a `characters[]` array. Legacy flat `minidb` and `wallets` documents remain supported for compatibility. A separate game database can be selected with:
 
 - `GAME_MONGODB_URI`
 - `GAME_MONGODB_DB_NAME`
-- `GAME_WALLET_COLLECTION`
+- `MONGODB_SAVES_COLLECTION` (default `saves`)
+- `GAME_WALLET_COLLECTION` (legacy flat wallet collection)
 
 ## Game account database
 
