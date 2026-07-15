@@ -1,6 +1,7 @@
 import { MongoClient, type Collection, type Document, type Filter } from "mongodb";
 
-type WalletSource = "minidb" | "wallets";
+type WalletSource = "saves" | "minidb" | "wallets";
+type FlatWalletSource = Exclude<WalletSource, "saves">;
 
 type RawWallet = Document & {
 	_id: string;
@@ -20,9 +21,28 @@ type RawWallet = Document & {
 	gold?: number;
 	mammothIdols?: number;
 	DragonKeys?: number;
+	DragonOre?: number;
 	dragonOre?: number;
 	SilverSigils?: number;
 	RoyalSigils?: number;
+	updatedAt?: Date;
+};
+
+type RawSaveCharacter = Document & {
+	name?: string;
+	gold?: number;
+	mammothIdols?: number;
+	DragonKeys?: number;
+	DragonOre?: number;
+	dragonOre?: number;
+	SilverSigils?: number;
+	RoyalSigils?: number;
+};
+
+type RawSave = Document & {
+	_id: string;
+	user_id?: number;
+	characters?: RawSaveCharacter[];
 	updatedAt?: Date;
 };
 
@@ -34,6 +54,16 @@ type RawLinkedProfile = Document & {
 	sponsorTarget?: string | null;
 	isContributor?: boolean;
 };
+
+type ParsedSelector = {
+	source: WalletSource;
+	id: string;
+	characterName?: string;
+};
+
+type WalletCollection =
+	| { source: "saves"; collection: Collection<RawSave> }
+	| { source: FlatWalletSource; collection: Collection<RawWallet> };
 
 export type GameWalletSummary = {
 	id: string;
@@ -70,16 +100,41 @@ function normalizeBalance(value: unknown): number {
 	return Number.isFinite(amount) ? Math.max(0, Math.round(amount)) : 0;
 }
 
-function encodeSelector(source: WalletSource, id: string): string {
+function escapeRegex(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function safeDecode(value: string): string {
+	try {
+		return decodeURIComponent(value);
+	} catch {
+		return value;
+	}
+}
+
+function encodeSelector(source: WalletSource, id: string, characterName?: string): string {
+	if (source === "saves") {
+		return `saves:${encodeURIComponent(id)}:${encodeURIComponent(characterName ?? "")}`;
+	}
 	return `${source}:${id}`;
 }
 
-function parseSelector(selector: string): { source: WalletSource; id: string } | null {
-	const match = selector.match(/^(minidb|wallets):(.+)$/);
-	return match ? { source: match[1] as WalletSource, id: match[2] } : null;
+function parseSelector(selector: string): ParsedSelector | null {
+	const saveMatch = selector.match(/^saves:([^:]+):(.+)$/);
+	if (saveMatch) {
+		return {
+			source: "saves",
+			id: safeDecode(saveMatch[1]),
+			characterName: safeDecode(saveMatch[2]),
+		};
+	}
+	const flatMatch = selector.match(/^(minidb|wallets):(.+)$/);
+	return flatMatch
+		? { source: flatMatch[1] as FlatWalletSource, id: flatMatch[2] }
+		: null;
 }
 
-function toSummary(wallet: RawWallet, source: WalletSource): GameWalletSummary {
+function toFlatSummary(wallet: RawWallet, source: FlatWalletSource): GameWalletSummary {
 	return {
 		id: String(wallet._id),
 		selector: encodeSelector(source, String(wallet._id)),
@@ -91,9 +146,26 @@ function toSummary(wallet: RawWallet, source: WalletSource): GameWalletSummary {
 		gold: normalizeBalance(wallet.g ?? wallet.gold),
 		mammothIdols: normalizeBalance(wallet.mi ?? wallet.mammothIdols),
 		dragonKeys: normalizeBalance(wallet.dk ?? wallet.DragonKeys),
-		dragonOre: normalizeBalance(wallet.do ?? wallet.dragonOre),
+		dragonOre: normalizeBalance(wallet.do ?? wallet.DragonOre ?? wallet.dragonOre),
 		silverSigils: normalizeBalance(wallet.ss ?? wallet.SilverSigils),
 		royalSigils: normalizeBalance(wallet.rs ?? wallet.RoyalSigils),
+	};
+}
+
+function toSaveSummary(save: RawSave, character: RawSaveCharacter): GameWalletSummary {
+	const characterName = String(character.name ?? "").trim();
+	return {
+		id: String(save._id),
+		selector: encodeSelector("saves", String(save._id), characterName),
+		source: "saves",
+		gameUserId: normalizeBalance(save.user_id),
+		characterName,
+		gold: normalizeBalance(character.gold),
+		mammothIdols: normalizeBalance(character.mammothIdols),
+		dragonKeys: normalizeBalance(character.DragonKeys),
+		dragonOre: normalizeBalance(character.DragonOre ?? character.dragonOre),
+		silverSigils: normalizeBalance(character.SilverSigils),
+		royalSigils: normalizeBalance(character.RoyalSigils),
 	};
 }
 
@@ -113,6 +185,14 @@ async function getClient(): Promise<MongoClient> {
 	return clientPromise;
 }
 
+function getGameDatabaseName(): string {
+	return (
+		process.env.GAME_MONGODB_DB_NAME?.trim() ||
+		process.env.MONGODB_DB_NAME?.trim() ||
+		"minidb"
+	);
+}
+
 async function getLinkedProfileCollection(): Promise<Collection<RawLinkedProfile>> {
 	const client = await getClient();
 	return client
@@ -120,9 +200,16 @@ async function getLinkedProfileCollection(): Promise<Collection<RawLinkedProfile
 		.collection<RawLinkedProfile>(process.env.PROFILE_MONGODB_COLLECTION?.trim() || "data");
 }
 
-async function getWalletCollections(): Promise<Array<{ source: WalletSource; collection: Collection<RawWallet> }>> {
+async function getWalletCollections(): Promise<WalletCollection[]> {
 	const client = await getClient();
+	const gameDatabase = client.db(getGameDatabaseName());
 	return [
+		{
+			source: "saves",
+			collection: gameDatabase.collection<RawSave>(
+				process.env.MONGODB_SAVES_COLLECTION?.trim() || "saves"
+			),
+		},
 		{
 			source: "minidb",
 			collection: client
@@ -131,38 +218,33 @@ async function getWalletCollections(): Promise<Array<{ source: WalletSource; col
 		},
 		{
 			source: "wallets",
-			collection: client
-				.db(
-					process.env.GAME_MONGODB_DB_NAME?.trim() ||
-						process.env.MONGODB_DB_NAME?.trim() ||
-						"minidb"
-				)
-				.collection<RawWallet>(
-					process.env.GAME_WALLET_COLLECTION?.trim() ||
-						process.env.MONGODB_WALLET_COLLECTION?.trim() ||
-						process.env.MONGO_COLLECTION_NAME?.trim() ||
-						"wallets"
-				),
+			collection: gameDatabase.collection<RawWallet>(
+				process.env.GAME_WALLET_COLLECTION?.trim() ||
+					process.env.MONGODB_WALLET_COLLECTION?.trim() ||
+					process.env.MONGO_COLLECTION_NAME?.trim() ||
+					"wallets"
+			),
 		},
 	];
 }
 
-function walletDocumentFilter(source: WalletSource): Filter<RawWallet> {
+function walletDocumentFilter(source: FlatWalletSource): Filter<RawWallet> {
 	return source === "minidb"
 		? { uid: { $exists: true }, ck: { $exists: true } }
 		: { gameUserId: { $exists: true }, characterNameKey: { $exists: true } };
 }
 
-function walletSearchFilter(source: WalletSource, term: string): Filter<RawWallet> {
+function walletSearchFilter(source: FlatWalletSource, term: string): Filter<RawWallet> {
 	const base = walletDocumentFilter(source);
 	if (!term) return base;
-	const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const escaped = escapeRegex(term);
 	const numericId = /^\d+$/.test(term) ? Number(term) : null;
-	const nameFields = source === "minidb"
-		? [{ cn: { $regex: escaped, $options: "i" } }, { ck: { $regex: escaped, $options: "i" } }]
-		: [
-				{ characterName: { $regex: escaped, $options: "i" } },
-				{ characterNameKey: { $regex: escaped, $options: "i" } },
+	const nameFields =
+		source === "minidb"
+			? [{ cn: { $regex: escaped, $options: "i" } }, { ck: { $regex: escaped, $options: "i" } }]
+			: [
+					{ characterName: { $regex: escaped, $options: "i" } },
+					{ characterNameKey: { $regex: escaped, $options: "i" } },
 			  ];
 	return {
 		...base,
@@ -175,28 +257,81 @@ function walletSearchFilter(source: WalletSource, term: string): Filter<RawWalle
 	} as Filter<RawWallet>;
 }
 
+async function searchSaveWallets(
+	collection: Collection<RawSave>,
+	term: string
+): Promise<GameWalletSummary[]> {
+	const escaped = escapeRegex(term);
+	const numericId = /^\d+$/.test(term) ? Number(term) : null;
+	const filter: Filter<RawSave> = term
+		? ({
+				$or: [
+					{ "characters.name": { $regex: escaped, $options: "i" } },
+					...(numericId === null ? [] : [{ user_id: numericId }]),
+				],
+		  } as Filter<RawSave>)
+		: ({ "characters.0": { $exists: true } } as Filter<RawSave>);
+	const saves = await collection.find(filter).sort({ updatedAt: -1 }).limit(25).toArray();
+	const results: GameWalletSummary[] = [];
+
+	for (const save of saves) {
+		const characters = Array.isArray(save.characters) ? save.characters : [];
+		const matchedCharacters = characters.filter((character) => {
+			const name = String(character?.name ?? "").trim();
+			if (!name) return false;
+			if (!term || (numericId !== null && normalizeBalance(save.user_id) === numericId)) {
+				return true;
+			}
+			return name.toLowerCase().includes(term.toLowerCase());
+		});
+		for (const character of matchedCharacters) results.push(toSaveSummary(save, character));
+	}
+	return results;
+}
+
+async function searchFlatWallets(
+	source: FlatWalletSource,
+	collection: Collection<RawWallet>,
+	term: string
+): Promise<GameWalletSummary[]> {
+	const sortField = source === "minidb" ? "u" : "updatedAt";
+	const wallets = await collection
+		.find(walletSearchFilter(source, term))
+		.sort({ [sortField]: -1 })
+		.limit(25)
+		.toArray();
+	return wallets.map((wallet) => toFlatSummary(wallet, source));
+}
+
 export async function searchGameWallets(query: string): Promise<GameWalletSummary[]> {
 	const term = query.trim();
 	const sources = await getWalletCollections();
 	const results = await Promise.all(
-		sources.map(async ({ source, collection }) => {
-			const sortField = source === "minidb" ? "u" : "updatedAt";
-			const wallets = await collection
-				.find(walletSearchFilter(source, term))
-				.sort({ [sortField]: -1 })
-				.limit(25)
-				.toArray();
-			return wallets.map((wallet) => toSummary(wallet, source));
-		})
+		sources.map(({ source, collection }) =>
+			source === "saves"
+				? searchSaveWallets(collection, term)
+				: searchFlatWallets(source, collection, term)
+		)
 	);
 
+	const priority: Record<WalletSource, number> = { saves: 3, minidb: 2, wallets: 1 };
 	const unique = new Map<string, GameWalletSummary>();
 	for (const wallet of results.flat()) {
 		const key = `${wallet.gameUserId}:${wallet.characterName.toLowerCase()}`;
 		const existing = unique.get(key);
-		if (!existing || wallet.source === "minidb") unique.set(key, wallet);
+		if (!existing || priority[wallet.source] > priority[existing.source]) unique.set(key, wallet);
 	}
 	return Array.from(unique.values()).slice(0, 25);
+}
+
+function findSaveCharacter(save: RawSave, characterName: string): RawSaveCharacter | null {
+	const normalized = characterName.trim().toLowerCase();
+	if (!normalized || !Array.isArray(save.characters)) return null;
+	return (
+		save.characters.find(
+			(character) => String(character?.name ?? "").trim().toLowerCase() === normalized
+		) ?? null
+	);
 }
 
 export async function findGameWallet(selector: string): Promise<GameWalletSummary | null> {
@@ -205,22 +340,40 @@ export async function findGameWallet(selector: string): Promise<GameWalletSummar
 	const parsed = parseSelector(normalized);
 	const sources = await getWalletCollections();
 
-	for (const { source, collection } of sources) {
-		if (parsed && parsed.source !== source) continue;
+	if (parsed?.source === "saves" && parsed.characterName) {
+		const target = sources.find((source) => source.source === "saves");
+		if (target?.source === "saves") {
+			const save = await target.collection.findOne({ _id: parsed.id } as Filter<RawSave>);
+			const character = save ? findSaveCharacter(save, parsed.characterName) : null;
+			if (save && character) return toSaveSummary(save, character);
+		}
+	}
+
+	for (const target of sources) {
+		if (target.source === "saves") continue;
+		if (parsed && parsed.source !== target.source) continue;
 		const id = parsed?.id ?? normalized;
-		const byId = await collection.findOne({ _id: id } as Filter<RawWallet>);
-		if (byId && Object.keys(walletDocumentFilter(source)).every((key) => key in byId)) {
-			return toSummary(byId, source);
+		const byId = await target.collection.findOne({ _id: id } as Filter<RawWallet>);
+		if (byId && Object.keys(walletDocumentFilter(target.source)).every((key) => key in byId)) {
+			return toFlatSummary(byId, target.source);
 		}
 	}
 
 	const matches = await searchGameWallets(normalized);
-	return matches.find((wallet) => wallet.characterName.toLowerCase() === normalized.toLowerCase()) ?? null;
+	const exactName = matches.find(
+		(wallet) => wallet.characterName.toLowerCase() === normalized.toLowerCase()
+	);
+	if (exactName) return exactName;
+	if (/^\d+$/.test(normalized)) {
+		const userId = Number(normalized);
+		return matches.find((wallet) => wallet.gameUserId === userId) ?? null;
+	}
+	return null;
 }
 
 export async function searchPlayers(query: string): Promise<PlayerSearchResult[]> {
 	const term = query.trim();
-	const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const escaped = escapeRegex(term);
 	const profiles = await getLinkedProfileCollection();
 	const profileRows = await profiles
 		.find(
@@ -273,7 +426,9 @@ export async function getPlayerProfile(selector: string): Promise<PlayerProfile 
 		const wallet = await findGameWallet(walletSelector);
 		if (wallet) {
 			wallets = [wallet];
-			linkedProfile = await profiles.findOne({ githubUsername: new RegExp(`^${wallet.characterName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") });
+			linkedProfile = await profiles.findOne({
+				githubUsername: new RegExp(`^${escapeRegex(wallet.characterName)}$`, "i"),
+			});
 		}
 	}
 
@@ -293,16 +448,46 @@ export async function adjustMammothIdols(
 	operation: "add" | "sub",
 	amount: number
 ): Promise<{ before: GameWalletSummary; after: GameWalletSummary } | null> {
-	if (!Number.isSafeInteger(amount) || amount <= 0) throw new Error("Amount must be a positive whole number");
+	if (!Number.isSafeInteger(amount) || amount <= 0) {
+		throw new Error("Amount must be a positive whole number");
+	}
 	const wallet = await findGameWallet(walletSelector);
 	if (!wallet) return null;
 	const sources = await getWalletCollections();
 	const target = sources.find(({ source }) => source === wallet.source);
 	if (!target) return null;
-
-	const amountField = wallet.source === "minidb" ? "mi" : "mammothIdols";
-	const updatedAtField = wallet.source === "minidb" ? "u" : "updatedAt";
 	const delta = operation === "add" ? amount : -amount;
+
+	if (target.source === "saves") {
+		const exactName = { $regex: `^${escapeRegex(wallet.characterName)}$`, $options: "i" };
+		const characterMatch: Record<string, unknown> = { name: exactName };
+		if (operation === "sub") characterMatch.mammothIdols = { $gte: amount };
+		const beforeSave = await target.collection.findOneAndUpdate(
+			{
+				_id: wallet.id,
+				characters: { $elemMatch: characterMatch },
+			} as Filter<RawSave>,
+			{
+				$inc: { "characters.$.mammothIdols": delta },
+				$set: { updatedAt: new Date() },
+			},
+			{ returnDocument: "before" }
+		);
+		if (!beforeSave) return null;
+		const beforeCharacter = findSaveCharacter(beforeSave, wallet.characterName);
+		if (!beforeCharacter) return null;
+		const before = toSaveSummary(beforeSave, beforeCharacter);
+		return {
+			before,
+			after: {
+				...before,
+				mammothIdols: before.mammothIdols + delta,
+			},
+		};
+	}
+
+	const amountField = target.source === "minidb" ? "mi" : "mammothIdols";
+	const updatedAtField = target.source === "minidb" ? "u" : "updatedAt";
 	const filter: Filter<RawWallet> = { _id: wallet.id } as Filter<RawWallet>;
 	if (operation === "sub") (filter as Record<string, unknown>)[amountField] = { $gte: amount };
 
@@ -313,7 +498,7 @@ export async function adjustMammothIdols(
 	);
 	if (!before) return null;
 	return {
-		before: toSummary(before, wallet.source),
-		after: toSummary({ ...before, [amountField]: wallet.mammothIdols + delta }, wallet.source),
+		before: toFlatSummary(before, target.source),
+		after: toFlatSummary({ ...before, [amountField]: wallet.mammothIdols + delta }, target.source),
 	};
 }
