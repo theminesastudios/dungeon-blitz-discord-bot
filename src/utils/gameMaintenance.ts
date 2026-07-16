@@ -4,30 +4,63 @@ export type MaintenanceBroadcastResult = {
 	recipients: number;
 };
 
-export async function broadcastGameMaintenance(seconds: number): Promise<MaintenanceBroadcastResult> {
+export type GameIdolAdjustmentResult = {
+	ok: true;
+	userId: number;
+	characterName: string;
+	operation: "add" | "sub";
+	amount: number;
+	before: number;
+	after: number;
+	onlineRecipients: number;
+};
+
+async function requestGameServerAdmin<T extends { ok: true }>(
+	path: string,
+	body: Record<string, unknown>,
+	action: string,
+): Promise<T> {
 	const baseUrl = String(process.env.GAME_SERVER_BASE_URL ?? "").trim().replace(/\/$/, "");
 	const secret = String(process.env.DISCORD_MAINTENANCE_API_SECRET ?? "").trim();
 	if (!baseUrl || !secret) {
 		throw new Error("GAME_SERVER_BASE_URL and DISCORD_MAINTENANCE_API_SECRET are required");
 	}
 
-	const response = await fetch(`${baseUrl}/api/admin/maintenance`, {
+	const response = await fetch(`${baseUrl}${path}`, {
 		method: "POST",
 		headers: {
 			Authorization: `Bearer ${secret}`,
 			"Content-Type": "application/json",
 		},
-		body: JSON.stringify({ seconds }),
+		body: JSON.stringify(body),
 		signal: AbortSignal.timeout(10_000),
 	});
-	const payload = (await response.json().catch(() => null)) as
-		| MaintenanceBroadcastResult
-		| { error?: string }
-		| null;
+	const payload = (await response.json().catch(() => null)) as T | { error?: string } | null;
 	if (!response.ok || !payload || !("ok" in payload) || payload.ok !== true) {
 		throw new Error(
-			`Game server rejected maintenance broadcast (${response.status}): ${payload && "error" in payload ? payload.error ?? "unknown error" : "invalid response"}`,
+			`Game server rejected ${action} (${response.status}): ${payload && "error" in payload ? payload.error ?? "unknown error" : "invalid response"}`,
 		);
 	}
 	return payload;
+}
+
+export async function broadcastGameMaintenance(seconds: number): Promise<MaintenanceBroadcastResult> {
+	return requestGameServerAdmin<MaintenanceBroadcastResult>(
+		"/api/admin/maintenance",
+		{ seconds },
+		"maintenance broadcast",
+	);
+}
+
+export async function adjustGameMammothIdols(
+	userId: number,
+	characterName: string,
+	operation: "add" | "sub",
+	amount: number,
+): Promise<GameIdolAdjustmentResult> {
+	return requestGameServerAdmin<GameIdolAdjustmentResult>(
+		"/api/admin/idols",
+		{ userId, characterName, operation, amount },
+		"Mammoth Idol adjustment",
+	);
 }
