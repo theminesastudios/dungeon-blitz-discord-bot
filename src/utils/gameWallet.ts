@@ -1,4 +1,5 @@
 import { MongoClient, type Collection, type Document, type Filter } from "mongodb";
+import { adjustGameMammothIdols } from "./gameMaintenance.js";
 
 type WalletSource = "saves" | "minidb" | "wallets";
 type FlatWalletSource = Exclude<WalletSource, "saves">;
@@ -141,7 +142,7 @@ function toFlatSummary(wallet: RawWallet, source: FlatWalletSource): GameWalletS
 		source,
 		gameUserId: normalizeBalance(wallet.uid ?? wallet.gameUserId),
 		characterName: String(
-			wallet.cn ?? wallet.characterName ?? wallet.ck ?? wallet.characterNameKey ?? wallet._id
+			wallet.cn ?? wallet.characterName ?? wallet.ck ?? wallet.characterNameKey ?? wallet._id,
 		).trim(),
 		gold: normalizeBalance(wallet.g ?? wallet.gold),
 		mammothIdols: normalizeBalance(wallet.mi ?? wallet.mammothIdols),
@@ -207,7 +208,7 @@ async function getWalletCollections(): Promise<WalletCollection[]> {
 		{
 			source: "saves",
 			collection: gameDatabase.collection<RawSave>(
-				process.env.MONGODB_SAVES_COLLECTION?.trim() || "saves"
+				process.env.MONGODB_SAVES_COLLECTION?.trim() || "saves",
 			),
 		},
 		{
@@ -222,7 +223,7 @@ async function getWalletCollections(): Promise<WalletCollection[]> {
 				process.env.GAME_WALLET_COLLECTION?.trim() ||
 					process.env.MONGODB_WALLET_COLLECTION?.trim() ||
 					process.env.MONGO_COLLECTION_NAME?.trim() ||
-					"wallets"
+					"wallets",
 			),
 		},
 	];
@@ -259,7 +260,7 @@ function walletSearchFilter(source: FlatWalletSource, term: string): Filter<RawW
 
 async function searchSaveWallets(
 	collection: Collection<RawSave>,
-	term: string
+	term: string,
 ): Promise<GameWalletSummary[]> {
 	const escaped = escapeRegex(term);
 	const numericId = /^\d+$/.test(term) ? Number(term) : null;
@@ -292,7 +293,7 @@ async function searchSaveWallets(
 async function searchFlatWallets(
 	source: FlatWalletSource,
 	collection: Collection<RawWallet>,
-	term: string
+	term: string,
 ): Promise<GameWalletSummary[]> {
 	const sortField = source === "minidb" ? "u" : "updatedAt";
 	const wallets = await collection
@@ -310,8 +311,8 @@ export async function searchGameWallets(query: string): Promise<GameWalletSummar
 		sources.map(({ source, collection }) =>
 			source === "saves"
 				? searchSaveWallets(collection, term)
-				: searchFlatWallets(source, collection, term)
-		)
+				: searchFlatWallets(source, collection, term),
+		),
 	);
 
 	const priority: Record<WalletSource, number> = { saves: 3, minidb: 2, wallets: 1 };
@@ -329,7 +330,7 @@ function findSaveCharacter(save: RawSave, characterName: string): RawSaveCharact
 	if (!normalized || !Array.isArray(save.characters)) return null;
 	return (
 		save.characters.find(
-			(character) => String(character?.name ?? "").trim().toLowerCase() === normalized
+			(character) => String(character?.name ?? "").trim().toLowerCase() === normalized,
 		) ?? null
 	);
 }
@@ -361,7 +362,7 @@ export async function findGameWallet(selector: string): Promise<GameWalletSummar
 
 	const matches = await searchGameWallets(normalized);
 	const exactName = matches.find(
-		(wallet) => wallet.characterName.toLowerCase() === normalized.toLowerCase()
+		(wallet) => wallet.characterName.toLowerCase() === normalized.toLowerCase(),
 	);
 	if (exactName) return exactName;
 	if (/^\d+$/.test(normalized)) {
@@ -385,7 +386,7 @@ export async function searchPlayers(query: string): Promise<PlayerSearchResult[]
 						],
 				  }
 				: { githubUsername: { $type: "string" } },
-			{ projection: { _id: 1, userId: 1, githubUsername: 1 } }
+			{ projection: { _id: 1, userId: 1, githubUsername: 1 } },
 		)
 		.limit(25)
 		.toArray();
@@ -446,46 +447,43 @@ export async function getPlayerProfile(selector: string): Promise<PlayerProfile 
 export async function adjustMammothIdols(
 	walletSelector: string,
 	operation: "add" | "sub",
-	amount: number
+	amount: number,
 ): Promise<{ before: GameWalletSummary; after: GameWalletSummary } | null> {
 	if (!Number.isSafeInteger(amount) || amount <= 0) {
 		throw new Error("Amount must be a positive whole number");
 	}
 	const wallet = await findGameWallet(walletSelector);
 	if (!wallet) return null;
-	const sources = await getWalletCollections();
-	const target = sources.find(({ source }) => source === wallet.source);
-	if (!target) return null;
 	const delta = operation === "add" ? amount : -amount;
 
-	if (target.source === "saves") {
-		const exactName = { $regex: `^${escapeRegex(wallet.characterName)}$`, $options: "i" };
-		const characterMatch: Record<string, unknown> = { name: exactName };
-		if (operation === "sub") characterMatch.mammothIdols = { $gte: amount };
-		const beforeSave = await target.collection.findOneAndUpdate(
-			{
-				_id: wallet.id,
-				characters: { $elemMatch: characterMatch },
-			} as Filter<RawSave>,
-			{
-				$inc: { "characters.$.mammothIdols": delta },
-				$set: { updatedAt: new Date() },
-			},
-			{ returnDocument: "before" }
-		);
-		if (!beforeSave) return null;
-		const beforeCharacter = findSaveCharacter(beforeSave, wallet.characterName);
-		if (!beforeCharacter) return null;
-		const before = toSaveSummary(beforeSave, beforeCharacter);
-		return {
-			before,
-			after: {
-				...before,
-				mammothIdols: before.mammothIdols + delta,
-			},
-		};
+	if (wallet.source === "saves") {
+		try {
+			const result = await adjustGameMammothIdols(
+				wallet.gameUserId,
+				wallet.characterName,
+				operation,
+				amount,
+			);
+			const before = { ...wallet, mammothIdols: result.before };
+			return {
+				before,
+				after: { ...before, mammothIdols: result.after },
+			};
+		} catch (error) {
+			if (
+				operation === "sub" &&
+				error instanceof Error &&
+				error.message.includes("does not have enough Mammoth Idols")
+			) {
+				return null;
+			}
+			throw error;
+		}
 	}
 
+	const sources = await getWalletCollections();
+	const target = sources.find(({ source }) => source === wallet.source);
+	if (!target || target.source === "saves") return null;
 	const amountField = target.source === "minidb" ? "mi" : "mammothIdols";
 	const updatedAtField = target.source === "minidb" ? "u" : "updatedAt";
 	const filter: Filter<RawWallet> = { _id: wallet.id } as Filter<RawWallet>;
@@ -494,7 +492,7 @@ export async function adjustMammothIdols(
 	const before = await target.collection.findOneAndUpdate(
 		filter,
 		{ $inc: { [amountField]: delta }, $set: { [updatedAtField]: new Date() } },
-		{ returnDocument: "before" }
+		{ returnDocument: "before" },
 	);
 	if (!before) return null;
 	return {
