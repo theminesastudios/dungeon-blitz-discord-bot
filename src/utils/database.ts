@@ -4,6 +4,7 @@ import {
 	getSponsorMatch,
 	getContributorMatch,
 } from "./githubSponsors.js";
+import { getDirectSponsorMatch } from "./githubSponsorDirect.js";
 
 /**
  * Shared database instance for the application.
@@ -82,6 +83,9 @@ export async function updateDiscordMetadata(
 	if (githubUsername) {
 		try {
 			sponsorMatch = await getSponsorMatch(githubUsername);
+			if (!sponsorMatch.isSponsor) {
+				sponsorMatch = await getDirectSponsorMatch(githubUsername);
+			}
 		} catch (error) {
 			console.error("[updateDiscordMetadata] Sponsor check failed:", error);
 		}
