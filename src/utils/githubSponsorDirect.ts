@@ -5,6 +5,40 @@ function normalizeLogin(login: string) {
 	return login.trim().toLowerCase();
 }
 
+const MANUAL_SPONSOR_OVERRIDES = new Set(
+	[
+		"Falcon09092004",
+		"slorex200-ai",
+		"ejmg0607-collab",
+		"elmangomero",
+		"albert190101-hue",
+		"jaomyios",
+		"btuserglobal",
+		"rogueszou",
+		"axelnassi",
+		"joxzael",
+		"sapha59-ai",
+		"monderucdere",
+		"renGoku-wq",
+		"lawly14",
+		"kebap999",
+		"darkneesglow",
+		"neodevils",
+		"butimar408",
+		"nillion0",
+		"ewaai21",
+		"etyboo",
+		"nevastuica8",
+		"mecnunnemo-pixel",
+		"andrepda51-wq",
+		"tw1xxye",
+		"prince-159",
+		"hitkill600",
+		"y3olo",
+		"Emkata-rgb",
+	].map(normalizeLogin)
+);
+
 function getSponsorTargets() {
 	const raw = process.env.GITHUB_SPONSOR_TARGETS?.trim();
 	if (!raw) return DEFAULT_TARGETS;
@@ -86,8 +120,17 @@ async function isAccountSponsoringTarget(
 
 export async function getDirectSponsorMatch(githubUsername: string) {
 	const normalizedUsername = normalizeLogin(githubUsername);
+	const targets = getSponsorTargets();
 
-	for (const targetLogin of getSponsorTargets()) {
+	if (MANUAL_SPONSOR_OVERRIDES.has(normalizedUsername)) {
+		const matchedTarget = targets[0] ?? DEFAULT_TARGETS[0];
+		console.info(
+			`[githubSponsorDirect] Matched manual sponsor override "${normalizedUsername}" on "${matchedTarget}".`
+		);
+		return { isSponsor: true, matchedTarget };
+	}
+
+	for (const targetLogin of targets) {
 		try {
 			const isSponsor = await isAccountSponsoringTarget(
 				normalizedUsername,
