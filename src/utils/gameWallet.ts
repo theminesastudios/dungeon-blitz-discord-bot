@@ -47,6 +47,7 @@ export type GameWalletSummary = {
 	dragonOre: number;
 	silverSigils: number;
 	royalSigils: number;
+	updatedAtMs: number;
 };
 
 export type PlayerSearchResult = {
@@ -94,7 +95,36 @@ function toSummary(wallet: RawWallet, source: WalletSource): GameWalletSummary {
 		dragonOre: normalizeBalance(wallet.do ?? wallet.dragonOre),
 		silverSigils: normalizeBalance(wallet.ss ?? wallet.SilverSigils),
 		royalSigils: normalizeBalance(wallet.rs ?? wallet.RoyalSigils),
+		updatedAtMs: toTimestampMs(wallet.u ?? wallet.updatedAt),
 	};
+}
+
+/**
+ * Portraits are published by the game server at /portraits/<character>.png once the player has
+ * been in-game with a patched client. Discord's image proxy caches by URL, so the wallet's
+ * updatedAt doubles as a cache buster.
+ */
+export function buildPortraitUrl(
+	wallet: Pick<GameWalletSummary, "characterName" | "updatedAtMs"> | null
+): string | null {
+	const base = String(process.env.GAME_SERVER_BASE_URL ?? "")
+		.trim()
+		.replace(/\/+$/, "");
+	const key = String(wallet?.characterName ?? "")
+		.trim()
+		.toLowerCase();
+	if (!base || !/^https?:\/\//i.test(base) || !/^[a-z0-9_-]+$/.test(key)) return null;
+	return `${base}/portraits/${key}.png?v=${Math.floor((wallet?.updatedAtMs ?? 0) / 1000)}`;
+}
+
+// "Latest character" needs a real ordering, and the two wallet shapes spell the field differently.
+function toTimestampMs(value: unknown): number {
+	if (value instanceof Date) {
+		const ms = value.getTime();
+		return Number.isFinite(ms) ? ms : 0;
+	}
+	const ms = typeof value === "number" ? value : Date.parse(String(value ?? ""));
+	return Number.isFinite(ms) ? ms : 0;
 }
 
 async function getClient(): Promise<MongoClient> {

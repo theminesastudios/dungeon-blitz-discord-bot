@@ -19,6 +19,7 @@ import type { APIButtonComponent } from "discord-api-types/v10";
 import { getSponsorDonationInfo } from "../src/utils/githubSponsors.js";
 import {
   adjustMammothIdols,
+  buildPortraitUrl,
   getPlayerProfile,
   searchGameWallets,
   searchPlayers,
@@ -36,6 +37,7 @@ export const mini = new MiniInteraction();
 function isAdministrator(interaction: CommandInteraction) {
   return (BigInt(interaction.member?.permissions ?? "0") & 8n) === 8n;
 }
+
 
 const INITIAL_PASSWORD_BUTTON_ID = "account:set-initial-password";
 const INITIAL_PASSWORD_MODAL_ID = "account:initial-password-modal";
@@ -507,35 +509,48 @@ mini.useCommand({
     .setIntegrationTypes([IntegrationType.GuildInstall])
     .setName("profile")
     .setDescription(
-      "Show a player's linked profile and current game wallet data",
+      "Show your linked profile, or look up another player's (admin only)",
     )
-    .setDefaultMemberPermissions(8n)
     .setDMPermission(false)
     .addStringOption((option) =>
       option
         .setName("player")
         .setDescription(
-          "Search GitHub, Discord, character name, or game user ID",
+          "Admin only. Search GitHub, Discord, character name, or game user ID",
         )
         .setAutocomplete(true)
-        .setRequired(true),
+        .setRequired(false),
     ),
   handler: async (interaction: CommandInteraction) => {
-    if (!isAdministrator(interaction)) {
+    // Anyone may look up themselves; only admins may name someone else.
+    const requestedPlayer = interaction.options.getString("player", false);
+    if (requestedPlayer && !isAdministrator(interaction)) {
       return interaction.reply({
-        content: "Administrator permission is required.",
+        content:
+          "Administrator permission is required to look up another player.",
         flags: 64,
       });
     }
+
     interaction.deferReply({ flags: 64 });
-    const selector = interaction.options.getString("player", true)!;
+    const selector =
+      requestedPlayer ?? `profile:${interactionDiscordId(interaction)}`;
 
     try {
       const profile = await getPlayerProfile(selector);
       if (!profile)
         return interaction.editReply({
-          content: "Player profile was not found.",
+          content: requestedPlayer
+            ? "Player profile was not found."
+            : "Your Discord account is not linked to a game account yet.",
         });
+      // Most recently touched wallet is the account the player is actually using.
+      const wallets = [...profile.wallets].sort(
+        (left, right) => right.updatedAtMs - left.updatedAtMs,
+      );
+      const latest = wallets[0] ?? null;
+      const portrait = buildPortraitUrl(latest);
+
       const fields: Array<{ name: string; value: string; inline?: boolean }> = [
         {
           name: "GitHub",
@@ -569,7 +584,7 @@ mini.useCommand({
         },
       ];
 
-      for (const wallet of profile.wallets.slice(0, 5)) {
+      for (const wallet of wallets.slice(0, 5)) {
         fields.push({
           name: `${wallet.characterName} [${wallet.gameUserId}]`,
           value: [
@@ -581,7 +596,7 @@ mini.useCommand({
           ].join("\n"),
         });
       }
-      if (profile.wallets.length === 0) {
+      if (wallets.length === 0) {
         fields.push({
           name: "Game wallets",
           value: "No matching wallet document exists yet.",
@@ -593,9 +608,10 @@ mini.useCommand({
           {
             color: 0x5865f2,
             title:
+              latest?.characterName ??
               profile.githubUsername ??
-              profile.wallets[0]?.characterName ??
               "Player profile",
+            ...(portrait ? { image: { url: portrait } } : {}),
             fields,
           },
         ],
