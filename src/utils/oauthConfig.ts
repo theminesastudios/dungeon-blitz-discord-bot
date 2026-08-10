@@ -115,4 +115,22 @@ function createDiscordOAuthConfig() {
 	};
 }
 
-export const discordOAuthConfig = createDiscordOAuthConfig();
+/**
+ * MiniInteraction 0.3.x still resolves parts of its OAuth configuration from
+ * process.env. Synchronize the normalized values so the authorization page and
+ * token exchange always use the same client ID, secret, and redirect URI.
+ */
+export function applyDiscordOAuthConfigToEnvironment(
+	config: ReturnType<typeof createDiscordOAuthConfig>,
+	env: NodeJS.ProcessEnv = process.env
+) {
+	env.DISCORD_APPLICATION_ID = config.appId;
+	env.DISCORD_CLIENT_ID = config.appId;
+	env.DISCORD_CLIENT_SECRET = config.appSecret;
+	env.DISCORD_REDIRECT_URI = config.redirectUri;
+	return config;
+}
+
+export const discordOAuthConfig = applyDiscordOAuthConfigToEnvironment(
+	createDiscordOAuthConfig()
+);

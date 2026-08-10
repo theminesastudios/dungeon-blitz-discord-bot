@@ -168,7 +168,14 @@ const linkedRolesHandler = mini.discordOAuthCallback({
 			scope: tokens.scope,
 		});
 
-		await updateDiscordMetadata(user.id, tokens.access_token);
+		try {
+			await updateDiscordMetadata(user.id, tokens.access_token);
+		} catch (error) {
+			console.error(
+				"[discord-oauth-callback] OAuth tokens were stored, but linked-role metadata refresh failed:",
+				error
+			);
+		}
 	},
 });
 

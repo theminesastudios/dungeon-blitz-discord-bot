@@ -424,7 +424,6 @@ mini.useCommand({
   data: new CommandBuilder()
     .setName("idols")
     .setDescription("Manually add or subtract a player's Mammoth Idols")
-    .setDefaultMemberPermissions(8n)
     .setDMPermission(false)
     .addStringOption((option) =>
       option
@@ -451,12 +450,13 @@ mini.useCommand({
         .setRequired(true),
     ),
   handler: async (interaction: CommandInteraction) => {
-    if (!isAdministrator(interaction)) {
+  /*  if (!isAdministrator(interaction)) {
       return interaction.reply({
         content: "Administrator permission is required.",
         flags: 64,
       });
     }
+    */
 
     const walletId = interaction.options.getString("player", true)!;
     const operation = interaction.options.getString("operation", true);
