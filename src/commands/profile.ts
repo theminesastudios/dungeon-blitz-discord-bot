@@ -98,8 +98,8 @@ export const profileCommand = {
               name: "Sponsor credit",
               value:
                 credit.balanceCents === null
-                  ? `Sponsored: Unknown • Used: ${formatUsd(credit.usedCents)} • Balance: Unknown`
-                  : `Sponsored: ${formatUsd(credit.sponsoredCents ?? 0)} • Used: ${formatUsd(credit.usedCents)} • Balance: **${formatUsd(credit.balanceCents)}**`,
+                  ? `**Balance left:** Unknown • **Used:** ${formatUsd(credit.usedCents)}`
+                  : `**Balance left:** ${formatUsd(credit.balanceCents)} • **Used:** ${formatUsd(credit.usedCents)} • Sponsored: ${formatUsd(credit.sponsoredCents ?? 0)}`,
             });
           }
         } catch (error) {

@@ -83,59 +83,7 @@ function buildShopContainer(credit: SponsorCredit): ContainerBuilder {
   );
   container.addComponent(
     new TextDisplayBuilder().setContent(
-      "-# Tap **Buy** to spend your donation credit • `/packs balance` shows your sponsored total, usage, and purchases.",
-    ),
-  );
-  return container;
-}
-
-function buildBalanceContainer(credit: SponsorCredit): ContainerBuilder {
-  const recentPurchases = [...credit.purchases]
-    .sort((left, right) => right.purchasedAtMs - left.purchasedAtMs)
-    .slice(0, 5);
-
-  const container = new ContainerBuilder().setAccentColor(0xf1c40f);
-  container.addComponent(
-    new TextDisplayBuilder().setContent(
-      `## 💰 Your donation credit\nLinked GitHub: **${credit.githubUsername}**`,
-    ),
-  );
-  container.addComponent(
-    new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small),
-  );
-  container.addComponent(
-    new TextDisplayBuilder().setContent(
-      [
-        `**Sponsored:** ${credit.sponsoredCents === null ? "Unknown" : formatUsd(credit.sponsoredCents)}`,
-        `**Used on packs:** ${formatUsd(credit.usedCents)}`,
-        `**Balance:** ${credit.balanceCents === null ? "Unknown" : formatUsd(credit.balanceCents)}`,
-      ].join("\n"),
-    ),
-  );
-
-  if (recentPurchases.length > 0) {
-    container.addComponent(
-      new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small),
-    );
-    container.addComponent(
-      new TextDisplayBuilder().setContent(
-        [
-          "**Recent purchases**",
-          ...recentPurchases.map(
-            (purchase) =>
-              `- ${purchase.packName} — ${formatUsd(purchase.priceCents)} (<t:${Math.floor(purchase.purchasedAtMs / 1000)}:R>)`,
-          ),
-        ].join("\n"),
-      ),
-    );
-  }
-
-  container.addComponent(
-    new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small),
-  );
-  container.addComponent(
-    new TextDisplayBuilder().setContent(
-      "-# Balance equals what you have donated minus what you have spent on packs.",
+      "-# Tap **Buy** to spend your donation credit • `/profile` shows your balance and what you have used.",
     ),
   );
   return container;
@@ -312,79 +260,14 @@ async function handleShop(
   }
 }
 
-async function handleBalance(interaction: CommandInteraction) {
-  const discordId = interactionDiscordId(interaction);
-  await interaction.deferReply({ flags: InteractionFlags.Ephemeral });
-  try {
-    const credit = await getSponsorCredit(discordId);
-    if (!credit) {
-      return interaction.editReply({
-        content:
-          "Your Discord account has no linked GitHub account, so donation credit cannot be checked. Link GitHub through the account linking flow first.",
-      });
-    }
-    return interaction.editReply({
-      components: [buildBalanceContainer(credit)],
-      flags: CONTAINER_FLAGS,
-    });
-  } catch (error) {
-    console.error("[packs] Balance failed:", error);
-    return interaction.editReply({
-      content:
-        "Your donation credit could not be loaded right now. Please try again later.",
-    });
-  }
-}
-
 export const packsCommand = {
   data: new CommandBuilder()
     .setContexts([CommandContext.Guild])
     .setIntegrationTypes([IntegrationType.GuildInstall])
     .setName("packs")
     .setDescription("Browse and buy sponsor packs with your donation credit")
-    .setDMPermission(false)
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("shop")
-        .setDescription("View every pack and your donation credit"),
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("buy")
-        .setDescription("Buy a pack with your donation credit")
-        .addStringOption((option) =>
-          option
-            .setName("pack")
-            .setDescription("The pack to buy")
-            .addChoices(
-              ...SPONSOR_PACKS.map((pack) => ({
-                name: `${pack.name} — ${packPriceLabel(pack)}`,
-                value: pack.id,
-              })),
-            )
-            .setRequired(true),
-        ),
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("balance")
-        .setDescription(
-          "Show how much you have sponsored, spent, and have left to spend",
-        ),
-    ),
-  handler: async (interaction: CommandInteraction) => {
-    const subcommand = interaction.options.getSubcommand(true);
-    if (subcommand === "buy") {
-      return handleBuy(
-        interaction,
-        interaction.options.getString("pack", true)!,
-      );
-    }
-    if (subcommand === "balance") {
-      return handleBalance(interaction);
-    }
-    return handleShop(interaction);
-  },
+    .setDMPermission(false),
+  handler: (interaction: CommandInteraction) => handleShop(interaction),
 };
 
 export const packsBuyComponent = {
