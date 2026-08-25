@@ -54,6 +54,15 @@ type RawLinkedProfile = Document & {
 	isSponsor?: boolean;
 	sponsorTarget?: string | null;
 	isContributor?: boolean;
+	packUsedCents?: number;
+	packPurchases?: PackPurchase[];
+};
+
+export type PackPurchase = {
+	packId: string;
+	packName: string;
+	priceCents: number;
+	purchasedAtMs: number;
 };
 
 type ParsedSelector = {
@@ -475,6 +484,85 @@ export async function getPlayerProfile(selector: string): Promise<PlayerProfile 
 		isContributor: typeof linkedProfile?.isContributor === "boolean" ? linkedProfile.isContributor : null,
 		wallets,
 	};
+}
+
+export type PackLedger = {
+	usedCents: number;
+	purchases: PackPurchase[];
+};
+
+function toPackPurchase(value: unknown): PackPurchase | null {
+	if (!value || typeof value !== "object") return null;
+	const record = value as Record<string, unknown>;
+	if (typeof record.packId !== "string" || typeof record.packName !== "string") return null;
+	const priceCents = Number(record.priceCents);
+	const purchasedAtMs = Number(record.purchasedAtMs);
+	if (!Number.isFinite(priceCents) || priceCents <= 0) return null;
+	return {
+		packId: record.packId,
+		packName: record.packName,
+		priceCents: Math.round(priceCents),
+		purchasedAtMs: Number.isFinite(purchasedAtMs) ? purchasedAtMs : 0,
+	};
+}
+
+/**
+ * Reads how much donation credit a player has already spent on packs.
+ * The ledger lives on the linked profile document so it is keyed by Discord ID.
+ */
+export async function getPackLedger(discordId: string): Promise<PackLedger> {
+	const normalized = discordId.trim();
+	if (!normalized) return { usedCents: 0, purchases: [] };
+	const profiles = await getLinkedProfileCollection();
+	const profile = await profiles.findOne(
+		{ $or: [{ _id: normalized }, { userId: normalized }] } as Filter<RawLinkedProfile>,
+		{ projection: { packUsedCents: 1, packPurchases: 1 } },
+	);
+	if (!profile) return { usedCents: 0, purchases: [] };
+	const usedCents = normalizeBalance(profile.packUsedCents);
+	const purchases = (Array.isArray(profile.packPurchases) ? profile.packPurchases : [])
+		.map(toPackPurchase)
+		.filter((purchase): purchase is PackPurchase => purchase !== null);
+	return { usedCents, purchases };
+}
+
+/**
+ * Atomically records a pack purchase. The caller passes the highest used-cents value that is
+ * still affordable (balance - price); if another purchase raced ahead, the filter no longer
+ * matches and nothing is written, so credit can never go negative.
+ */
+export async function recordPackPurchase(
+	discordId: string,
+	purchase: PackPurchase,
+	maxUsedCents: number,
+): Promise<boolean> {
+	if (!Number.isSafeInteger(purchase.priceCents) || purchase.priceCents <= 0) {
+		throw new Error("Pack price must be a positive whole number of cents");
+	}
+	if (!Number.isSafeInteger(maxUsedCents) || maxUsedCents < 0) {
+		return false;
+	}
+	const normalized = discordId.trim();
+	if (!normalized) return false;
+	const profiles = await getLinkedProfileCollection();
+	const updated = await profiles.findOneAndUpdate(
+		{
+			$and: [
+				{ $or: [{ _id: normalized }, { userId: normalized }] },
+				// A profile without a ledger has spent nothing, which is always affordable here.
+				{ $or: [
+					{ packUsedCents: { $lte: maxUsedCents } },
+					{ packUsedCents: { $exists: false } },
+				] },
+			],
+		} as Filter<RawLinkedProfile>,
+		{
+			$inc: { packUsedCents: purchase.priceCents },
+			// MongoDB's $push typing is overly strict on Document intersections.
+			$push: { packPurchases: purchase },
+		} as never,
+	);
+	return updated !== null;
 }
 
 export async function adjustMammothIdols(

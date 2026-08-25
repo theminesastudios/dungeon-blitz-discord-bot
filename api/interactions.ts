@@ -31,6 +31,12 @@ import {
 } from "../src/utils/gameAccount.js";
 import { createAccountOAuthUrl } from "../src/utils/accountOAuth.js";
 import { broadcastGameMaintenance } from "../src/utils/gameMaintenance.js";
+import {
+  SPONSOR_PACKS,
+  formatUsd,
+  getSponsorCredit,
+  purchaseSponsorPack,
+} from "../src/utils/sponsorPacks.js";
 
 export const mini = new MiniInteraction();
 
@@ -584,6 +590,23 @@ mini.useCommand({
         },
       ];
 
+      if (profile.discordUserId && profile.isSponsor) {
+        try {
+          const credit = await getSponsorCredit(profile.discordUserId);
+          if (credit) {
+            fields.push({
+              name: "Sponsor credit",
+              value:
+                credit.balanceCents === null
+                  ? `Sponsored: Unknown • Used: ${formatUsd(credit.usedCents)} • Balance: Unknown`
+                  : `Sponsored: ${formatUsd(credit.sponsoredCents ?? 0)} • Used: ${formatUsd(credit.usedCents)} • Balance: **${formatUsd(credit.balanceCents)}**`,
+            });
+          }
+        } catch (error) {
+          console.warn("[profile] Sponsor credit load failed:", error);
+        }
+      }
+
       for (const wallet of wallets.slice(0, 5)) {
         fields.push({
           name: `${wallet.characterName} [${wallet.gameUserId}]`,
@@ -620,6 +643,208 @@ mini.useCommand({
       console.error("[profile] Failed to load player profile:", error);
       return interaction.editReply({
         content: "The player profile could not be loaded.",
+      });
+    }
+  },
+});
+
+mini.useCommand({
+  data: new CommandBuilder()
+    .setContexts([CommandContext.Guild])
+    .setIntegrationTypes([IntegrationType.GuildInstall])
+    .setName("packs")
+    .setDescription("Browse and buy sponsor packs with your donation credit")
+    .setDMPermission(false)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("shop")
+        .setDescription("View every pack and your donation credit"),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("buy")
+        .setDescription("Buy a pack with your donation credit")
+        .addStringOption((option) =>
+          option
+            .setName("pack")
+            .setDescription("The pack to buy")
+            .addChoices(
+              ...SPONSOR_PACKS.map((pack) => ({
+                name: `${pack.name} — ${formatUsd(pack.priceCents)}`,
+                value: pack.id,
+              })),
+            )
+            .setRequired(true),
+        ),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("balance")
+        .setDescription(
+          "Show how much you have sponsored, spent, and have left to spend",
+        ),
+    ),
+  handler: async (interaction: CommandInteraction) => {
+    const discordId = interactionDiscordId(interaction);
+    if (!discordId) {
+      return interaction.reply({
+        content: "Your Discord account could not be verified.",
+        flags: 64,
+      });
+    }
+    const subcommand = interaction.options.getSubcommand(true);
+    interaction.deferReply({ flags: 64 });
+
+    try {
+      if (subcommand === "buy") {
+        const packId = interaction.options.getString("pack", true)!;
+        const result = await purchaseSponsorPack(discordId, packId);
+        switch (result.status) {
+          case "no-profile":
+            return interaction.editReply({
+              content:
+                "Your Discord account has no linked GitHub account, so donation credit cannot be checked.",
+            });
+          case "not-sponsor":
+            return interaction.editReply({
+              content:
+                "Only GitHub sponsors have donation credit to spend. Sponsor The Minesa Studios on GitHub Sponsors first!",
+            });
+          case "credit-unknown":
+            return interaction.editReply({
+              content:
+                "Your donation total could not be verified with GitHub right now. Please try again later.",
+            });
+          case "insufficient":
+            return interaction.editReply({
+              content: `You need ${formatUsd(result.pack.priceCents)} of donation credit for the **${result.pack.name}**, but your remaining balance is ${formatUsd(result.balanceCents)}.`,
+            });
+          case "conflict":
+            return interaction.editReply({
+              content:
+                "Your balance changed while processing the purchase. Please try again.",
+            });
+        }
+
+        const { pack, credit } = result;
+        return interaction.editReply({
+          embeds: [
+            {
+              color: pack.color,
+              title: `${pack.emoji} ${pack.name} purchased!`,
+              fields: [
+                { name: "Contents", value: pack.items.join("\n") },
+                {
+                  name: "Price",
+                  value: formatUsd(pack.priceCents),
+                  inline: true,
+                },
+                {
+                  name: "Remaining balance",
+                  value: formatUsd(credit.balanceCents ?? 0),
+                  inline: true,
+                },
+                {
+                  name: "Sponsored / Used",
+                  value: `${formatUsd(credit.sponsoredCents ?? 0)} / ${formatUsd(credit.usedCents)}`,
+                  inline: true,
+                },
+              ],
+              footer: {
+                text: "Pack contents are delivered to your game account by the team.",
+              },
+            },
+          ],
+        });
+      }
+
+      const credit = await getSponsorCredit(discordId);
+      if (!credit) {
+        return interaction.editReply({
+          content:
+            "Your Discord account has no linked GitHub account, so donation credit cannot be checked. Link GitHub through the account linking flow first.",
+        });
+      }
+
+      if (subcommand === "balance") {
+        const recentPurchases = [...credit.purchases]
+          .sort((left, right) => right.purchasedAtMs - left.purchasedAtMs)
+          .slice(0, 5);
+        return interaction.editReply({
+          embeds: [
+            {
+              color: 0xf1c40f,
+              title: "Your donation credit",
+              description: `Linked GitHub: **${credit.githubUsername}**`,
+              fields: [
+                {
+                  name: "Sponsored",
+                  value:
+                    credit.sponsoredCents === null
+                      ? "Unknown"
+                      : formatUsd(credit.sponsoredCents),
+                  inline: true,
+                },
+                {
+                  name: "Used on packs",
+                  value: formatUsd(credit.usedCents),
+                  inline: true,
+                },
+                {
+                  name: "Balance",
+                  value:
+                    credit.balanceCents === null
+                      ? "Unknown"
+                      : formatUsd(credit.balanceCents),
+                  inline: true,
+                },
+                ...(recentPurchases.length > 0
+                  ? [
+                      {
+                        name: "Recent purchases",
+                        value: recentPurchases
+                          .map(
+                            (purchase) =>
+                              `• ${purchase.packName} — ${formatUsd(purchase.priceCents)} (<t:${Math.floor(purchase.purchasedAtMs / 1000)}:R>)`,
+                          )
+                          .join("\n"),
+                      },
+                    ]
+                  : []),
+              ],
+              footer: {
+                text: "Balance equals what you have donated minus what you have spent on packs.",
+              },
+            },
+          ],
+        });
+      }
+
+      return interaction.editReply({
+        embeds: [
+          {
+            color: 0xf1c40f,
+            title: " Sponsor Pack Shop ",
+            description: [
+              credit.isSponsor
+                ? `Your balance: **${credit.balanceCents === null ? "Unknown" : formatUsd(credit.balanceCents)}** (sponsored ${credit.sponsoredCents === null ? "unknown" : formatUsd(credit.sponsoredCents)}, used ${formatUsd(credit.usedCents)}).`
+                : "You are not a GitHub sponsor yet — sponsor The Minesa Studios to earn credit to spend here.",
+              "Every pack costs donation credit: sponsor more to afford bigger packs.",
+            ].join("\n"),
+            fields: SPONSOR_PACKS.map((pack) => ({
+              name: `${pack.emoji} ${pack.name} — ${formatUsd(pack.priceCents)}`,
+              value: pack.items.join("\n"),
+            })),
+            footer: {
+              text: "Use /packs buy to spend your credit and /packs balance for details.",
+            },
+          },
+        ],
+      });
+    } catch (error) {
+      console.error("[packs] Command failed:", error);
+      return interaction.editReply({
+        content: "The pack shop could not be loaded right now. Please try again later.",
       });
     }
   },
