@@ -1,888 +1,305 @@
 import {
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  CommandBuilder,
-  CommandContext,
-  IntegrationType,
-  LabelBuilder,
+  AutocompleteContext,
+  createCommandInteraction,
+  DiscordRestClient,
   MiniInteraction,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-  type ButtonInteraction,
-  type CommandInteraction,
-  type ModalSubmitInteraction,
+  MessageFlags,
+  verifyAndParseInteraction,
 } from "@minesa-org/mini-interaction";
-import { verifyKey } from "discord-interactions";
-import type { APIButtonComponent } from "discord-api-types/v10";
-import { getSponsorDonationInfo } from "../src/utils/githubSponsors.js";
+import type {
+  CommandBuilder,
+  CommandInteraction,
+  MessageComponentInteraction,
+  ModalSubmitInteraction,
+} from "@minesa-org/mini-interaction";
+import { createMessageComponentInteraction } from "@minesa-org/mini-interaction/dist/utils/MessageComponentInteraction.js";
+import { createModalSubmitInteraction } from "@minesa-org/mini-interaction/dist/utils/ModalSubmitInteraction.js";
 import {
-  adjustMammothIdols,
-  buildPortraitUrl,
-  getPlayerProfile,
-  searchGameWallets,
-  searchPlayers,
-} from "../src/utils/gameWallet.js";
+  InteractionResponseType,
+  InteractionType,
+  type APIChatInputApplicationCommandInteraction,
+  type APIInteraction,
+  type APIInteractionResponse,
+} from "discord-api-types/v10";
+import { waitUntil } from "@vercel/functions";
+import { maintenanceCommand } from "../src/commands/maintenance.js";
 import {
-  getGameAccountByDiscordId,
-  GameAccountConflictError,
-  updateGameAccountPassword,
-} from "../src/utils/gameAccount.js";
-import { createAccountOAuthUrl } from "../src/utils/accountOAuth.js";
-import { broadcastGameMaintenance } from "../src/utils/gameMaintenance.js";
+  accountCommand,
+  initialPasswordButton,
+  initialPasswordModal,
+  resetPasswordModal,
+} from "../src/commands/account.js";
+import { sponsorInfoCommand } from "../src/commands/sponsor-info.js";
+import { idolsCommand, handleIdolsAutocomplete } from "../src/commands/idols.js";
 import {
-  SPONSOR_PACKS,
-  formatUsd,
-  getSponsorCredit,
-  purchaseSponsorPack,
-} from "../src/utils/sponsorPacks.js";
+  profileCommand,
+  handleProfileAutocomplete,
+} from "../src/commands/profile.js";
+import {
+  packsCommand,
+  packsBuyComponent,
+  packsShopComponent,
+} from "../src/commands/packs.js";
 
+const applicationId = process.env.DISCORD_APPLICATION_ID?.trim();
+const botToken = process.env.DISCORD_BOT_TOKEN?.trim();
+if (!applicationId || !botToken) {
+  throw new Error(
+    "[interactions] DISCORD_APPLICATION_ID and DISCORD_BOT_TOKEN are required.",
+  );
+}
+
+export const rest = new DiscordRestClient({ token: botToken, applicationId });
+
+/**
+ * 0.9.0 MiniInteraction instance. The interaction dispatcher below handles
+ * commands/components/modals directly (the compat file loader has no
+ * autocomplete support), while this instance provides the OAuth page helpers
+ * used by the other /api routes.
+ */
 export const mini = new MiniInteraction();
 
-function isAdministrator(interaction: CommandInteraction) {
-  return (BigInt(interaction.member?.permissions ?? "0") & 8n) === 8n;
-}
+type CommandHandler = (interaction: CommandInteraction) => Promise<unknown>;
+type ComponentHandler = (
+  interaction: MessageComponentInteraction,
+) => Promise<unknown>;
+type ModalHandler = (interaction: ModalSubmitInteraction) => Promise<unknown>;
+type AutocompleteHandler = (autocomplete: AutocompleteContext) => Promise<void>;
 
+type CommandModule = { data: CommandBuilder; handler: CommandHandler };
+type ComponentModule = {
+  customId: string;
+  handler: ComponentHandler;
+};
+type ModalModule = { customId: string; handler: ModalHandler };
+type AutocompleteModule = { command: string; handler: AutocompleteHandler };
 
-const INITIAL_PASSWORD_BUTTON_ID = "account:set-initial-password";
-const INITIAL_PASSWORD_MODAL_ID = "account:initial-password-modal";
-const RESET_PASSWORD_MODAL_ID = "account:reset-password-modal";
-const PASSWORD_INPUT_ID = "account:password";
-const PASSWORD_CONFIRM_INPUT_ID = "account:password-confirm";
+const commandModules: CommandModule[] = [
+  maintenanceCommand,
+  accountCommand,
+  sponsorInfoCommand,
+  idolsCommand,
+  profileCommand,
+  packsCommand,
+];
 
-function interactionDiscordId(interaction: {
-  member?: { user?: { id?: string } } | null;
-  user?: { id?: string } | null;
-}): string {
-  return String(
-    interaction.member?.user?.id ?? interaction.user?.id ?? "",
-  ).trim();
-}
+const componentModules: ComponentModule[] = [
+  initialPasswordButton,
+  packsBuyComponent,
+  packsShopComponent,
+];
 
-function passwordModal(customId: string, title: string) {
-  return new ModalBuilder()
-    .setCustomId(customId)
-    .setTitle(title)
-    .addComponents(
-      new LabelBuilder()
-        .setLabel("New password")
-        .setDescription(
-          "A 6-128 character password for signing in to Dungeon Blitz.",
-        )
-        .setComponent(
-          new TextInputBuilder()
-            .setCustomId(PASSWORD_INPUT_ID)
-            .setStyle(TextInputStyle.Short)
-            .setMinLength(6)
-            .setMaxLength(128)
-            .setRequired(true),
-        ),
-      new LabelBuilder()
-        .setLabel("Confirm password")
-        .setComponent(
-          new TextInputBuilder()
-            .setCustomId(PASSWORD_CONFIRM_INPUT_ID)
-            .setStyle(TextInputStyle.Short)
-            .setMinLength(6)
-            .setMaxLength(128)
-            .setRequired(true),
-        ),
-    );
-}
+const modalModules: ModalModule[] = [
+  initialPasswordModal,
+  resetPasswordModal,
+];
 
-async function handlePasswordModal(
-  interaction: ModalSubmitInteraction,
-  initialOnly: boolean,
-) {
-  const discordId = interactionDiscordId(interaction);
-  if (!discordId) {
-    return interaction.reply({
-      content: "Your Discord account could not be verified.",
-      flags: 64,
+const autocompleteModules: AutocompleteModule[] = [
+  { command: "idols", handler: handleIdolsAutocomplete },
+  { command: "profile", handler: handleProfileAutocomplete },
+];
+
+/** Command payloads for global registration (see scripts/register.ts). */
+export const commandData = commandModules.map((command) => command.data.toJSON());
+
+const commandHandlers = new Map<string, CommandHandler>(
+  commandData.map((payload, index) => [payload.name, commandModules[index].handler]),
+);
+const exactComponentHandlers = new Map<string, ComponentHandler>();
+const prefixComponentHandlers: Array<{
+  prefix: string;
+  handler: ComponentHandler;
+}> = [];
+for (const component of componentModules) {
+  if (component.customId.endsWith("*")) {
+    prefixComponentHandlers.push({
+      prefix: component.customId.slice(0, -1),
+      handler: component.handler,
     });
-  }
-  const password = interaction.getTextFieldValue(PASSWORD_INPUT_ID) ?? "";
-  const confirmation =
-    interaction.getTextFieldValue(PASSWORD_CONFIRM_INPUT_ID) ?? "";
-  if (password !== confirmation) {
-    return interaction.reply({
-      content: "The passwords do not match.",
-      flags: 64,
-    });
-  }
-
-  interaction.deferReply({ flags: 64 });
-  try {
-    const result = await updateGameAccountPassword(discordId, password, {
-      initialOnly,
-    });
-    if (result.status === "not-found") {
-      return interaction.editReply({
-        content:
-          "Complete the Discord OAuth link from `/create-account` first.",
-      });
-    }
-    if (result.status === "already-configured") {
-      return interaction.editReply({
-        content:
-          "Your initial password is already set. Use `/account reset-password` to change it.",
-      });
-    }
-    return interaction.editReply({
-      content: initialOnly
-        ? `Your initial password has been set. You can sign in to the game with **${result.account.email}**.`
-        : `Your password has been reset. You can sign in to the game with **${result.account.email}**.`,
-    });
-  } catch (error) {
-    if (error instanceof GameAccountConflictError) {
-      return interaction.editReply({ content: error.message });
-    }
-    console.error("[account] Password update failed:", error);
-    return interaction.editReply({
-      content:
-        "Your password could not be updated right now. Please try again later.",
-    });
+  } else {
+    exactComponentHandlers.set(component.customId, component.handler);
   }
 }
+const modalHandlers = new Map<string, ModalHandler>(
+  modalModules.map((modal) => [modal.customId, modal.handler]),
+);
+const autocompleteHandlers = new Map<string, AutocompleteHandler>(
+  autocompleteModules.map((module) => [module.command, module.handler]),
+);
 
-function handleCreateAccountCommand(interaction: CommandInteraction) {
-  const discordId = interactionDiscordId(interaction);
-  if (!discordId) {
-    return interaction.reply({
-      content: "Your Discord account could not be verified.",
-      flags: 64,
-    });
+function matchComponentHandler(customId: string): ComponentHandler | undefined {
+  const exact = exactComponentHandlers.get(customId);
+  if (exact) return exact;
+  for (const entry of prefixComponentHandlers) {
+    if (customId.startsWith(entry.prefix)) return entry.handler;
   }
-  const oauthUrl = createAccountOAuthUrl(discordId);
-  const row = new ActionRowBuilder<APIButtonComponent>().addComponents(
-    new ButtonBuilder()
-      .setStyle(ButtonStyle.Link)
-      .setLabel("Verify with Discord")
-      .setURL(oauthUrl),
-    new ButtonBuilder()
-      .setStyle(ButtonStyle.Primary)
-      .setLabel("Set initial password")
-      .setCustomId(INITIAL_PASSWORD_BUTTON_ID),
+  return undefined;
+}
+
+function isDeferredResponse(response: APIInteractionResponse) {
+  return (
+    response.type === InteractionResponseType.DeferredChannelMessageWithSource ||
+    response.type === InteractionResponseType.DeferredMessageUpdate
   );
-  return interaction.reply({
-    content: [
-      "Complete Discord OAuth verification to create your Dungeon Blitz account.",
-      "The account will use your **verified Discord email address**.",
-      "After OAuth is complete, return to this message and select **Set initial password**.",
-    ].join("\n"),
-    components: [row],
-    flags: 64,
-  });
 }
 
-mini.useCommand({
-  data: new CommandBuilder()
-    .setContexts([CommandContext.Guild])
-    .setIntegrationTypes([IntegrationType.GuildInstall])
-    .setName("maintenance")
-    .setDescription("Start the Dungeon Blitz maintenance warning")
-    .setDefaultMemberPermissions(8n)
-    .setDMPermission(false)
-    .addNumberOption((option) =>
-      option
-        .setName("seconds")
-        .setDescription("Seconds until maintenance starts")
-        .setMinValue(1)
-        .setMaxValue(86_400)
-        .setRequired(true),
-    ),
-  handler: async (interaction: CommandInteraction) => {
-    if (!isAdministrator(interaction)) {
-      return interaction.reply({
-        content: "Administrator permission is required.",
-        flags: 64,
-      });
-    }
-    const seconds = interaction.options.getNumber("seconds", true)!;
-    if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 86_400) {
-      return interaction.reply({
-        content: "Enter a whole number of seconds between 1 and 86,400.",
-        flags: 64,
-      });
-    }
-
-    interaction.deferReply({ flags: 64 });
-    try {
-      const result = await broadcastGameMaintenance(seconds);
-      return interaction.editReply({
-        content: `Maintenance warning started for **${seconds.toLocaleString()} seconds** and announced to **${result.recipients.toLocaleString()}** connected player${result.recipients === 1 ? "" : "s"}.`,
-      });
-    } catch (error) {
-      console.error("[maintenance] Broadcast failed:", error);
-      return interaction.editReply({
-        content: "The game server could not start the maintenance warning.",
-      });
-    }
-  },
-});
-
-mini.useCommand({
-  data: new CommandBuilder()
-    .setContexts([CommandContext.Guild])
-    .setIntegrationTypes([IntegrationType.GuildInstall])
-    .setName("account")
-    .setDescription("Manage your Dungeon Blitz account")
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("create")
-        .setDescription(
-          "Create a game account with your verified Discord email",
-        ),
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("reset-password")
-        .setDescription("Reset your Dungeon Blitz password"),
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("view")
-        .setDescription("View your linked Dungeon Blitz account"),
-    ),
-  handler: async (interaction: CommandInteraction) => {
-    const discordId = interactionDiscordId(interaction);
-    if (!discordId) {
-      return interaction.reply({
-        content: "Your Discord account could not be verified.",
-        flags: 64,
-      });
-    }
-    const subcommand = interaction.options.getSubcommand(true);
-
-    if (subcommand === "create") {
-      return handleCreateAccountCommand(interaction);
-    }
-
-    if (subcommand === "reset-password") {
-      return interaction.showModal(
-        passwordModal(RESET_PASSWORD_MODAL_ID, "Reset Dungeon Blitz password"),
-      );
-    }
-
-    interaction.deferReply({ flags: 64 });
-    try {
-      const account = await getGameAccountByDiscordId(discordId);
-      if (!account) {
-        return interaction.editReply({
-          content:
-            "No Dungeon Blitz account is linked to your Discord account. Create one with `/create-account`.",
-        });
-      }
-      return interaction.editReply({
-        embeds: [
-          {
-            color: 0x5865f2,
-            title: "Your Dungeon Blitz account",
-            fields: [
-              { name: "Email", value: account.email },
-              { name: "User ID", value: String(account.userId), inline: true },
-              {
-                name: "Password",
-                value: account.passwordConfigured
-                  ? "Set"
-                  : "Waiting for initial password",
-                inline: true,
-              },
-            ],
-          },
-        ],
-      });
-    } catch (error) {
-      console.error("[account] Account view failed:", error);
-      return interaction.editReply({
-        content:
-          "Account information could not be loaded right now. Please try again later.",
-      });
-    }
-  },
-});
-
-mini.useComponent({
-  customId: INITIAL_PASSWORD_BUTTON_ID,
-  handler: (interaction: ButtonInteraction) =>
-    interaction.showModal(
-      passwordModal(
-        INITIAL_PASSWORD_MODAL_ID,
-        "Your initial Dungeon Blitz password",
-      ),
-    ),
-});
-
-mini.useModal({
-  customId: INITIAL_PASSWORD_MODAL_ID,
-  handler: (interaction: ModalSubmitInteraction) =>
-    handlePasswordModal(interaction, true),
-});
-
-mini.useModal({
-  customId: RESET_PASSWORD_MODAL_ID,
-  handler: (interaction: ModalSubmitInteraction) =>
-    handlePasswordModal(interaction, false),
-});
-
-mini.useCommand({
-  data: new CommandBuilder()
-    .setContexts([CommandContext.Guild])
-    .setIntegrationTypes([IntegrationType.GuildInstall])
-    .setName("sponsor-info")
-    .setDescription("Show a GitHub sponsor's sponsorship information")
-    .setDefaultMemberPermissions(8n)
-    .setDMPermission(false)
-    .addStringOption((option) =>
-      option
-        .setName("github_username")
-        .setDescription("The sponsor's GitHub username")
-        .setRequired(true),
-    ),
-  handler: async (interaction: CommandInteraction) => {
-    if (!isAdministrator(interaction)) {
-      return interaction.reply({
-        content: "Administrator permission is required.",
-        flags: 64,
-      });
-    }
-    const githubUsername = interaction.options.getString(
-      "github_username",
-      true,
-    )!;
-    interaction.deferReply({ flags: 64 });
-
-    try {
-      const sponsorship = await getSponsorDonationInfo(githubUsername);
-      if (!sponsorship) {
-        return interaction.editReply({
-          content: `No GitHub sponsorship information was found for **${githubUsername}**.`,
-        });
-      }
-
-      const amount =
-        sponsorship.amountInCents === null
-          ? "Not visible"
-          : `$${(sponsorship.amountInCents / 100).toFixed(2)} USD${
-              sponsorship.isOneTimePayment ? " one-time" : " per month"
-            }`;
-      const startedAt = Math.floor(
-        new Date(sponsorship.createdAt).getTime() / 1000,
-      );
-      const estimatedTotal =
-        sponsorship.estimatedTotalInCents === null
-          ? "Not visible"
-          : `$${(sponsorship.estimatedTotalInCents / 100).toFixed(2)} USD`;
-      const totalLabel =
-        sponsorship.totalEstimateScope === "current-tier"
-          ? "Estimated total (current tier only)"
-          : sponsorship.totalEstimateScope === "one-time"
-            ? "Total donation"
-            : "Estimated total";
-
-      return interaction.editReply({
-        embeds: [
-          {
-            color: sponsorship.isActive ? 0x2da44e : 0x6e7781,
-            title: `${sponsorship.githubUsername}'s sponsorship`,
-            url: `https://github.com/${encodeURIComponent(sponsorship.githubUsername)}`,
-            fields: [
-              {
-                name: "Sponsored account",
-                value: sponsorship.targetLogin,
-                inline: true,
-              },
-              {
-                name: "Status",
-                value: sponsorship.isActive ? "Active" : "Past sponsor",
-                inline: true,
-              },
-              { name: "Amount", value: amount, inline: true },
-              { name: totalLabel, value: estimatedTotal, inline: true },
-              {
-                name: "Tier",
-                value: sponsorship.tierName ?? "Not visible",
-                inline: true,
-              },
-              { name: "Started", value: `<t:${startedAt}:D>`, inline: true },
-            ],
-            footer: {
-              text: "Recurring totals are estimates from the visible tier and dates; GitHub does not expose a payment ledger.",
-            },
-          },
-        ],
-      });
-    } catch (error) {
-      console.error(
-        "[sponsor-info] Failed to load sponsorship information:",
-        error,
-      );
-      return interaction.editReply({
-        content:
-          "I couldn't load that sponsor's information from GitHub right now.",
-      });
-    }
-  },
-});
-
-mini.useCommand({
-  data: new CommandBuilder()
-    .setName("idols")
-    .setDescription("Manually add or subtract a player's Mammoth Idols")
-    .setDMPermission(false)
-    .addStringOption((option) =>
-      option
-        .setName("player")
-        .setDescription("Search by character name or game user ID")
-        .setAutocomplete(true)
-        .setRequired(true),
-    )
-    .addStringOption((option) =>
-      option
-        .setName("operation")
-        .setDescription("Whether to add or subtract idols")
-        .addChoices(
-          { name: "Add", value: "add" },
-          { name: "Subtract", value: "sub" },
-        )
-        .setRequired(true),
-    )
-    .addNumberOption((option) =>
-      option
-        .setName("amount")
-        .setDescription("Positive whole number of idols")
-        .setMinValue(1)
-        .setRequired(true),
-    ),
-  handler: async (interaction: CommandInteraction) => {
-  /*  if (!isAdministrator(interaction)) {
-      return interaction.reply({
-        content: "Administrator permission is required.",
-        flags: 64,
-      });
-    }
-    */
-
-    const walletId = interaction.options.getString("player", true)!;
-    const operation = interaction.options.getString("operation", true);
-    const amount = interaction.options.getNumber("amount", true)!;
-    if (
-      (operation !== "add" && operation !== "sub") ||
-      !Number.isSafeInteger(amount) ||
-      amount <= 0
-    ) {
-      return interaction.reply({
-        content: "Choose add/sub and enter a positive whole number.",
-        flags: 64,
-      });
-    }
-
-    try {
-      console.info("[idols] Applying wallet adjustment", {
-        selector: walletId,
-        operation,
-        amount,
-      });
-      const result = await adjustMammothIdols(walletId, operation, amount);
-      if (!result) {
-        return interaction.reply({
-          content:
-            operation === "sub"
-              ? "Player not found or the player does not have enough Mammoth Idols."
-              : "Player wallet not found.",
-          flags: 64,
-        });
-      }
-
-      return interaction.reply({
-        content: `**${result.after.characterName}**: Mammoth Idols ${result.before.mammothIdols.toLocaleString()} → **${result.after.mammothIdols.toLocaleString()}** (${operation === "add" ? "+" : "−"}${amount.toLocaleString()})`,
-        flags: 64,
-      });
-    } catch (error) {
-      console.error("[idols] Wallet update failed:", error);
-      return interaction.reply({
-        content: "The player wallet could not be updated.",
-        flags: 64,
-      });
-    }
-  },
-});
-
-mini.useCommand({
-  data: new CommandBuilder()
-    .setContexts([CommandContext.Guild])
-    .setIntegrationTypes([IntegrationType.GuildInstall])
-    .setName("profile")
-    .setDescription(
-      "Show your linked profile, or look up another player's (admin only)",
-    )
-    .setDMPermission(false)
-    .addStringOption((option) =>
-      option
-        .setName("player")
-        .setDescription(
-          "Admin only. Search GitHub, Discord, character name, or game user ID",
-        )
-        .setAutocomplete(true)
-        .setRequired(false),
-    ),
-  handler: async (interaction: CommandInteraction) => {
-    // Anyone may look up themselves; only admins may name someone else.
-    const requestedPlayer = interaction.options.getString("player", false);
-    if (requestedPlayer && !isAdministrator(interaction)) {
-      return interaction.reply({
-        content:
-          "Administrator permission is required to look up another player.",
-        flags: 64,
-      });
-    }
-
-    interaction.deferReply({ flags: 64 });
-    const selector =
-      requestedPlayer ?? `profile:${interactionDiscordId(interaction)}`;
-
-    try {
-      const profile = await getPlayerProfile(selector);
-      if (!profile)
-        return interaction.editReply({
-          content: requestedPlayer
-            ? "Player profile was not found."
-            : "Your Discord account is not linked to a game account yet.",
-        });
-      // Most recently touched wallet is the account the player is actually using.
-      const wallets = [...profile.wallets].sort(
-        (left, right) => right.updatedAtMs - left.updatedAtMs,
-      );
-      const latest = wallets[0] ?? null;
-      const portrait = buildPortraitUrl(latest);
-
-      const fields: Array<{ name: string; value: string; inline?: boolean }> = [
-        {
-          name: "GitHub",
-          value: profile.githubUsername ?? "Not linked",
-          inline: true,
-        },
-        {
-          name: "Discord ID",
-          value: profile.discordUserId ?? "Not linked",
-          inline: true,
-        },
-        {
-          name: "Sponsor",
-          value:
-            profile.isSponsor === null
-              ? "Unknown"
-              : profile.isSponsor
-                ? `Yes (${profile.sponsorTarget ?? "unknown target"})`
-                : "No",
-          inline: true,
-        },
-        {
-          name: "Contributor",
-          value:
-            profile.isContributor === null
-              ? "Unknown"
-              : profile.isContributor
-                ? "Yes"
-                : "No",
-          inline: true,
-        },
-      ];
-
-      if (profile.discordUserId && profile.isSponsor) {
-        try {
-          const credit = await getSponsorCredit(profile.discordUserId);
-          if (credit) {
-            fields.push({
-              name: "Sponsor credit",
-              value:
-                credit.balanceCents === null
-                  ? `Sponsored: Unknown • Used: ${formatUsd(credit.usedCents)} • Balance: Unknown`
-                  : `Sponsored: ${formatUsd(credit.sponsoredCents ?? 0)} • Used: ${formatUsd(credit.usedCents)} • Balance: **${formatUsd(credit.balanceCents)}**`,
-            });
-          }
-        } catch (error) {
-          console.warn("[profile] Sponsor credit load failed:", error);
-        }
-      }
-
-      for (const wallet of wallets.slice(0, 5)) {
-        fields.push({
-          name: `${wallet.characterName} [${wallet.gameUserId}]`,
-          value: [
-            `Gold: **${wallet.gold.toLocaleString()}**`,
-            `Mammoth Idols: **${wallet.mammothIdols.toLocaleString()}**`,
-            `Dragon Keys: **${wallet.dragonKeys.toLocaleString()}**`,
-            `Dragon Ore: **${wallet.dragonOre.toLocaleString()}**`,
-            `Silver/Royal Sigils: **${wallet.silverSigils.toLocaleString()} / ${wallet.royalSigils.toLocaleString()}**`,
-          ].join("\n"),
-        });
-      }
-      if (wallets.length === 0) {
-        fields.push({
-          name: "Game wallets",
-          value: "No matching wallet document exists yet.",
-        });
-      }
-
-      return interaction.editReply({
-        embeds: [
-          {
-            color: 0x5865f2,
-            title:
-              latest?.characterName ??
-              profile.githubUsername ??
-              "Player profile",
-            ...(portrait ? { image: { url: portrait } } : {}),
-            fields,
-          },
-        ],
-      });
-    } catch (error) {
-      console.error("[profile] Failed to load player profile:", error);
-      return interaction.editReply({
-        content: "The player profile could not be loaded.",
-      });
-    }
-  },
-});
-
-mini.useCommand({
-  data: new CommandBuilder()
-    .setContexts([CommandContext.Guild])
-    .setIntegrationTypes([IntegrationType.GuildInstall])
-    .setName("packs")
-    .setDescription("Browse and buy sponsor packs with your donation credit")
-    .setDMPermission(false)
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("shop")
-        .setDescription("View every pack and your donation credit"),
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("buy")
-        .setDescription("Buy a pack with your donation credit")
-        .addStringOption((option) =>
-          option
-            .setName("pack")
-            .setDescription("The pack to buy")
-            .addChoices(
-              ...SPONSOR_PACKS.map((pack) => ({
-                name: `${pack.name} — ${formatUsd(pack.priceCents)}`,
-                value: pack.id,
-              })),
-            )
-            .setRequired(true),
-        ),
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("balance")
-        .setDescription(
-          "Show how much you have sponsored, spent, and have left to spend",
-        ),
-    ),
-  handler: async (interaction: CommandInteraction) => {
-    const discordId = interactionDiscordId(interaction);
-    if (!discordId) {
-      return interaction.reply({
-        content: "Your Discord account could not be verified.",
-        flags: 64,
-      });
-    }
-    const subcommand = interaction.options.getSubcommand(true);
-    interaction.deferReply({ flags: 64 });
-
-    try {
-      if (subcommand === "buy") {
-        const packId = interaction.options.getString("pack", true)!;
-        const result = await purchaseSponsorPack(discordId, packId);
-        switch (result.status) {
-          case "no-profile":
-            return interaction.editReply({
-              content:
-                "Your Discord account has no linked GitHub account, so donation credit cannot be checked.",
-            });
-          case "not-sponsor":
-            return interaction.editReply({
-              content:
-                "Only GitHub sponsors have donation credit to spend. Sponsor The Minesa Studios on GitHub Sponsors first!",
-            });
-          case "credit-unknown":
-            return interaction.editReply({
-              content:
-                "Your donation total could not be verified with GitHub right now. Please try again later.",
-            });
-          case "insufficient":
-            return interaction.editReply({
-              content: `You need ${formatUsd(result.pack.priceCents)} of donation credit for the **${result.pack.name}**, but your remaining balance is ${formatUsd(result.balanceCents)}.`,
-            });
-          case "conflict":
-            return interaction.editReply({
-              content:
-                "Your balance changed while processing the purchase. Please try again.",
-            });
-        }
-
-        const { pack, credit } = result;
-        return interaction.editReply({
-          embeds: [
-            {
-              color: pack.color,
-              title: `${pack.emoji} ${pack.name} purchased!`,
-              fields: [
-                { name: "Contents", value: pack.items.join("\n") },
-                {
-                  name: "Price",
-                  value: formatUsd(pack.priceCents),
-                  inline: true,
-                },
-                {
-                  name: "Remaining balance",
-                  value: formatUsd(credit.balanceCents ?? 0),
-                  inline: true,
-                },
-                {
-                  name: "Sponsored / Used",
-                  value: `${formatUsd(credit.sponsoredCents ?? 0)} / ${formatUsd(credit.usedCents)}`,
-                  inline: true,
-                },
-              ],
-              footer: {
-                text: "Pack contents are delivered to your game account by the team.",
-              },
-            },
-          ],
-        });
-      }
-
-      const credit = await getSponsorCredit(discordId);
-      if (!credit) {
-        return interaction.editReply({
-          content:
-            "Your Discord account has no linked GitHub account, so donation credit cannot be checked. Link GitHub through the account linking flow first.",
-        });
-      }
-
-      if (subcommand === "balance") {
-        const recentPurchases = [...credit.purchases]
-          .sort((left, right) => right.purchasedAtMs - left.purchasedAtMs)
-          .slice(0, 5);
-        return interaction.editReply({
-          embeds: [
-            {
-              color: 0xf1c40f,
-              title: "Your donation credit",
-              description: `Linked GitHub: **${credit.githubUsername}**`,
-              fields: [
-                {
-                  name: "Sponsored",
-                  value:
-                    credit.sponsoredCents === null
-                      ? "Unknown"
-                      : formatUsd(credit.sponsoredCents),
-                  inline: true,
-                },
-                {
-                  name: "Used on packs",
-                  value: formatUsd(credit.usedCents),
-                  inline: true,
-                },
-                {
-                  name: "Balance",
-                  value:
-                    credit.balanceCents === null
-                      ? "Unknown"
-                      : formatUsd(credit.balanceCents),
-                  inline: true,
-                },
-                ...(recentPurchases.length > 0
-                  ? [
-                      {
-                        name: "Recent purchases",
-                        value: recentPurchases
-                          .map(
-                            (purchase) =>
-                              `• ${purchase.packName} — ${formatUsd(purchase.priceCents)} (<t:${Math.floor(purchase.purchasedAtMs / 1000)}:R>)`,
-                          )
-                          .join("\n"),
-                      },
-                    ]
-                  : []),
-              ],
-              footer: {
-                text: "Balance equals what you have donated minus what you have spent on packs.",
-              },
-            },
-          ],
-        });
-      }
-
-      return interaction.editReply({
-        embeds: [
-          {
-            color: 0xf1c40f,
-            title: " Sponsor Pack Shop ",
-            description: [
-              credit.isSponsor
-                ? `Your balance: **${credit.balanceCents === null ? "Unknown" : formatUsd(credit.balanceCents)}** (sponsored ${credit.sponsoredCents === null ? "unknown" : formatUsd(credit.sponsoredCents)}, used ${formatUsd(credit.usedCents)}).`
-                : "You are not a GitHub sponsor yet — sponsor The Minesa Studios to earn credit to spend here.",
-              "Every pack costs donation credit: sponsor more to afford bigger packs.",
-            ].join("\n"),
-            fields: SPONSOR_PACKS.map((pack) => ({
-              name: `${pack.emoji} ${pack.name} — ${formatUsd(pack.priceCents)}`,
-              value: pack.items.join("\n"),
-            })),
-            footer: {
-              text: "Use /packs buy to spend your credit and /packs balance for details.",
-            },
-          },
-        ],
-      });
-    } catch (error) {
-      console.error("[packs] Command failed:", error);
-      return interaction.editReply({
-        content: "The pack shop could not be loaded right now. Please try again later.",
-      });
-    }
-  },
-});
-
-async function handleAutocomplete(body: any) {
-  if (body?.type !== 4 || !["idols", "profile"].includes(body?.data?.name))
-    return null;
-  const focused = Array.isArray(body.data.options)
-    ? body.data.options.find((option: any) => option?.focused)
-    : null;
-  if (focused?.name !== "player") return { type: 8, data: { choices: [] } };
-
-  try {
-    const query = String(focused.value ?? "");
-    const choices =
-      body.data.name === "profile"
-        ? (await searchPlayers(query)).map((player) => ({
-            name: player.label.slice(0, 100),
-            value: player.selector,
-          }))
-        : (await searchGameWallets(query)).map((wallet) => ({
-            name: `${wallet.characterName} [${wallet.gameUserId}] • Idols ${wallet.mammothIdols} • Gold ${wallet.gold} • Keys ${wallet.dragonKeys}`.slice(
-              0,
-              100,
-            ),
-            value: wallet.selector,
-          }));
-    return {
-      type: 8,
-      data: {
-        choices,
-      },
-    };
-  } catch (error) {
-    console.error("[idols] Autocomplete failed:", error);
-    return { type: 8, data: { choices: [] } };
+function defaultAck(interaction: APIInteraction): APIInteractionResponse {
+  if (interaction.type === InteractionType.MessageComponent) {
+    return { type: InteractionResponseType.DeferredMessageUpdate };
   }
+  if (interaction.type === InteractionType.ApplicationCommandAutocomplete) {
+    return {
+      type: InteractionResponseType.ApplicationCommandAutocompleteResult,
+      data: { choices: [] },
+    };
+  }
+  return {
+    type: InteractionResponseType.DeferredChannelMessageWithSource,
+    data: { flags: MessageFlags.Ephemeral },
+  };
+}
+
+function responseData(response: APIInteractionResponse): object {
+  return "data" in response ? response.data ?? {} : {};
+}
+
+const AUTOCOMPLETE_EMPTY: APIInteractionResponse = {
+  type: InteractionResponseType.ApplicationCommandAutocompleteResult,
+  data: { choices: [] },
+};
+
+/**
+ * Runs a handler with the 0.9.0 response lifecycle: the first acknowledgement
+ * (reply/deferReply/showModal) is committed to the HTTP response immediately so
+ * Discord's 3-second window is never missed, and later editReply/followUp calls
+ * go through the REST webhook endpoints.
+ */
+async function runWithResponseLifecycle(
+  interaction: APIInteraction,
+  executor: (helpers: {
+    canRespond: (interactionId: string) => boolean;
+    trackResponse: (
+      interactionId: string,
+      token: string,
+      state: string,
+    ) => void;
+    onAck: (response: APIInteractionResponse) => void;
+    sendFollowUp: (
+      token: string,
+      response: APIInteractionResponse,
+      messageId?: string,
+    ) => Promise<void>;
+  }) => Promise<unknown>,
+  commitInitialResponse: (response: APIInteractionResponse) => boolean,
+): Promise<APIInteractionResponse | undefined> {
+  let ackResponse: APIInteractionResponse | undefined;
+  let committedResponse: APIInteractionResponse | undefined;
+  let initialResponseCommitted = false;
+  let followUpSent = false;
+
+  const helpers = {
+    canRespond: (_interactionId: string) => true,
+    trackResponse: (_interactionId: string, _token: string, _state: string) => {},
+    onAck: (response: APIInteractionResponse) => {
+      ackResponse = response;
+      if (!initialResponseCommitted && commitInitialResponse(response)) {
+        initialResponseCommitted = true;
+        committedResponse = response;
+      }
+    },
+    sendFollowUp: async (
+      token: string,
+      response: APIInteractionResponse,
+      messageId?: string,
+    ) => {
+      // Before the initial response exists, collapse the edit into the initial
+      // response instead of hitting the webhook endpoints too early.
+      if (!initialResponseCommitted) {
+        ackResponse = response;
+        followUpSent = true;
+        return;
+      }
+      const data = responseData(response);
+      if (messageId === "@original") {
+        await rest.editOriginal(token, data);
+      } else {
+        await rest.createFollowup(token, data);
+      }
+      followUpSent = true;
+    },
+  };
+
+  const result = await executor(helpers) as APIInteractionResponse | undefined;
+
+  if (
+    initialResponseCommitted &&
+    result &&
+    !followUpSent &&
+    committedResponse &&
+    isDeferredResponse(committedResponse) &&
+    !isDeferredResponse(result)
+  ) {
+    await rest.editOriginal(interaction.token, responseData(result));
+    return undefined;
+  }
+
+  if (initialResponseCommitted) return undefined;
+  return (
+    (result as APIInteractionResponse | undefined) ?? ackResponse ?? undefined
+  );
+}
+
+async function dispatch(
+  interaction: APIInteraction,
+  commitInitialResponse: (response: APIInteractionResponse) => boolean,
+): Promise<APIInteractionResponse | undefined> {
+  if (interaction.type === InteractionType.ApplicationCommand) {
+    const handler = commandHandlers.get(interaction.data.name);
+    if (!handler) return undefined;
+    // Every registered command is a chat-input command.
+    return runWithResponseLifecycle(
+      interaction,
+      (helpers) =>
+        handler(
+          createCommandInteraction(
+            interaction as APIChatInputApplicationCommandInteraction,
+            helpers,
+          ),
+        ),
+      commitInitialResponse,
+    );
+  }
+
+  if (interaction.type === InteractionType.MessageComponent) {
+    const handler = matchComponentHandler(interaction.data.custom_id);
+    if (!handler) return undefined;
+    return runWithResponseLifecycle(
+      interaction,
+      (helpers) =>
+        handler(createMessageComponentInteraction(interaction, helpers)),
+      commitInitialResponse,
+    );
+  }
+
+  if (interaction.type === InteractionType.ModalSubmit) {
+    const handler = modalHandlers.get(interaction.data.custom_id);
+    if (!handler) return undefined;
+    return runWithResponseLifecycle(
+      interaction,
+      (helpers) => handler(createModalSubmitInteraction(interaction, helpers)),
+      commitInitialResponse,
+    );
+  }
+
+  if (interaction.type === InteractionType.ApplicationCommandAutocomplete) {
+    const handler = autocompleteHandlers.get(interaction.data.name);
+    if (!handler) return AUTOCOMPLETE_EMPTY;
+    const autocomplete = new AutocompleteContext(interaction);
+    await handler(autocomplete);
+    return autocomplete.result ?? AUTOCOMPLETE_EMPTY;
+  }
+
+  return undefined;
 }
 
 export default async function handler(request: any, response: any) {
@@ -891,39 +308,80 @@ export default async function handler(request: any, response: any) {
   const rawBody = Buffer.concat(chunks);
   const signature = String(request.headers["x-signature-ed25519"] ?? "");
   const timestamp = String(request.headers["x-signature-timestamp"] ?? "");
+  const publicKey = process.env.DISCORD_PUBLIC_KEY?.trim() ?? "";
 
-  if (
-    !signature ||
-    !timestamp ||
-    !verifyKey(rawBody, signature, timestamp, mini.publicKey)
-  ) {
+  if (!publicKey) {
+    return response
+      .status(500)
+      .json({ error: "DISCORD_PUBLIC_KEY is not configured" });
+  }
+  if (!signature || !timestamp) {
+    return response
+      .status(401)
+      .json({ error: "Missing Discord signature headers" });
+  }
+
+  let interaction: APIInteraction;
+  try {
+    interaction = await verifyAndParseInteraction({
+      body: rawBody,
+      signature,
+      timestamp,
+      publicKey,
+    });
+  } catch {
     return response
       .status(401)
       .json({ error: "Invalid Discord interaction signature" });
   }
 
-  let body: any;
-  try {
-    body = JSON.parse(rawBody.toString("utf8"));
-  } catch {
-    return response.status(400).json({ error: "Invalid interaction payload" });
+  if (interaction.type === InteractionType.Ping) {
+    return response.status(200).json({ type: InteractionResponseType.Pong });
   }
 
-  const autocomplete = await handleAutocomplete(body);
-  if (autocomplete) return response.status(200).json(autocomplete);
-
-  const result = await mini.handleRequest({
-    body: rawBody,
-    signature,
-    timestamp,
+  let responseSent = false;
+  let resolveCommitted: (value: boolean) => void;
+  const committedPromise = new Promise<boolean>((resolve) => {
+    resolveCommitted = resolve;
   });
-  if (result.backgroundWork) {
+  const commitInitialResponse = (ack: APIInteractionResponse) => {
+    if (responseSent) return false;
+    responseSent = true;
+    resolveCommitted!(true);
+    response.status(200).json(ack);
+    return true;
+  };
+
+  const dispatchPromise = dispatch(interaction, commitInitialResponse).catch(
+    (error) => {
+      console.error("[interactions] Interaction handling failed:", error);
+      return undefined;
+    },
+  );
+
+  const settled = await Promise.race([
+    dispatchPromise.then(
+      (result) => ({ kind: "result" as const, result }),
+      (error) => ({ kind: "error" as const, error }),
+    ),
+    committedPromise.then(() => ({ kind: "committed" as const })),
+  ]);
+
+  if (settled.kind === "committed") {
     try {
-      const { waitUntil } = await import("@vercel/functions");
-      waitUntil(result.backgroundWork);
-    } catch (error) {
-      console.error("[interactions] Background work scheduling failed:", error);
+      waitUntil(dispatchPromise);
+    } catch {
+      // Vercel-only helper; the promise keeps running regardless.
     }
+    return;
   }
-  return response.status(result.status).json(result.body);
+
+  if (settled.kind === "error") {
+    console.error("[interactions] Interaction handling failed:", settled.error);
+  }
+  if (!responseSent) {
+    responseSent = true;
+    const result = settled.kind === "result" ? settled.result : undefined;
+    response.status(200).json(result ?? defaultAck(interaction));
+  }
 }

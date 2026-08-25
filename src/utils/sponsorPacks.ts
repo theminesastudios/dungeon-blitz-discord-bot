@@ -6,6 +6,9 @@ import {
 } from "./gameWallet.js";
 import { getSponsorDonationInfo } from "./githubSponsors.js";
 
+/** Discord role that unlocks the free Sponsor Pack claim. */
+export const SPONSOR_ROLE_ID = "1365618632415248444";
+
 export type SponsorPack = {
 	id: string;
 	name: string;
@@ -13,6 +16,8 @@ export type SponsorPack = {
 	emoji: string;
 	color: number;
 	items: string[];
+	/** When set, only members with this Discord role can claim the pack. */
+	requiredRoleId?: string;
 };
 
 // Prices mirror the community pack sheet; credit comes from what each sponsor has donated.
@@ -20,10 +25,11 @@ export const SPONSOR_PACKS: SponsorPack[] = [
 	{
 		id: "sponsor",
 		name: "Sponsor Pack",
-		priceCents: 100,
+		priceCents: 0,
 		emoji: "🐴",
 		color: 0xf1f1f1,
 		items: ["1 random non-exclusive mount", "10,000 golds"],
+		requiredRoleId: SPONSOR_ROLE_ID,
 	},
 	{
 		id: "supporter",
@@ -154,14 +160,61 @@ export type PackPurchaseResult =
 	| { status: "not-sponsor" }
 	| { status: "credit-unknown" }
 	| { status: "insufficient"; pack: SponsorPack; balanceCents: number }
+	| { status: "missing-role"; pack: SponsorPack }
+	| { status: "already-claimed"; pack: SponsorPack }
 	| { status: "conflict"; pack: SponsorPack };
 
 export async function purchaseSponsorPack(
 	discordId: string,
 	packId: string,
+	memberRoleIds: string[] = [],
 ): Promise<PackPurchaseResult> {
 	const pack = findSponsorPack(packId);
 	if (!pack) return { status: "no-profile" };
+
+	if (pack.requiredRoleId && !memberRoleIds.includes(pack.requiredRoleId)) {
+		return { status: "missing-role", pack };
+	}
+
+	// The Sponsor Pack is a free claim gated by the Sponsor role, so it costs no
+	// credit — but each player can only claim it once.
+	if (pack.priceCents === 0) {
+		const profile = await getPlayerProfile(`profile:${discordId.trim()}`);
+		if (!profile) return { status: "no-profile" };
+
+		const ledger = await getPackLedger(discordId.trim());
+		if (ledger.purchases.some((purchase) => purchase.packId === pack.id)) {
+			return { status: "already-claimed", pack };
+		}
+
+		const purchase: PackPurchase = {
+			packId: pack.id,
+			packName: pack.name,
+			priceCents: 0,
+			purchasedAtMs: Date.now(),
+		};
+		const recorded = await recordPackPurchase(
+			discordId.trim(),
+			purchase,
+			Number.MAX_SAFE_INTEGER,
+		);
+		if (!recorded) return { status: "conflict", pack };
+
+		const credit = await getSponsorCredit(discordId);
+		return {
+			status: "ok",
+			pack,
+			credit:
+				credit ?? {
+					githubUsername: profile.githubUsername ?? "",
+					isSponsor: profile.isSponsor === true,
+					sponsoredCents: null,
+					usedCents: ledger.usedCents,
+					balanceCents: null,
+					purchases: [...ledger.purchases, purchase],
+				},
+		};
+	}
 
 	const credit = await getSponsorCredit(discordId);
 	if (!credit) return { status: "no-profile" };

@@ -536,8 +536,8 @@ export async function recordPackPurchase(
 	purchase: PackPurchase,
 	maxUsedCents: number,
 ): Promise<boolean> {
-	if (!Number.isSafeInteger(purchase.priceCents) || purchase.priceCents <= 0) {
-		throw new Error("Pack price must be a positive whole number of cents");
+	if (!Number.isSafeInteger(purchase.priceCents) || purchase.priceCents < 0) {
+		throw new Error("Pack price must be a non-negative whole number of cents");
 	}
 	if (!Number.isSafeInteger(maxUsedCents) || maxUsedCents < 0) {
 		return false;

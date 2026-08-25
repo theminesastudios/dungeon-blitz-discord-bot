@@ -14,8 +14,12 @@ if (!process.env.DISCORD_BOT_TOKEN) {
 	process.exit(0);
 }
 
-const { mini } = await import("../api/interactions");
-const applicationId = process.env.DISCORD_APPLICATION_ID ?? mini.applicationId;
+const { commandData } = await import("../api/interactions");
+const applicationId = process.env.DISCORD_APPLICATION_ID;
+if (!applicationId) {
+  console.log("⚠️ DISCORD_APPLICATION_ID not found. Skipping command registration.");
+  process.exit(0);
+}
 
 const linkedRoleMetadata = [
 	{
@@ -40,7 +44,7 @@ const response = await fetch(
 			Authorization: `Bot ${process.env.DISCORD_BOT_TOKEN}`,
 			"Content-Type": "application/json",
 		},
-		body: JSON.stringify(mini.listCommandData()),
+		body: JSON.stringify(commandData),
 	},
 );
 

@@ -132,7 +132,6 @@ async function handleAccountOAuth(req: any, res: any) {
 }
 
 const linkedRolesHandler = mini.discordOAuthCallback({
-	oauth: discordOAuthConfig,
 	templates: {
 		success: mini.connectedOAuthPage("pages/connected.html"),
 		missingCode: failedPage,
