@@ -35,6 +35,40 @@ assert.equal(requestedUrl, "http://35.185.71.109/api/admin/maintenance");
 assert.deepEqual(JSON.parse(requestBody), { seconds: 60 });
 assert.deepEqual(resultDefault, { ok: true, seconds: 60, recipients: 4 });
 
+// A misconfigured game server (no admin secret) surfaces its actionable reason verbatim.
+const notConfiguredResponse = new Response(
+	JSON.stringify({
+		error:
+			"Discord admin API is not configured: the game server has no ADMIN_API_SECRET or DISCORD_MAINTENANCE_API_SECRET set. Add the same secret the bot uses as its DISCORD_MAINTENANCE_API_SECRET to the game server .env and restart it.",
+	}),
+	{ status: 503, headers: { "content-type": "application/json" } },
+);
+globalThis.fetch = async () => notConfiguredResponse;
+let notConfiguredReason = "";
+try {
+	await broadcastGameMaintenance(30);
+} catch (error) {
+	notConfiguredReason = error instanceof Error ? error.message : String(error);
+}
+assert.match(notConfiguredReason, /Game server rejected maintenance broadcast \(503\)/);
+assert.match(notConfiguredReason, /no ADMIN_API_SECRET or DISCORD_MAINTENANCE_API_SECRET/);
+
+// Without the bot-side secret nothing is sent and the reason names the fix.
+delete process.env.DISCORD_MAINTENANCE_API_SECRET;
+let missingSecretCalledFetch = false;
+globalThis.fetch = async () => {
+	missingSecretCalledFetch = true;
+	return new Response("{}", { status: 200 });
+};
+let missingSecretReason = "";
+try {
+	await broadcastGameMaintenance(30);
+} catch (error) {
+	missingSecretReason = error instanceof Error ? error.message : String(error);
+}
+assert.equal(missingSecretCalledFetch, false);
+assert.match(missingSecretReason, /DISCORD_MAINTENANCE_API_SECRET/);
+
 console.log("gameMaintenance.test: ok");
 } finally {
 	globalThis.fetch = originalFetch;

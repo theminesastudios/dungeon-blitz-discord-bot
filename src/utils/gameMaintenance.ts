@@ -34,7 +34,9 @@ async function requestGameServerAdmin<T extends { ok: true }>(
 	const baseUrl = getGameServerBaseUrl();
 	const secret = String(process.env.DISCORD_MAINTENANCE_API_SECRET ?? "").trim();
 	if (!secret) {
-		throw new Error("DISCORD_MAINTENANCE_API_SECRET is required");
+		throw new Error(
+			"the bot deployment is missing DISCORD_MAINTENANCE_API_SECRET, so it cannot authorize with the game server. Set it there to the same value configured on the game server.",
+		);
 	}
 
 	const response = await fetch(`${baseUrl}${path}`, {
