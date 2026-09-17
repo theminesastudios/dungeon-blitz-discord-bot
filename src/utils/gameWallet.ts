@@ -36,6 +36,8 @@ type RawWallet = Document & {
 type RawSaveCharacter = Document & {
 	name?: string;
 	class?: string;
+	/** `MasterClassID` (1-9); 0 means the character has not chosen a discipline yet. */
+	MasterClass?: number;
 	level?: number;
 	gold?: number;
 	mammothIdols?: number;
@@ -99,6 +101,8 @@ export type GameWalletSummary = {
 	characterName: string;
 	/** Display class ("Mage", "Brute", ...); empty when the wallet source does not carry one. */
 	characterClass: string;
+	/** `MasterClassID` (1-9), 0 when unchosen or when the wallet source does not carry one. */
+	characterMasterClass: number;
 	characterLevel: number;
 	gold: number;
 	mammothIdols: number;
@@ -133,6 +137,16 @@ function normalizeBalance(value: unknown): number {
 function normalizeLevel(value: unknown): number {
 	const level = Number(value ?? 0);
 	return Number.isFinite(level) ? Math.max(0, Math.round(level)) : 0;
+}
+
+/**
+ * The save stores the discipline as the game's numeric `MasterClassID`; 0 is "none chosen".
+ * Values outside the known range are kept as-is so an added discipline is never silently
+ * reported as unset — the widget layer is what decides whether it has a name for the id.
+ */
+function normalizeMasterClass(value: unknown): number {
+	const masterClass = Number(value ?? 0);
+	return Number.isFinite(masterClass) ? Math.max(0, Math.round(masterClass)) : 0;
 }
 
 function escapeRegex(value: string): string {
@@ -179,6 +193,8 @@ function toFlatSummary(wallet: RawWallet, source: FlatWalletSource): GameWalletS
 			wallet.cn ?? wallet.characterName ?? wallet.ck ?? wallet.characterNameKey ?? wallet._id,
 		).trim(),
 		characterClass: String(wallet.class ?? wallet.cls ?? "").trim(),
+		// Legacy flat wallets never carried a discipline.
+		characterMasterClass: 0,
 		characterLevel: normalizeLevel(wallet.level ?? wallet.lv),
 		gold: normalizeBalance(wallet.g ?? wallet.gold),
 		mammothIdols: normalizeBalance(wallet.mi ?? wallet.mammothIdols),
@@ -199,6 +215,7 @@ function toSaveSummary(save: RawSave, character: RawSaveCharacter): GameWalletSu
 		gameUserId: normalizeBalance(save.user_id),
 		characterName,
 		characterClass: String(character.class ?? "").trim(),
+		characterMasterClass: normalizeMasterClass(character.MasterClass),
 		characterLevel: normalizeLevel(character.level),
 		gold: normalizeBalance(character.gold),
 		mammothIdols: normalizeBalance(character.mammothIdols),

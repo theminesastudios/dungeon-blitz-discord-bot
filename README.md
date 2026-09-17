@@ -55,6 +55,7 @@ Configure the widget's **User Data** fields to these keys; renaming one in the p
 | `featured_played_character` | The player's highest-level character name |
 | `featured_played_character_image` | That character's portrait, from `<GAME_SERVER_BASE_URL>/portraits/<name>.png` (omit when no base URL is configured) |
 | `character_class` | Featured character's class |
+| `master_class` | Featured character's discipline (`Flameseer`, `Soulthief`, …), from the save's numeric `MasterClass`; omitted while none is chosen, so give the field a fallback |
 | `character_level` | Featured character's level |
 | `highest_level` | Highest level on the account |
 | `gold`, `mammoth_idols`, `dragon_keys`, `dragon_ore`, `silver_sigils` | Featured character's wallet |

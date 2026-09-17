@@ -17,6 +17,7 @@ import {
 import {
 	GAME_STATS_DYNAMIC_FIELDS,
 	buildGameStatsProfilePayload,
+	masterClassName,
 } from "../src/utils/gameStatsSync.js";
 import type { GameWalletSummary } from "../src/utils/gameWallet.js";
 
@@ -28,6 +29,7 @@ function wallet(overrides: Partial<GameWalletSummary>): GameWalletSummary {
 		gameUserId: 1,
 		characterName: "Hero",
 		characterClass: "Mage",
+		characterMasterClass: 0,
 		characterLevel: 10,
 		gold: 0,
 		mammothIdols: 0,
@@ -70,6 +72,7 @@ const payload = buildGameStatsProfilePayload({
 		wallet({
 			characterName: "Veteran",
 			characterClass: "Brute",
+			characterMasterClass: 8,
 			characterLevel: 42,
 			gold: 1500,
 			mammothIdols: 7,
@@ -94,6 +97,7 @@ const dynamic = new Map(
 	(payload.data?.dynamic ?? []).map((field) => [field.name, field.value] as const)
 );
 assert.equal(dynamic.get(GAME_STATS_DYNAMIC_FIELDS.characterClass), "Brute");
+assert.equal(dynamic.get(GAME_STATS_DYNAMIC_FIELDS.masterClass), "Flameseer");
 assert.equal(dynamic.get(GAME_STATS_DYNAMIC_FIELDS.characterLevel), 42);
 assert.equal(dynamic.get(GAME_STATS_DYNAMIC_FIELDS.highestLevel), 42);
 assert.equal(dynamic.get(GAME_STATS_DYNAMIC_FIELDS.gold), 1500);
@@ -116,6 +120,36 @@ for (const field of [
 ] as const) {
 	assert.equal(payload.data?.primary?.[field], undefined, `${field} must stay unset`);
 }
+
+// Every MasterClassID the game defines maps to a name, and an unchosen or unknown one is left
+// out so the widget falls back instead of repeating the base class.
+assert.deepEqual(
+	[1, 2, 3, 4, 5, 6, 7, 8, 9].map(masterClassName),
+	[
+		"Executioner",
+		"Shadowwalker",
+		"Soulthief",
+		"Sentinel",
+		"Justicar",
+		"Templar",
+		"Frostwarden",
+		"Flameseer",
+		"Necromancer",
+	]
+);
+assert.equal(masterClassName(0), "", "an unchosen discipline has no name");
+assert.equal(masterClassName(undefined), "");
+assert.equal(masterClassName("not-a-number"), "");
+assert.equal(masterClassName(42), "", "an unknown id is omitted rather than guessed");
+
+const noDiscipline = new Map(
+	(
+		buildGameStatsProfilePayload({
+			wallets: [wallet({ characterName: "Fresh", characterMasterClass: 0 })],
+		})?.data?.dynamic ?? []
+	).map((field) => [field.name, field.value] as const)
+);
+assert.equal(noDiscipline.has(GAME_STATS_DYNAMIC_FIELDS.masterClass), false);
 
 // An empty roster is "nothing to publish" rather than an empty widget record.
 assert.equal(buildGameStatsProfilePayload({ wallets: [] }), null);

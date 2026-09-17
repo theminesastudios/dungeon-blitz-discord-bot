@@ -31,6 +31,7 @@ import {
  */
 export const GAME_STATS_DYNAMIC_FIELDS = {
 	characterClass: "character_class",
+	masterClass: "master_class",
 	characterLevel: "character_level",
 	highestLevel: "highest_level",
 	gold: "gold",
@@ -40,6 +41,31 @@ export const GAME_STATS_DYNAMIC_FIELDS = {
 	silverSigils: "silver_sigils",
 	characterCount: "character_count",
 } as const;
+
+/**
+ * Mirrors the game's `MasterClassID` (`src/server/core/Enums.ts`) — the save stores the number,
+ * and only the game knows the names. A character that has not chosen a discipline yet carries 0
+ * and gets no field at all, so the widget can fall back to its own text instead of rendering a
+ * duplicate of the base class.
+ */
+const MASTER_CLASS_NAMES: Record<number, string> = {
+	1: "Executioner",
+	2: "Shadowwalker",
+	3: "Soulthief",
+	4: "Sentinel",
+	5: "Justicar",
+	6: "Templar",
+	7: "Frostwarden",
+	8: "Flameseer",
+	9: "Necromancer",
+};
+
+/** Display name for a `MasterClassID`, or an empty string when it is unset or unknown. */
+export function masterClassName(masterClassId: unknown): string {
+	const id = Number(masterClassId);
+	if (!Number.isFinite(id)) return "";
+	return MASTER_CLASS_NAMES[Math.trunc(id)] ?? "";
+}
 
 const DEFAULT_BATCH_LIMIT = 25;
 const MAX_BATCH_LIMIT = 200;
@@ -88,6 +114,7 @@ export function buildGameStatsProfilePayload(input: {
 
 	const dynamic = [
 		stringField(GAME_STATS_DYNAMIC_FIELDS.characterClass, featured.characterClass),
+		stringField(GAME_STATS_DYNAMIC_FIELDS.masterClass, masterClassName(featured.characterMasterClass)),
 		level === null ? null : numberField(GAME_STATS_DYNAMIC_FIELDS.characterLevel, level),
 		highestLevel > 0 ? numberField(GAME_STATS_DYNAMIC_FIELDS.highestLevel, highestLevel) : null,
 		numberField(GAME_STATS_DYNAMIC_FIELDS.gold, featured.gold),
