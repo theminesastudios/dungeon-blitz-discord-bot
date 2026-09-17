@@ -103,7 +103,24 @@ async function handleAccountOAuth(req: any, res: any) {
 		return;
 	}
 	if (typeof q.error === "string" && q.error) {
-		sendAccountPage(res, 400, "Authorization cancelled", "The Dungeon Blitz account was not created. You can reopen the link from Discord.");
+		// Discord returns its own reason on the redirect. Previously every case was reported as a
+		// cancellation, which hid real failures (an unregistered redirect URI, a scope the app may
+		// not request) behind wording that tells the player nothing and the operator less.
+		const errorCode = String(q.error);
+		const errorDescription =
+			typeof q.error_description === "string" ? String(q.error_description) : "";
+		console.warn(
+			`[account-oauth] Discord refused the authorization: ${errorCode}${errorDescription ? ` (${errorDescription})` : ""}`
+		);
+		const cancelled = errorCode === "access_denied";
+		sendAccountPage(
+			res,
+			400,
+			cancelled ? "Authorization cancelled" : "Discord refused the authorization",
+			cancelled
+				? "The Dungeon Blitz account was not created. Run /account create again in Discord and choose Authorize on the Discord screen."
+				: `Discord returned "${errorCode}"${errorDescription ? ` (${errorDescription})` : ""}, so the account was not created. Run /account create again in Discord; if it repeats, this deployment needs a look.`
+		);
 		return;
 	}
 	if (typeof q.code !== "string" || !q.code) {
