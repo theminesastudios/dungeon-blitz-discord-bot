@@ -88,7 +88,7 @@ async function handlePasswordModal(
     if (result.status === "not-found") {
       return interaction.editReply({
         content:
-          "Complete the Discord OAuth link from `/create-account` first.",
+          "Complete the Discord OAuth link from `/account create` first.",
       });
     }
     if (result.status === "already-configured") {
@@ -182,7 +182,7 @@ export const accountCommand = {
       if (!account) {
         return interaction.editReply({
           content:
-            "No Dungeon Blitz account is linked to your Discord account. Create one with `/create-account`.",
+            "No Dungeon Blitz account is linked to your Discord account. Create one with `/account create`.",
         });
       }
       return interaction.editReply({
