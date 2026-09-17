@@ -19,6 +19,10 @@ type RawWallet = Document & {
 	gameUserId?: number;
 	characterName?: string;
 	characterNameKey?: string;
+	class?: string;
+	cls?: string;
+	level?: number;
+	lv?: number;
 	gold?: number;
 	mammothIdols?: number;
 	DragonKeys?: number;
@@ -31,6 +35,8 @@ type RawWallet = Document & {
 
 type RawSaveCharacter = Document & {
 	name?: string;
+	class?: string;
+	level?: number;
 	gold?: number;
 	mammothIdols?: number;
 	DragonKeys?: number;
@@ -91,6 +97,9 @@ export type GameWalletSummary = {
 	source: WalletSource;
 	gameUserId: number;
 	characterName: string;
+	/** Display class ("Mage", "Brute", ...); empty when the wallet source does not carry one. */
+	characterClass: string;
+	characterLevel: number;
 	gold: number;
 	mammothIdols: number;
 	dragonKeys: number;
@@ -119,6 +128,11 @@ let clientPromise: Promise<MongoClient> | null = null;
 function normalizeBalance(value: unknown): number {
 	const amount = Number(value ?? 0);
 	return Number.isFinite(amount) ? Math.max(0, Math.round(amount)) : 0;
+}
+
+function normalizeLevel(value: unknown): number {
+	const level = Number(value ?? 0);
+	return Number.isFinite(level) ? Math.max(0, Math.round(level)) : 0;
 }
 
 function escapeRegex(value: string): string {
@@ -164,6 +178,8 @@ function toFlatSummary(wallet: RawWallet, source: FlatWalletSource): GameWalletS
 		characterName: String(
 			wallet.cn ?? wallet.characterName ?? wallet.ck ?? wallet.characterNameKey ?? wallet._id,
 		).trim(),
+		characterClass: String(wallet.class ?? wallet.cls ?? "").trim(),
+		characterLevel: normalizeLevel(wallet.level ?? wallet.lv),
 		gold: normalizeBalance(wallet.g ?? wallet.gold),
 		mammothIdols: normalizeBalance(wallet.mi ?? wallet.mammothIdols),
 		dragonKeys: normalizeBalance(wallet.dk ?? wallet.DragonKeys),
@@ -182,6 +198,8 @@ function toSaveSummary(save: RawSave, character: RawSaveCharacter): GameWalletSu
 		source: "saves",
 		gameUserId: normalizeBalance(save.user_id),
 		characterName,
+		characterClass: String(character.class ?? "").trim(),
+		characterLevel: normalizeLevel(character.level),
 		gold: normalizeBalance(character.gold),
 		mammothIdols: normalizeBalance(character.mammothIdols),
 		dragonKeys: normalizeBalance(character.DragonKeys),
@@ -385,6 +403,23 @@ function findSaveCharacter(save: RawSave, characterName: string): RawSaveCharact
 			(character) => String(character?.name ?? "").trim().toLowerCase() === normalized,
 		) ?? null
 	);
+}
+
+/**
+ * Every named character on one player's save, ordered by level. Used by the Discord Game Stats
+ * Widget sync, which needs the whole roster rather than a single wallet.
+ */
+export async function listSaveCharacters(gameUserId: number): Promise<GameWalletSummary[]> {
+	const userId = normalizeBalance(gameUserId);
+	if (userId <= 0) return [];
+	const target = (await getWalletCollections()).find((source) => source.source === "saves");
+	if (!target || target.source !== "saves") return [];
+	const save = await target.collection.findOne({ user_id: userId } as Filter<RawSave>);
+	if (!save || !Array.isArray(save.characters)) return [];
+	return save.characters
+		.filter((character) => String(character?.name ?? "").trim().length > 0)
+		.map((character) => toSaveSummary(save, character))
+		.sort((a, b) => b.characterLevel - a.characterLevel);
 }
 
 export async function findGameWallet(selector: string): Promise<GameWalletSummary | null> {

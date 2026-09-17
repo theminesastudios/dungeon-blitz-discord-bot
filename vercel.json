@@ -28,6 +28,10 @@
 		"api/github-sponsors.ts": {
 			"maxDuration": 10,
 			"includeFiles": "{src/utils/**}"
+		},
+		"api/game-stats/sync.ts": {
+			"maxDuration": 10,
+			"includeFiles": "{src/utils/**}"
 		}
 	},
 	"buildCommand": "npm run build",

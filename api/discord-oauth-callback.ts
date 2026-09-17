@@ -2,6 +2,7 @@ import {
 	getOAuthTokens,
 	MiniDatabase,
 } from "@minesa-org/mini-interaction";
+import { waitUntil } from "@vercel/functions";
 import { mini } from "./interactions.js";
 import { updateDiscordMetadata } from "../src/utils/database.js";
 import { discordOAuthConfig } from "../src/utils/oauthConfig.js";
@@ -15,6 +16,8 @@ import {
 	GameAccountConflictError,
 } from "../src/utils/gameAccount.js";
 import { getVerifiedDiscordOAuthUser } from "../src/utils/discordOAuthUser.js";
+import { APPLICATION_IDENTITIES_WRITE_SCOPE } from "../src/utils/gameStatsProfile.js";
+import { syncGameStatsForDiscordId } from "../src/utils/gameStatsSync.js";
 
 const database = MiniDatabase.fromEnv();
 const failedPage = mini.failedOAuthPage("pages/failed.html");
@@ -36,6 +39,22 @@ function parseGameCb(state: unknown): string | null {
 		return cb.origin;
 	} catch {
 		return null;
+	}
+}
+
+/**
+ * Publishing the widget profile the moment a player links means their Discord profile shows
+ * their character without waiting for the next scheduled sync. It must not delay or fail the
+ * OAuth response, so the work is handed to the platform to finish after the reply is sent.
+ */
+function publishGameStatsInBackground(discordId: string): void {
+	const task = syncGameStatsForDiscordId(discordId).catch((error) => {
+		console.error("[account-oauth] Game Stats Widget sync failed:", error);
+	});
+	try {
+		waitUntil(task);
+	} catch {
+		// Outside a Vercel invocation (local scripts) there is nothing to extend.
 	}
 }
 
@@ -80,7 +99,7 @@ async function handleAccountOAuth(req: any, res: any) {
 	const q = req?.query ?? {};
 	const state = parseAccountOAuthState(q.state);
 	if (!state) {
-		sendAccountPage(res, 400, "Invalid link", "The OAuth link has expired or was modified. Run /create-account again in Discord.");
+		sendAccountPage(res, 400, "Invalid link", "The OAuth link has expired or was modified. Run /account create again in Discord.");
 		return;
 	}
 	if (typeof q.error === "string" && q.error) {
@@ -88,7 +107,7 @@ async function handleAccountOAuth(req: any, res: any) {
 		return;
 	}
 	if (typeof q.code !== "string" || !q.code) {
-		sendAccountPage(res, 400, "Missing code", "The Discord OAuth code was not received. Run /create-account again.");
+		sendAccountPage(res, 400, "Missing code", "The Discord OAuth code was not received. Run /account create again.");
 		return;
 	}
 
@@ -98,9 +117,16 @@ async function handleAccountOAuth(req: any, res: any) {
 		if (!scopes.includes("identify") || !scopes.includes("email")) {
 			throw new GameAccountConflictError("Discord OAuth requires the identify and email scopes.");
 		}
+		// Accounts linked before the Game Stats Widget existed lack this scope. Let them in and
+		// warn: their widget simply stays empty until they re-link, which is not worth failing on.
+		if (!scopes.includes(APPLICATION_IDENTITIES_WRITE_SCOPE)) {
+			console.warn(
+				`[account-oauth] Linking completed without the ${APPLICATION_IDENTITIES_WRITE_SCOPE} scope; the player's Game Stats Widget profile cannot be written until they re-link with /account create.`
+			);
+		}
 		const user = await getVerifiedDiscordOAuthUser(tokens.access_token);
 		if (!accountOAuthStateMatchesUser(state, user.id)) {
-			sendAccountPage(res, 403, "Discord account mismatch", "Only the Discord account that ran /create-account can complete this OAuth link.");
+			sendAccountPage(res, 403, "Discord account mismatch", "Only the Discord account that ran /account create can complete this OAuth link.");
 			return;
 		}
 
@@ -112,9 +138,10 @@ async function handleAccountOAuth(req: any, res: any) {
 			emailVerified: user.verified === true,
 			avatar: user.avatar,
 		});
+		publishGameStatsInBackground(result.account.discordId);
 		const message = result.account.passwordConfigured
 			? `Your Discord account is already linked to ${result.account.email}. You can view it with /account view in Discord.`
-			: `Your account is ready with ${result.account.email}. Return to Discord and select “Set initial password” in the /create-account message.`;
+			: `Your account is ready with ${result.account.email}. Return to Discord and select “Set initial password” in the /account create message.`;
 		sendAccountPage(
 			res,
 			200,
@@ -127,7 +154,7 @@ async function handleAccountOAuth(req: any, res: any) {
 			return;
 		}
 		console.error("[account-oauth] Account creation failed:", error);
-		sendAccountPage(res, 500, "Account could not be created", "An unexpected error occurred. Please try /create-account again later.");
+		sendAccountPage(res, 500, "Account could not be created", "An unexpected error occurred. Please try /account create again later.");
 	}
 }
 
@@ -175,6 +202,10 @@ const linkedRolesHandler = mini.discordOAuthCallback({
 				error
 			);
 		}
+
+		// Players who link through this page are also the ones most likely to hold the Game Stats
+		// scope, so refresh their widget profile too. It is a no-op without a linked game account.
+		publishGameStatsInBackground(user.id);
 	},
 });
 

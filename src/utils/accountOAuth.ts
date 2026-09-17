@@ -1,5 +1,6 @@
 import * as crypto from "node:crypto";
 import { discordOAuthConfig } from "./oauthConfig.js";
+import { ACCOUNT_LINK_SCOPES } from "./gameStatsProfile.js";
 
 const ACCOUNT_OAUTH_STATE_PREFIX = "dba1";
 const ACCOUNT_OAUTH_TTL_MS = 10 * 60 * 1000;
@@ -74,13 +75,17 @@ export function accountOAuthStateMatchesUser(
 	return state.discordId === String(discordIdInput ?? "").trim();
 }
 
+/**
+ * The link asks for `application_identities.write` as well: without it Discord refuses to write
+ * the player's Game Stats Widget profile, so linking once should cover both.
+ */
 export function createAccountOAuthUrl(discordId: string): string {
 	const url = new URL("https://discord.com/api/oauth2/authorize");
 	url.searchParams.set("client_id", discordOAuthConfig.appId);
 	url.searchParams.set("redirect_uri", discordOAuthConfig.redirectUri);
 	url.searchParams.set("response_type", "code");
 	url.searchParams.set("state", createAccountOAuthState(discordId));
-	url.searchParams.set("scope", "identify email");
+	url.searchParams.set("scope", ACCOUNT_LINK_SCOPES.join(" "));
 	url.searchParams.set("prompt", "consent");
 	return url.toString();
 }

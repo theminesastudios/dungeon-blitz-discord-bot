@@ -232,6 +232,53 @@ export async function getGameAccountByDiscordId(
 	return account ? publicAccount(account) : null;
 }
 
+/**
+ * Discord ids of linked accounts, newest first, for the Game Stats Widget batch sync.
+ * A limited slice is intentional: the caller loops until it has drained the roster.
+ */
+export async function listLinkedDiscordIds(limit: number): Promise<string[]> {
+	const capped = Math.min(Math.max(Math.round(Number(limit) || 1), 1), 500);
+	await ensureIndexes();
+	const { accounts } = await getCollections();
+	const rows = await accounts
+		.find({ discordId: { $type: "string" } }, { projection: { discordId: 1 } })
+		.sort({ _id: 1 })
+		.limit(capped)
+		.toArray();
+	return rows.map((account) => String(account.discordId ?? "").trim()).filter(Boolean);
+}
+
+/**
+ * Records the outcome of a Game Stats Widget sync on the account, so operators can see who is
+ * up to date without re-reading Discord. Failures here must never fail the sync itself.
+ */
+export async function recordGameStatsSyncStatus(
+	discordIdInput: string,
+	values: {
+		state: string;
+		providerIssuedUserId?: string;
+		error?: string | null;
+		syncedAt?: Date;
+	}
+): Promise<void> {
+	const discordId = String(discordIdInput ?? "").trim();
+	if (!discordId) return;
+	const { accounts } = await getCollections();
+	await accounts.updateOne(
+		{ discordId },
+		{
+			$set: {
+				"gameStats.state": values.state,
+				"gameStats.error": values.error ?? null,
+				"gameStats.syncedAt": values.syncedAt ?? new Date(),
+				...(values.providerIssuedUserId
+					? { "gameStats.providerIssuedUserId": values.providerIssuedUserId }
+					: {}),
+			},
+		}
+	);
+}
+
 export async function createGameAccountFromDiscord(
 	discord: DiscordAccountIdentity
 ): Promise<CreateGameAccountResult> {
