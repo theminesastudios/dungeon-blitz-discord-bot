@@ -17,9 +17,9 @@ import {
 } from "../src/utils/gameAccount.js";
 import { getVerifiedDiscordOAuthUser } from "../src/utils/discordOAuthUser.js";
 import {
-	ACCOUNT_LINK_SCOPES,
 	APPLICATION_IDENTITIES_WRITE_SCOPE,
 	checkGameStatsAccess,
+	resolveWidgetScopeEnabled,
 	type GameStatsAccessReport,
 } from "../src/utils/gameStatsProfile.js";
 import { syncGameStatsForDiscordId } from "../src/utils/gameStatsSync.js";
@@ -210,14 +210,14 @@ async function handleAccountOAuth(req: any, res: any) {
 		if (!scopes.includes("identify") || !scopes.includes("email")) {
 			throw new GameAccountConflictError("Discord OAuth requires the identify and email scopes.");
 		}
-		// Only worth flagging while the link actually asks for it. The scope is not requested at
-		// present (see ACCOUNT_LINK_SCOPES), so its absence is expected rather than a prompt to
-		// re-link, and warning on every successful link would be noise.
+		// Only worth flagging while the link actually asks for it. The scope is off unless the
+		// widget switch is on (see resolveWidgetScopeEnabled), so its absence is expected rather
+		// than a prompt to re-link, and warning on every successful link would be noise.
 		//
 		// Accounts linked before the Game Stats Widget existed lack this scope. Let them in and
 		// warn: their widget simply stays empty until they re-link, which is not worth failing on.
 		if (
-			ACCOUNT_LINK_SCOPES.includes(APPLICATION_IDENTITIES_WRITE_SCOPE) &&
+			(await resolveWidgetScopeEnabled()) &&
 			!scopes.includes(APPLICATION_IDENTITIES_WRITE_SCOPE)
 		) {
 			console.warn(

@@ -5,10 +5,11 @@
  * reads the game server. Reads and writes both need a bot token plus a player who authorized
  * the application with `application_identities.write`.
  *
- * That scope is deliberately *not* requested by the linking flows: Discord approves game stats
+ * That scope is requested only while the widget scope switch is on: Discord approves game stats
  * per application, an unapproved application is refused the scope with `invalid_scope`, and the
- * refusal fails the whole authorization — so asking for it stopped accounts from being created
- * at all. See ACCOUNT_LINK_SCOPES for when to put it back.
+ * refusal fails the whole authorization — so asking for it unconditionally stopped accounts from
+ * being created at all. `resolveWidgetScopeEnabled` reads the one switch that controls it, which
+ * the game server owns, so neither Discord flow can drift away from the other.
  *
  * An unapproved application is also not given these routes at all: it answers the generic
  * route-not-found body (`{"message":"404: Not Found","code":0}`) where the documented
@@ -24,25 +25,100 @@ const USERNAME_LIMIT = 1024;
 
 export const APPLICATION_IDENTITIES_WRITE_SCOPE = "application_identities.write";
 
-/**
- * Scopes the /account create link requests.
- *
- * `application_identities.write` is deliberately absent. Discord approves game stats per
- * application, an unapproved application is refused that scope with `invalid_scope`, and the
- * refusal fails the *entire* authorization — so requesting it stopped accounts from being
- * created at all, with nothing the player could do about it.
- *
- * Put it back here (and in ROLE_LINK_SCOPES) once `checkGameStatsAccess` reports `authorized`,
- * then have players re-link to pick the scope up.
- */
-export const ACCOUNT_LINK_SCOPES: readonly string[] = ["identify", "email"];
+/** Scopes an account link asks for whatever the widget switch says. */
+const ACCOUNT_LINK_BASE_SCOPES: readonly string[] = ["identify", "email"];
 
-/** Scopes the linked-roles verification link requests. Same deliberate omission. */
-export const ROLE_LINK_SCOPES: readonly string[] = [
+/** Scopes the linked-roles verification link asks for whatever the widget switch says. */
+const ROLE_LINK_BASE_SCOPES: readonly string[] = [
 	"identify",
 	"connections",
 	"role_connections.write",
 ];
+
+/**
+ * The scope list /account create sends to Discord.
+ *
+ * `application_identities.write` is added only while the widget scope is switched on. Discord
+ * approves game stats per application, an unapproved application is refused that scope with
+ * `invalid_scope`, and the refusal fails the *entire* authorization — so asking unconditionally
+ * stopped accounts from being created at all, with nothing the player could do about it.
+ */
+export function accountLinkScopes(widgetScopeEnabled = false): readonly string[] {
+	return widgetScopeEnabled
+		? [...ACCOUNT_LINK_BASE_SCOPES, APPLICATION_IDENTITIES_WRITE_SCOPE]
+		: ACCOUNT_LINK_BASE_SCOPES;
+}
+
+/** The scope list the linked-roles verification page sends. Same switch, same reasoning. */
+export function roleLinkScopes(widgetScopeEnabled = false): readonly string[] {
+	return widgetScopeEnabled
+		? [...ROLE_LINK_BASE_SCOPES, APPLICATION_IDENTITIES_WRITE_SCOPE]
+		: ROLE_LINK_BASE_SCOPES;
+}
+
+/** Where the one switch lives: the game server reports it on this endpoint. */
+const WIDGET_SCOPE_PATH = "/api/auth/discord/config";
+const WIDGET_SCOPE_TTL_MS = 5 * 60 * 1000;
+const WIDGET_SCOPE_TIMEOUT_MS = 2500;
+
+const widgetScopeCache = new Map<string, { value: boolean; expiresAt: number }>();
+
+/** Test seam: forget cached switch answers so a stubbed game server gets read again. */
+export function resetWidgetScopeCache(): void {
+	widgetScopeCache.clear();
+}
+
+/**
+ * Reads the widget scope switch from the game server, which owns it as `WIDGET_SCOPE_ENABLED`.
+ *
+ * This is what keeps the bot's `/account create` and the game's own Discord login asking for the
+ * same scopes: one setting, no second place to forget, and no way for the two to disagree about
+ * a scope Discord approves per application.
+ *
+ * Fail-closed. An unreachable or unhelpful game server means account scopes only, which can only
+ * ever under-ask — never a link Discord refuses because the application was not approved for the
+ * scope it requested. The answer is cached for a few minutes, so a link costs at most one fetch.
+ */
+export async function resolveWidgetScopeEnabled(
+	options: { baseUrl?: string; timeoutMs?: number } = {}
+): Promise<boolean> {
+	const baseUrl = (options.baseUrl ?? cleanEnvValue(process.env.GAME_SERVER_BASE_URL)).replace(
+		/\/+$/,
+		""
+	);
+	if (!baseUrl) return false;
+
+	const cached = widgetScopeCache.get(baseUrl);
+	if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? WIDGET_SCOPE_TIMEOUT_MS);
+	let enabled = false;
+	try {
+		const response = await fetch(`${baseUrl}${WIDGET_SCOPE_PATH}`, {
+			headers: { accept: "application/json" },
+			signal: controller.signal,
+		});
+		// Status, not `response.ok`: a failed read has to look the same however the response object
+		// is shaped, and every other request in this module keys off the status too.
+		if (response.status < 200 || response.status >= 300) {
+			throw new Error(`the game server answered ${response.status}`);
+		}
+		// text() then parse, like every other request in this module: one response shape to read, and
+		// a non-JSON answer fails into the catch instead of throwing out of json().
+		const body = JSON.parse(await response.text()) as { widgetScope?: unknown };
+		enabled = body.widgetScope === true;
+	} catch (error) {
+		console.warn(
+			`[game-stats] Could not read WIDGET_SCOPE_ENABLED from ${baseUrl}; requesting account scopes only. ${error instanceof Error ? error.message : String(error)}`
+		);
+	} finally {
+		clearTimeout(timer);
+	}
+
+	widgetScopeCache.set(baseUrl, { value: enabled, expiresAt: Date.now() + WIDGET_SCOPE_TTL_MS });
+	return enabled;
+}
 
 export const PROFILE_DATA_LIMIT_BYTES = 10 * 1024;
 export const DYNAMIC_FIELD_LIMIT = 30;

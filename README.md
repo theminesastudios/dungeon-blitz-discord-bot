@@ -75,11 +75,13 @@ Unpublished widgets can still be tested by your developer team, so the endpoint 
 
 ### Scope and re-linking
 
-Widget writes need a player who authorized the application with `application_identities.write`, but **neither linking flow requests it at present**: `ACCOUNT_LINK_SCOPES` asks for `identify email`, and `ROLE_LINK_SCOPES` for `identify connections role_connections.write`.
+Widget writes need a player who authorized the application with `application_identities.write`. It is requested only while the widget scope is switched on, and that switch lives in **one place**: `WIDGET_SCOPE_ENABLED` on the game server. Both Discord flows read it — the game server for its own login/link URL, and this bot for `/account create` and the verification page, read from `/api/auth/discord/config` — so they cannot drift into asking for different scopes.
 
-That omission is deliberate. Discord approves game stats per application, an unapproved application is refused the scope with `invalid_scope`, and the refusal fails the **entire** authorization — so requesting it stopped `/account create` and the in-game Discord login from working at all, with nothing a player could do to get past it. Put the scope back in both lists once `checkGameStatsAccess()` reports `authorized`, then have players re-link to pick it up.
+It is off by default because Discord approves game stats per application, an unapproved application is refused the scope with `invalid_scope`, and that refusal fails the **entire** authorization — so asking unconditionally stopped `/account create` and the in-game Discord login from working at all, with nothing a player could do about it.
 
-Until then no player holds the write scope, so widget writes are refused with `403`. That `403` now means "this **application** is not authorized for game stats" — Discord approves that per application, not per player — rather than "this player must re-link with `/account create`". The sync reports those players as `needs-authorization`.
+The bot reads the switch fail-closed: an unreachable game server means account scopes only, which can only ever under-ask. The answer is cached for five minutes. Once Discord approves the application, set `WIDGET_SCOPE_ENABLED=1` on the game server and restart it, then have players re-link to pick the scope up.
+
+While the switch is off no player holds the write scope, so widget writes are refused with `403`. That `403` now means "this **application** is not authorized for game stats" — Discord approves that per application, not per player — rather than "this player must re-link with `/account create`". The sync reports those players as `needs-authorization`.
 
 Both linking flows still publish the profile immediately after a successful link, so a player's widget fills in without waiting for a scheduled sync once the scope is granted.
 

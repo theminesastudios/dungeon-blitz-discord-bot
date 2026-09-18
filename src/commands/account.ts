@@ -148,7 +148,7 @@ export const accountCommand = {
     const subcommand = interaction.options.getSubcommand(true);
 
     if (subcommand === "create") {
-      const oauthUrl = createAccountOAuthUrl(discordId);
+      const oauthUrl = await createAccountOAuthUrl(discordId);
       const row = new ActionRowBuilder<APIButtonComponent>().addComponents(
         new ButtonBuilder()
           .setStyle(ButtonStyle.Link)

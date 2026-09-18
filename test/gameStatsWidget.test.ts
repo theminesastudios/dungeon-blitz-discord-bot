@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import {
-	ACCOUNT_LINK_SCOPES,
 	APPLICATION_IDENTITIES_WRITE_SCOPE,
 	DYNAMIC_FIELD_LIMIT,
 	GameStatsAuthorizationError,
@@ -8,12 +7,15 @@ import {
 	GameStatsRequestError,
 	GameStatsValidationError,
 	PROFILE_DATA_LIMIT_BYTES,
-	ROLE_LINK_SCOPES,
+	accountLinkScopes,
 	assertProfileDataWithinLimits,
 	checkGameStatsAccess,
 	getApplicationIdentityProfile,
 	measureProfileDataBytes,
+	resetWidgetScopeCache,
 	resolveGameStatsApiConfig,
+	resolveWidgetScopeEnabled,
+	roleLinkScopes,
 	updateApplicationIdentityProfile,
 } from "../src/utils/gameStatsProfile.js";
 import {
@@ -44,14 +46,26 @@ function wallet(overrides: Partial<GameWalletSummary>): GameWalletSummary {
 	};
 }
 
-// The widget scope is deliberately NOT requested. Discord refuses it for an application that
-// has not been approved for game stats, and that refusal fails the whole authorization — so
-// asking for it took account creation down with it. Put it back in both lists once the app is
-// approved (checkGameStatsAccess reports that), then have players re-link.
-assert.ok(!ACCOUNT_LINK_SCOPES.includes(APPLICATION_IDENTITIES_WRITE_SCOPE));
-assert.ok(!ROLE_LINK_SCOPES.includes(APPLICATION_IDENTITIES_WRITE_SCOPE));
-assert.equal(new Set(ACCOUNT_LINK_SCOPES).size, ACCOUNT_LINK_SCOPES.length, "scopes are not repeated");
-assert.equal(new Set(ROLE_LINK_SCOPES).size, ROLE_LINK_SCOPES.length, "scopes are not repeated");
+// The widget scope is switched on from one place — the game server's WIDGET_SCOPE_ENABLED — so
+// the two Discord flows can never disagree about it. Off, it is never requested: Discord refuses
+// it for an application that has not been approved for game stats, and that refusal fails the
+// whole authorization, so asking for it took account creation down with it.
+assert.ok(!accountLinkScopes().includes(APPLICATION_IDENTITIES_WRITE_SCOPE));
+assert.ok(!roleLinkScopes().includes(APPLICATION_IDENTITIES_WRITE_SCOPE));
+assert.ok(accountLinkScopes(true).includes(APPLICATION_IDENTITIES_WRITE_SCOPE));
+assert.ok(roleLinkScopes(true).includes(APPLICATION_IDENTITIES_WRITE_SCOPE));
+assert.deepEqual(
+	accountLinkScopes(true).slice(0, -1),
+	[...accountLinkScopes()],
+	"the switch adds one scope and moves nothing else"
+);
+assert.deepEqual(
+	roleLinkScopes(true).slice(0, -1),
+	[...roleLinkScopes()],
+	"same for the linked-roles verification link"
+);
+assert.equal(new Set(accountLinkScopes(true)).size, accountLinkScopes(true).length, "scopes are not repeated");
+assert.equal(new Set(roleLinkScopes(true)).size, roleLinkScopes(true).length, "scopes are not repeated");
 
 // Missing configuration is reported as a config error rather than a failed request.
 assert.throws(() => resolveGameStatsApiConfig({} as NodeJS.ProcessEnv), GameStatsConfigError);
@@ -365,6 +379,61 @@ try {
 	assert.equal(unreachable.state, "unknown");
 	assert.equal(unreachable.status, null);
 	assert.ok(unreachable.detail.includes("fetch failed"));
+
+	// The switch itself is read from the game server, which is what keeps /account create and the
+	// in-game flow asking for the same scopes. Everything unhelpful has to read as off: under
+	// asking is recoverable, a link Discord refuses is not.
+	resetWidgetScopeCache();
+	calls.length = 0;
+	stubFetch(200, JSON.stringify({ widgetScope: true }));
+	assert.equal(await resolveWidgetScopeEnabled({ baseUrl: "http://game.test" }), true);
+	assert.equal(calls[0].url, "http://game.test/api/auth/discord/config");
+	assert.equal(calls[0].method, "GET");
+
+	const callsAfterFirstRead = calls.length;
+	assert.equal(
+		await resolveWidgetScopeEnabled({ baseUrl: "http://game.test" }),
+		true,
+		"the switch stays on while cached"
+	);
+	assert.equal(calls.length, callsAfterFirstRead, "the switch is read once, then cached");
+
+	resetWidgetScopeCache();
+	stubFetch(200, JSON.stringify({ widgetScope: false }));
+	assert.equal(await resolveWidgetScopeEnabled({ baseUrl: "http://game.test" }), false);
+
+	resetWidgetScopeCache();
+	stubFetch(200, JSON.stringify({ redirectUri: "https://example.test/cb" }));
+	assert.equal(
+		await resolveWidgetScopeEnabled({ baseUrl: "http://game.test" }),
+		false,
+		"a game server that predates the switch means off"
+	);
+
+	resetWidgetScopeCache();
+	stubFetch(500, "{}");
+	assert.equal(
+		await resolveWidgetScopeEnabled({ baseUrl: "http://game.test" }),
+		false,
+		"a game server that errors means off"
+	);
+
+	resetWidgetScopeCache();
+	stubFetchReject(new Error("fetch failed"));
+	assert.equal(
+		await resolveWidgetScopeEnabled({ baseUrl: "http://game.test" }),
+		false,
+		"an unreachable game server means off"
+	);
+
+	resetWidgetScopeCache();
+	stubFetch(200, JSON.stringify({ widgetScope: true }));
+	assert.equal(
+		await resolveWidgetScopeEnabled({ baseUrl: "http://game.test/" }),
+		true,
+		"a trailing slash is not a different game server"
+	);
+	resetWidgetScopeCache();
 
 	// Bad identifiers never reach Discord.
 	calls.length = 0;
