@@ -3,8 +3,17 @@
  *
  * A player's profile widget is rendered from the record this module writes — Discord never
  * reads the game server. Reads and writes both need a bot token plus a player who authorized
- * the application with `application_identities.write`, so a 403 always means "this player has
- * to re-link with /account create", never "our token or application id is wrong".
+ * the application with `application_identities.write`.
+ *
+ * That scope is deliberately *not* requested by the linking flows: Discord approves game stats
+ * per application, an unapproved application is refused the scope with `invalid_scope`, and the
+ * refusal fails the whole authorization — so asking for it stopped accounts from being created
+ * at all. See ACCOUNT_LINK_SCOPES for when to put it back.
+ *
+ * An unapproved application is also not given these routes at all: it answers the generic
+ * route-not-found body (`{"message":"404: Not Found","code":0}`) where the documented
+ * permissions failure is a 403. `checkGameStatsAccess` tells the two apart, which is what an
+ * operator needs, because the OAuth side reports both the same way — as `invalid_scope`.
  *
  * The guards here mirror the documented limits (10 KB serialized `data`, 30 dynamic fields,
  * 100-character string values) so an oversized payload fails locally instead of half way
@@ -15,20 +24,25 @@ const USERNAME_LIMIT = 1024;
 
 export const APPLICATION_IDENTITIES_WRITE_SCOPE = "application_identities.write";
 
-/** Scopes the /account create link must request so the widget can be written for the player. */
-export const ACCOUNT_LINK_SCOPES = [
-	"identify",
-	"email",
-	APPLICATION_IDENTITIES_WRITE_SCOPE,
-] as const;
+/**
+ * Scopes the /account create link requests.
+ *
+ * `application_identities.write` is deliberately absent. Discord approves game stats per
+ * application, an unapproved application is refused that scope with `invalid_scope`, and the
+ * refusal fails the *entire* authorization — so requesting it stopped accounts from being
+ * created at all, with nothing the player could do about it.
+ *
+ * Put it back here (and in ROLE_LINK_SCOPES) once `checkGameStatsAccess` reports `authorized`,
+ * then have players re-link to pick the scope up.
+ */
+export const ACCOUNT_LINK_SCOPES: readonly string[] = ["identify", "email"];
 
-/** Scopes the linked-roles verification link must request, for players who link that way. */
-export const ROLE_LINK_SCOPES = [
+/** Scopes the linked-roles verification link requests. Same deliberate omission. */
+export const ROLE_LINK_SCOPES: readonly string[] = [
 	"identify",
 	"connections",
 	"role_connections.write",
-	APPLICATION_IDENTITIES_WRITE_SCOPE,
-] as const;
+];
 
 export const PROFILE_DATA_LIMIT_BYTES = 10 * 1024;
 export const DYNAMIC_FIELD_LIMIT = 30;
@@ -89,7 +103,7 @@ export type ApplicationIdentityProfile = {
 	data?: GameStatsProfileData | null;
 };
 
-/** Discord refused the write because the player has not authorized the required scope. */
+/** Discord refused the write: game stats are not authorized for this application. */
 export class GameStatsAuthorizationError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -265,7 +279,7 @@ async function sendIdentityRequest(
 
 	if (response.status === 403) {
 		throw new GameStatsAuthorizationError(
-			`[game-stats] Discord refused this profile write (403): the player must authorize the application with the "${APPLICATION_IDENTITIES_WRITE_SCOPE}" scope. Ask them to re-link their Discord account with /account create in Discord.` +
+			`[game-stats] Discord refused this profile write (403): game stats are not authorized for this application. Discord approves that per application (enable the Social SDK and claim the game in the Developer Portal); checkGameStatsAccess() reports where it stands.` +
 				(discordErrorMessage(text) ? ` Discord said: ${discordErrorMessage(text)}` : "")
 		);
 	}
@@ -391,4 +405,111 @@ export async function deleteApplicationIdentity(
 			...(params.providerId ? { body: JSON.stringify({ provider_id: params.providerId }) } : {}),
 		}
 	);
+}
+
+/**
+ * How far this application's access to the Game Stats Widget API goes.
+ *
+ * `not-enabled` and `not-authorized` both stop every widget write, but they need different
+ * fixes: the first is the application not being approved for game stats at all, the second is
+ * the documented 403 for an application that is enabled but not authorized here.
+ */
+export type GameStatsAccessState =
+	| "authorized"
+	| "not-authorized"
+	| "not-enabled"
+	| "bad-credentials"
+	| "unknown";
+
+export type GameStatsAccessReport = {
+	state: GameStatsAccessState;
+	status: number | null;
+	detail: string;
+	/** One operator-facing sentence: what was found and what to do about it. */
+	summary: string;
+};
+
+/** A probe on the OAuth failure page is worth a couple of seconds, but not an open-ended wait. */
+const ACCESS_PROBE_TIMEOUT_MS = 5000;
+
+function accessSummary(
+	state: GameStatsAccessState,
+	applicationId: string,
+	detail: string
+): string {
+	switch (state) {
+		case "authorized":
+			return `[game-stats] Application ${applicationId} is authorized for game stats.`;
+		case "not-authorized":
+			return `[game-stats] Application ${applicationId} is not authorized for game stats (403): game stats must be enabled for the application in the Discord Developer Portal. ${detail}`;
+		case "not-enabled":
+			return (
+				`[game-stats] Application ${applicationId} has no access to the Game Stats Widget API — Discord does not expose the Application Identity routes for it, and refuses the "${APPLICATION_IDENTITIES_WRITE_SCOPE}" scope with invalid_scope. ` +
+				"Game stats are approved per application: enable the Social SDK and claim the game in the Discord Developer Portal, then re-check. " +
+				detail
+			);
+		case "bad-credentials":
+			return `[game-stats] Discord rejected the application credentials (401); check DISCORD_BOT_TOKEN for application ${applicationId}. ${detail}`;
+		default:
+			return `[game-stats] Could not determine Game Stats access for application ${applicationId}. ${detail}`;
+	}
+}
+
+function describeAccessStatus(
+	status: number,
+	body: string,
+	applicationId: string
+): GameStatsAccessReport {
+	const said = discordErrorMessage(body);
+	const detail = said ? `Discord said: ${said}` : "Discord sent no response body.";
+	// 404 is the telling one: the documented permission error on these routes is a 403, so the
+	// generic route-not-found body means the routes were never published for this application.
+	const state: GameStatsAccessState =
+		status === 200
+			? "authorized"
+			: status === 401
+				? "bad-credentials"
+				: status === 403
+					? "not-authorized"
+					: status === 404
+						? "not-enabled"
+						: "unknown";
+
+	return { state, status, detail, summary: accessSummary(state, applicationId, detail) };
+}
+
+/**
+ * Probes the application's own access to the Game Stats Widget API by reading one player's
+ * identity list, which is the cheapest documented route. `discordUserId` only has to be a
+ * well-formed snowflake: the routes are published per application, not per user.
+ *
+ * Never throws — an unreachable Discord is reported as `unknown` so a caller can keep going.
+ */
+export async function checkGameStatsAccess(
+	params: { discordUserId: string; timeoutMs?: number },
+	config: GameStatsApiConfig = resolveGameStatsApiConfig()
+): Promise<GameStatsAccessReport> {
+	const discordUserId = requireDiscordUserId(params.discordUserId);
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), params.timeoutMs ?? ACCESS_PROBE_TIMEOUT_MS);
+
+	try {
+		const response = await fetch(applicationUrl(config, `/users/${discordUserId}/identities`), {
+			method: "GET",
+			headers: { Authorization: `Bot ${config.botToken}` },
+			signal: controller.signal,
+		});
+		const text = await response.text();
+		return describeAccessStatus(response.status, text, config.applicationId);
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		return {
+			state: "unknown",
+			status: null,
+			detail,
+			summary: accessSummary("unknown", config.applicationId, detail),
+		};
+	} finally {
+		clearTimeout(timer);
+	}
 }

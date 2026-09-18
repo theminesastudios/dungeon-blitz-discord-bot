@@ -16,7 +16,12 @@ import {
 	GameAccountConflictError,
 } from "../src/utils/gameAccount.js";
 import { getVerifiedDiscordOAuthUser } from "../src/utils/discordOAuthUser.js";
-import { APPLICATION_IDENTITIES_WRITE_SCOPE } from "../src/utils/gameStatsProfile.js";
+import {
+	ACCOUNT_LINK_SCOPES,
+	APPLICATION_IDENTITIES_WRITE_SCOPE,
+	checkGameStatsAccess,
+	type GameStatsAccessReport,
+} from "../src/utils/gameStatsProfile.js";
 import { syncGameStatsForDiscordId } from "../src/utils/gameStatsSync.js";
 
 const database = MiniDatabase.fromEnv();
@@ -95,6 +100,66 @@ function sendAccountPage(
 </html>`);
 }
 
+/**
+ * Asks Discord what this application may do with game stats. Returns null when the deployment
+ * cannot even ask (no application id or bot token), so a caller can fall back to generic text.
+ *
+ * The probe is app-level, so the player's own Discord id is all it needs to be: the routes are
+ * published per application, not per user.
+ */
+async function probeGameStatsAccess(discordUserId: string): Promise<GameStatsAccessReport | null> {
+	try {
+		const report = await checkGameStatsAccess({ discordUserId, timeoutMs: 4000 });
+		console.warn(`[account-oauth] ${report.summary}`);
+		return report;
+	} catch (error) {
+		console.error("[account-oauth] Game Stats access probe failed:", error);
+		return null;
+	}
+}
+
+/**
+ * Logs the application's game-stats access after a link that finished without the widget scope.
+ * Discord's docs warn that a scope the app may not request can be dropped silently ("errors or
+ * undocumented behavior"), so this turns an unexplained empty widget into a named cause.
+ */
+function logGameStatsAccess(context: string, discordUserId: string): void {
+	const task = checkGameStatsAccess({ discordUserId })
+		.then((report) => console.warn(`[account-oauth] ${context} ${report.summary}`))
+		.catch(() => undefined);
+	try {
+		waitUntil(task);
+	} catch {
+		// Outside a Vercel invocation (local scripts) there is nothing to extend.
+	}
+}
+
+/**
+ * Explains a refusal in terms of who can fix it. A refused widget scope is an application-level
+ * gate — Discord approves game stats per application — so telling the player to retry would only
+ * loop them through the same failure; the deployment owner is the one who has to act.
+ */
+function refusalMessage(
+	errorCode: string,
+	errorDescription: string,
+	access: GameStatsAccessReport | null
+): string {
+	const base = `Discord returned "${errorCode}"${errorDescription ? ` (${errorDescription})` : ""}, so the account was not created.`;
+	if (errorCode !== "invalid_scope") {
+		return `${base} Run /account create again in Discord; if it repeats, this deployment needs a look.`;
+	}
+
+	switch (access?.state) {
+		case "not-enabled":
+		case "not-authorized":
+			return `${base} This application is not authorized for Discord game stats yet, so the "${APPLICATION_IDENTITIES_WRITE_SCOPE}" scope it asks for is refused — that is an application-level gate, and retrying will not clear it. The deployment owner has to enable the Social SDK and claim the game in the Discord Developer Portal; linking resumes once Discord approves it.`;
+		case "bad-credentials":
+			return `${base} Discord rejected this deployment's application credentials, so linking cannot work until the owner fixes them.`;
+		default:
+			return `${base} The application asks for the "${APPLICATION_IDENTITIES_WRITE_SCOPE}" scope and Discord refuses it, so the deployment needs a look before /account create can work.`;
+	}
+}
+
 async function handleAccountOAuth(req: any, res: any) {
 	const q = req?.query ?? {};
 	const state = parseAccountOAuthState(q.state);
@@ -112,14 +177,25 @@ async function handleAccountOAuth(req: any, res: any) {
 		console.warn(
 			`[account-oauth] Discord refused the authorization: ${errorCode}${errorDescription ? ` (${errorDescription})` : ""}`
 		);
-		const cancelled = errorCode === "access_denied";
+		if (errorCode === "access_denied") {
+			sendAccountPage(
+				res,
+				400,
+				"Authorization cancelled",
+				"The Dungeon Blitz account was not created. Run /account create again in Discord and choose Authorize on the Discord screen."
+			);
+			return;
+		}
+		// `invalid_scope` is the one refusal the player cannot act on, because Discord approves
+		// scopes per application. Ask Discord what this app is allowed to do and name the fix,
+		// instead of handing the player a code that means nothing to them.
+		const access =
+			errorCode === "invalid_scope" ? await probeGameStatsAccess(state.discordId) : null;
 		sendAccountPage(
 			res,
 			400,
-			cancelled ? "Authorization cancelled" : "Discord refused the authorization",
-			cancelled
-				? "The Dungeon Blitz account was not created. Run /account create again in Discord and choose Authorize on the Discord screen."
-				: `Discord returned "${errorCode}"${errorDescription ? ` (${errorDescription})` : ""}, so the account was not created. Run /account create again in Discord; if it repeats, this deployment needs a look.`
+			"Discord refused the authorization",
+			refusalMessage(errorCode, errorDescription, access)
 		);
 		return;
 	}
@@ -134,12 +210,20 @@ async function handleAccountOAuth(req: any, res: any) {
 		if (!scopes.includes("identify") || !scopes.includes("email")) {
 			throw new GameAccountConflictError("Discord OAuth requires the identify and email scopes.");
 		}
+		// Only worth flagging while the link actually asks for it. The scope is not requested at
+		// present (see ACCOUNT_LINK_SCOPES), so its absence is expected rather than a prompt to
+		// re-link, and warning on every successful link would be noise.
+		//
 		// Accounts linked before the Game Stats Widget existed lack this scope. Let them in and
 		// warn: their widget simply stays empty until they re-link, which is not worth failing on.
-		if (!scopes.includes(APPLICATION_IDENTITIES_WRITE_SCOPE)) {
+		if (
+			ACCOUNT_LINK_SCOPES.includes(APPLICATION_IDENTITIES_WRITE_SCOPE) &&
+			!scopes.includes(APPLICATION_IDENTITIES_WRITE_SCOPE)
+		) {
 			console.warn(
 				`[account-oauth] Linking completed without the ${APPLICATION_IDENTITIES_WRITE_SCOPE} scope; the player's Game Stats Widget profile cannot be written until they re-link with /account create.`
 			);
+			logGameStatsAccess("Linking completed without the widget scope;", state.discordId);
 		}
 		const user = await getVerifiedDiscordOAuthUser(tokens.access_token);
 		if (!accountOAuthStateMatchesUser(state, user.id)) {

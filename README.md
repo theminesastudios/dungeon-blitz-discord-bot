@@ -75,11 +75,29 @@ Unpublished widgets can still be tested by your developer team, so the endpoint 
 
 ### Scope and re-linking
 
-Writes need a player who authorized the application with `application_identities.write`. `/account create` now requests `identify email application_identities.write`, and the verification page requests `identify connections role_connections.write application_identities.write`.
+Widget writes need a player who authorized the application with `application_identities.write`, but **neither linking flow requests it at present**: `ACCOUNT_LINK_SCOPES` asks for `identify email`, and `ROLE_LINK_SCOPES` for `identify connections role_connections.write`.
 
-Accounts linked **before** this change do not hold the write scope: they are still created and linked successfully (the callback logs a warning), but their widget stays empty until the player re-runs `/account create`. Those players are reported as `needs-authorization` by the sync — a `403` from Discord always means "this player must re-link with `/account create`", never "the token or application id is wrong".
+That omission is deliberate. Discord approves game stats per application, an unapproved application is refused the scope with `invalid_scope`, and the refusal fails the **entire** authorization — so requesting it stopped `/account create` and the in-game Discord login from working at all, with nothing a player could do to get past it. Put the scope back in both lists once `checkGameStatsAccess()` reports `authorized`, then have players re-link to pick it up.
 
-Both linking flows also publish the profile immediately after a successful link, so a player's widget fills in without waiting for a scheduled sync.
+Until then no player holds the write scope, so widget writes are refused with `403`. That `403` now means "this **application** is not authorized for game stats" — Discord approves that per application, not per player — rather than "this player must re-link with `/account create`". The sync reports those players as `needs-authorization`.
+
+Both linking flows still publish the profile immediately after a successful link, so a player's widget fills in without waiting for a scheduled sync once the scope is granted.
+
+### When Discord refuses the scope (`invalid_scope`)
+
+`application_identities.write` is **not** in Discord's public scope list: game stats are approved per application, and an app that has not been approved is refused with `error=invalid_scope` on the OAuth redirect. The same gate hides the Application Identity routes — Discord answers the generic route-not-found body (`{"message":"404: Not Found","code":0}`) where the documented permissions failure is a `403`.
+
+`checkGameStatsAccess()` in `src/utils/gameStatsProfile.ts` tells those apart, and `/account create` uses it: when Discord answers `invalid_scope`, the callback probes the application's access before rendering the failure page, logs the finding, and names the portal fix instead of handing the player a code they cannot act on.
+
+| State | Discord answered | Meaning |
+| --- | --- | --- |
+| `authorized` | `200` | the application may read and write game stats |
+| `not-authorized` | `403` | game stats must be enabled for the application |
+| `not-enabled` | `404`, generic body | the application has no game-stats access at all |
+| `bad-credentials` | `401` | `DISCORD_BOT_TOKEN` was rejected |
+| `unknown` | anything else, or unreachable | reported, never thrown |
+
+Clearing `not-enabled` is a Developer Portal step (agree to the Social SDK Terms, claim the game), not an environment variable. It no longer blocks account creation — the scope is not requested — but nothing can be written to a widget until Discord approves the application.
 
 ### Environment
 

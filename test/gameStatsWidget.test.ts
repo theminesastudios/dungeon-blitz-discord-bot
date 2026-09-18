@@ -8,7 +8,9 @@ import {
 	GameStatsRequestError,
 	GameStatsValidationError,
 	PROFILE_DATA_LIMIT_BYTES,
+	ROLE_LINK_SCOPES,
 	assertProfileDataWithinLimits,
+	checkGameStatsAccess,
 	getApplicationIdentityProfile,
 	measureProfileDataBytes,
 	resolveGameStatsApiConfig,
@@ -42,9 +44,14 @@ function wallet(overrides: Partial<GameWalletSummary>): GameWalletSummary {
 	};
 }
 
-// Linking has to ask for the scope the widget API needs, or every write is a 403.
-assert.ok(ACCOUNT_LINK_SCOPES.includes(APPLICATION_IDENTITIES_WRITE_SCOPE));
+// The widget scope is deliberately NOT requested. Discord refuses it for an application that
+// has not been approved for game stats, and that refusal fails the whole authorization — so
+// asking for it took account creation down with it. Put it back in both lists once the app is
+// approved (checkGameStatsAccess reports that), then have players re-link.
+assert.ok(!ACCOUNT_LINK_SCOPES.includes(APPLICATION_IDENTITIES_WRITE_SCOPE));
+assert.ok(!ROLE_LINK_SCOPES.includes(APPLICATION_IDENTITIES_WRITE_SCOPE));
 assert.equal(new Set(ACCOUNT_LINK_SCOPES).size, ACCOUNT_LINK_SCOPES.length, "scopes are not repeated");
+assert.equal(new Set(ROLE_LINK_SCOPES).size, ROLE_LINK_SCOPES.length, "scopes are not repeated");
 
 // Missing configuration is reported as a config error rather than a failed request.
 assert.throws(() => resolveGameStatsApiConfig({} as NodeJS.ProcessEnv), GameStatsConfigError);
@@ -223,6 +230,12 @@ function stubFetch(status: number, body: string): void {
 	}) as typeof fetch;
 }
 
+function stubFetchReject(error: Error): void {
+	globalThis.fetch = (async () => {
+		throw error;
+	}) as typeof fetch;
+}
+
 try {
 	calls.length = 0;
 	stubFetch(201, "");
@@ -295,6 +308,63 @@ try {
 	assert.equal(profile.username, "Veteran");
 	assert.equal(calls[0].method, "GET");
 	assert.ok(!("body" in calls[0]), "GET sends no body");
+
+	// The application-level gate. Discord hides the Application Identity routes from an app that
+	// is not approved for game stats: the generic route-not-found body comes back where the
+	// documented permission failure is a 403. Both stop every widget write, and only one of them
+	// is fixed by enabling game stats for the application, so they must not be confused.
+	calls.length = 0;
+	stubFetch(200, JSON.stringify({ identities: [] }));
+	const authorized = await checkGameStatsAccess(
+		{ discordUserId: "1447954255452311695" },
+		config
+	);
+	assert.equal(authorized.state, "authorized");
+	assert.equal(
+		calls[0].url,
+		"https://discord.com/api/v10/applications/1447954255452311695/users/1447954255452311695/identities"
+	);
+	assert.equal(calls[0].method, "GET");
+	assert.equal(calls[0].headers.Authorization, "Bot token");
+
+	stubFetch(403, JSON.stringify({ message: "Application not authorized for game stats" }));
+	assert.equal(
+		(await checkGameStatsAccess({ discordUserId: "1447954255452311695" }, config)).state,
+		"not-authorized"
+	);
+
+	stubFetch(404, JSON.stringify({ message: "404: Not Found", code: 0 }));
+	const notEnabled = await checkGameStatsAccess(
+		{ discordUserId: "1447954255452311695" },
+		config
+	);
+	assert.equal(notEnabled.state, "not-enabled");
+	assert.equal(notEnabled.status, 404);
+	assert.ok(
+		notEnabled.summary.includes("Social SDK") && notEnabled.summary.includes("claim"),
+		"the operator summary names the portal fix"
+	);
+	assert.equal(
+		(await checkGameStatsAccess({ discordUserId: "1447954255452311695" }, config)).state,
+		"not-enabled",
+		"only a 403 is reported as a permissions problem"
+	);
+
+	stubFetch(401, JSON.stringify({ message: "401: Unauthorized", code: 0 }));
+	assert.equal(
+		(await checkGameStatsAccess({ discordUserId: "1447954255452311695" }, config)).state,
+		"bad-credentials"
+	);
+
+	// An unreachable Discord is reported, never thrown: the probe runs on a player's page.
+	stubFetchReject(new Error("fetch failed"));
+	const unreachable = await checkGameStatsAccess(
+		{ discordUserId: "1447954255452311695" },
+		config
+	);
+	assert.equal(unreachable.state, "unknown");
+	assert.equal(unreachable.status, null);
+	assert.ok(unreachable.detail.includes("fetch failed"));
 
 	// Bad identifiers never reach Discord.
 	calls.length = 0;

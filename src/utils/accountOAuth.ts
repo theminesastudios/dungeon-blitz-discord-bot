@@ -76,8 +76,10 @@ export function accountOAuthStateMatchesUser(
 }
 
 /**
- * The link asks for `application_identities.write` as well: without it Discord refuses to write
- * the player's Game Stats Widget profile, so linking once should cover both.
+ * The link requests the account scopes only. The Game Stats Widget scope is left out on
+ * purpose: Discord refuses an unapproved scope with `invalid_scope`, and that refusal fails the
+ * whole authorization, so asking for it stopped accounts from being created. See
+ * ACCOUNT_LINK_SCOPES for when to put it back.
  */
 export function createAccountOAuthUrl(discordId: string): string {
 	const url = new URL("https://discord.com/api/oauth2/authorize");

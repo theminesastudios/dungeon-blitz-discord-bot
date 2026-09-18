@@ -9,7 +9,7 @@ void discordOAuthConfig;
 
 export default mini.discordOAuthVerificationPage({
 	htmlFile: "pages/verify.html",
-	// Includes application_identities.write so players who link through this page can also
-	// publish a Game Stats Widget profile.
+	// ROLE_LINK_SCOPES leaves out application_identities.write on purpose: Discord refuses an
+	// unapproved scope with invalid_scope, and that fails the whole authorization.
 	scopes: [...ROLE_LINK_SCOPES],
 });
