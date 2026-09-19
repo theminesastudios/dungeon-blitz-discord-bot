@@ -36,6 +36,22 @@ The wallet commands use `MONGODB_URI` by default. The current game schema is rea
 
 Account OAuth state is HMAC-signed with `ACCOUNT_OAUTH_STATE_SECRET`, or with `DISCORD_CLIENT_SECRET` when a dedicated state secret is not configured. Links expire after 10 minutes and can only be completed by the Discord user who invoked `/account create`.
 
+## Game health monitoring
+
+The bot exposes an independent health check for the game host at `/api/game-health`. It resolves the game hostname, fetches a site page, and probes both game sockets (843 policy server, 8080 game protocol) **from Vercel's network** — a vantage point that catches DNS and routing outages that look perfectly healthy from the server itself. The 2026-09 outage, where the `dungeonblitzr` A record went missing during a DNS migration and nobody noticed for hours, is what this guards against.
+
+A summary JSON is returned to any caller; alerting is only evaluated for authenticated requests:
+
+- On a down/degraded verdict it sends one alert, repeats hourly (`GAME_HEALTH_REMINDER_MINUTES`), and sends one recovery message when the host is healthy again. Alert state is deduped in MongoDB (`game_health_state` collection).
+- The game server pings the endpoint every 5 minutes (`HEALTH_PING_URL`/`HEALTH_PING_SECRET` in the game server's `.env`), and a Vercel cron hits it daily as a VM-independent fallback. Requests authenticated with `HEALTH_CHECK_SECRET` (or `CRON_SECRET`, which Vercel cron presents) arm alerting.
+
+To receive the alerts, set exactly one of these in the bot deployment:
+
+- `GAME_HEALTH_WEBHOOK_URL` — a Discord webhook URL; or
+- `GAME_HEALTH_ALERT_DISCORD_ID` — your Discord user ID (the bot DMs you; requires `DISCORD_BOT_TOKEN`, already set).
+
+And set the same secret value as the game server's `HEALTH_PING_SECRET` in the bot's `HEALTH_CHECK_SECRET`.
+
 ## Discord Game Stats Widget
 
 Linked players can show their Dungeon Blitz character on their Discord profile. Discord renders the widget from a profile record this bot writes through the [Application Identity Profile API](https://docs.discord.com/developers/resources/application-identity-profile) — Discord never reads the game server, so the bot has to push each player's data.
