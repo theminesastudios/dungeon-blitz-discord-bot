@@ -1,4 +1,10 @@
 {
+	"crons": [
+		{
+			"path": "/api/game-health",
+			"schedule": "*/10 * * * *"
+		}
+	],
 	"rewrites": [
 		{
 			"source": "/",
@@ -31,6 +37,10 @@
 		},
 		"api/game-stats/sync.ts": {
 			"maxDuration": 10,
+			"includeFiles": "{src/utils/**}"
+		},
+		"api/game-health.ts": {
+			"maxDuration": 30,
 			"includeFiles": "{src/utils/**}"
 		}
 	},
