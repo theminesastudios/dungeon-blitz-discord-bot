@@ -17,20 +17,40 @@
  */
 import * as dns from "node:dns";
 import * as net from "node:net";
+import * as tls from "node:tls";
 import { MongoClient } from "mongodb";
 
 const DEFAULT_HOSTNAME = "dungeonblitzr.theminesa.studio";
-const DEFAULT_EXPECTED_IP = "35.185.71.109";
+// The address the VM actually answers from — the GCP reserved external IP
+// (dungeon-blitz-eu-ip) attached to the dungeon-blitz-eu instance. Override
+// with GAME_HEALTH_EXPECTED_IP when the VM moves. 35.185.71.109 is a reserved
+// but idle address in the same project; it is never the right answer, and the
+// stale default here made every check read as a DNS mismatch (2026-09-20).
+const DEFAULT_EXPECTED_IP = "35.241.250.170";
 const DEFAULT_PAGE_PATH = "/api/auth/discord/config";
 const DEFAULT_REMINDER_MINUTES = 60;
 const CONNECT_TIMEOUT_MS = 5_000;
 const PAGE_TIMEOUT_MS = 5_000;
 const POLICY_TIMEOUT_MS = 4_000;
 const POLICY_REQUEST = "<policy-file-request/>\0";
+const TLS_TIMEOUT_MS = 5_000;
+// Warn this many days before the TLS certificate expires (Caddy renews
+// automatically; the warning is for when that silently stops happening).
+const DEFAULT_CERT_WARN_DAYS = 14;
 
 export type GameHealthDnsStatus = "ok" | "nxdomain" | "mismatch" | "error";
 export type GameHealthSocketStatus = "ok" | "refused" | "timeout" | "error";
+export type GameHealthTlsStatus = "ok" | "expiring" | "expired" | "error";
 export type GameHealthOverall = "healthy" | "degraded" | "down";
+
+/** What the TLS inspector itself observed before the warn-window classification. */
+export type GameHealthTlsProbe = {
+	status: "ok" | "error";
+	daysRemaining?: number;
+	expiresAt?: string;
+	issuer?: string;
+	error?: string;
+};
 
 export type GameHealthReport = {
 	checkedAt: string;
@@ -38,6 +58,14 @@ export type GameHealthReport = {
 	expectedIp: string;
 	dns: { status: GameHealthDnsStatus; resolvedIps: string[]; error?: string };
 	page: { status: "ok" | "error"; httpStatus?: number; error?: string };
+	https: { status: "ok" | "error"; httpStatus?: number; error?: string };
+	tls: {
+		status: GameHealthTlsStatus;
+		daysRemaining?: number;
+		expiresAt?: string;
+		issuer?: string;
+		error?: string;
+	};
 	socket843: { status: GameHealthSocketStatus; answeredPolicy: boolean; error?: string };
 	socket8080: { status: GameHealthSocketStatus; error?: string };
 	overall: GameHealthOverall;
@@ -53,6 +81,11 @@ export type GameHealthStateRecord = {
 	lastReminderAt?: string;
 	lastRecoveryAt?: string;
 	lastSummary?: string;
+	// Certificate-expiry warning lifecycle, tracked separately from the
+	// up/down alert so an expiring cert warns once and a renewal confirms once
+	// without touching the outage alert machinery.
+	certWarningOpen?: boolean;
+	lastCertWarningAt?: string;
 };
 
 export type GameHealthStateStore = {
@@ -62,7 +95,7 @@ export type GameHealthStateStore = {
 
 export type GameHealthAlertResult = {
 	sent: boolean;
-	kind: "alert" | "reminder" | "recovery" | null;
+	kind: "alert" | "reminder" | "recovery" | "warning" | null;
 	channel: string | null;
 	error?: string;
 };
@@ -81,6 +114,12 @@ export type GameHealthCheckOptions = {
 	now?: Date;
 	resolve4?: (hostname: string) => Promise<string[]>;
 	fetchPage?: (url: string) => Promise<{ status: number }>;
+	/** Distinct from fetchPage so a test can simulate "https down, http up". */
+	fetchHttpsPage?: (url: string) => Promise<{ status: number }>;
+	/** Injected in tests; the default opens a real TLS connection to :443. */
+	inspectTls?: (hostname: string) => Promise<GameHealthTlsProbe>;
+	/** Warn when the certificate has this many days (or fewer) left. */
+	certWarnDays?: number;
 	connectSocket?: (port: number) => Promise<SocketProbe>;
 };
 
@@ -147,9 +186,67 @@ async function defaultConnectSocket(host: string, port: number): Promise<SocketP
 }
 
 /**
+ * Opens a real TLS session to :443 and reads the served certificate.
+ * Verification is left on, so a wrong/self-signed/MITM'd certificate reads as
+ * an error rather than silently passing; an expired certificate surfaces the
+ * verification error, which the caller classifies as "expired". Caddy fronts
+ * 443 since 2026-09-20, so this is what catches a dead Caddy, a closed 443, or
+ * a certificate nobody renewed.
+ */
+async function defaultInspectTls(hostname: string): Promise<GameHealthTlsProbe> {
+	return await new Promise<GameHealthTlsProbe>((resolve) => {
+		const socket = tls.connect({
+			host: hostname,
+			port: 443,
+			servername: hostname,
+			rejectUnauthorized: true,
+		});
+		let settled = false;
+		const finish = (probe: GameHealthTlsProbe) => {
+			if (settled) return;
+			settled = true;
+			socket.destroy();
+			resolve(probe);
+		};
+		socket.setTimeout(TLS_TIMEOUT_MS, () => finish({ status: "error", error: "timeout" }));
+		socket.on("error", (error: NodeJS.ErrnoException) => {
+			finish({ status: "error", error: error.code || error.message || String(error) });
+		});
+		socket.on("secureConnect", () => {
+			const cert = socket.getPeerCertificate();
+			const rawExpiry = cert?.valid_to;
+			if (!rawExpiry) {
+				finish({ status: "error", error: "no peer certificate presented" });
+				return;
+			}
+			const expiresAtMs = Date.parse(rawExpiry);
+			if (!Number.isFinite(expiresAtMs)) {
+				finish({ status: "error", error: `unparseable certificate expiry: ${rawExpiry}` });
+				return;
+			}
+			const rawIssuer =
+				typeof cert.issuer === "object" && cert.issuer ? cert.issuer.O : cert.issuer;
+			const issuer = Array.isArray(rawIssuer)
+				? rawIssuer.join(", ")
+				: typeof rawIssuer === "string"
+					? rawIssuer
+					: undefined;
+			finish({
+				status: "ok",
+				daysRemaining: Math.floor((expiresAtMs - Date.now()) / 86_400_000),
+				expiresAt: new Date(expiresAtMs).toISOString(),
+				...(issuer ? { issuer } : {}),
+			});
+		});
+	});
+}
+
+/**
  * DNS must resolve (and still point at the VM), the site must answer over HTTP,
- * and both game sockets must respond. Any DNS or page failure is "down"; a
- * socket failure with the site up is "degraded" (players cannot play, but the
+ * the site must also answer over HTTPS (Caddy on 443 — browsers auto-upgrade
+ * and players land there first), and both game sockets must respond. Any DNS or
+ * HTTP page failure is "down"; an HTTPS, TLS, or socket failure with the site
+ * otherwise up is "degraded" (some or all players cannot get in, but the
  * deployment is reachable and worth a different diagnosis).
  */
 export async function checkGameHealth(options: GameHealthCheckOptions = {}): Promise<GameHealthReport> {
@@ -158,6 +255,9 @@ export async function checkGameHealth(options: GameHealthCheckOptions = {}): Pro
 	const pagePath = options.pagePath?.trim() || DEFAULT_PAGE_PATH;
 	const resolve4 = options.resolve4 ?? defaultResolve4();
 	const fetchPage = options.fetchPage ?? defaultFetchPage;
+	const fetchHttpsPage = options.fetchHttpsPage ?? defaultFetchPage;
+	const inspectTls = options.inspectTls ?? defaultInspectTls;
+	const certWarnDays = options.certWarnDays ?? DEFAULT_CERT_WARN_DAYS;
 	const connectSocket =
 		options.connectSocket ?? ((port: number) => defaultConnectSocket(hostname, port));
 	const checkedAt = (options.now ?? new Date()).toISOString();
@@ -187,7 +287,7 @@ export async function checkGameHealth(options: GameHealthCheckOptions = {}): Pro
 		pageError = error instanceof Error ? error.message : String(error);
 	}
 
-	const [socket843, socket8080] = await Promise.all([
+	const [socket843, socket8080, httpsPage, tlsProbe] = await Promise.all([
 		connectSocket(843).catch((error: unknown): SocketProbe => ({
 			status: "error",
 			error: error instanceof Error ? error.message : String(error),
@@ -196,11 +296,48 @@ export async function checkGameHealth(options: GameHealthCheckOptions = {}): Pro
 			status: "error",
 			error: error instanceof Error ? error.message : String(error),
 		})),
+		(async (): Promise<{ status: "ok" | "error"; httpStatus?: number; error?: string }> => {
+			try {
+				const page = await fetchHttpsPage(`https://${hostname}${pagePath}`);
+				return {
+					status: page.status >= 200 && page.status < 400 ? ("ok" as const) : ("error" as const),
+					httpStatus: page.status,
+					...(page.status >= 200 && page.status < 400 ? {} : { error: "unexpected status" }),
+				};
+			} catch (error) {
+				return {
+					status: "error" as const,
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+		})(),
+		inspectTls(hostname).catch((error: unknown): GameHealthTlsProbe => ({
+			status: "error",
+			error: error instanceof Error ? error.message : String(error),
+		})),
 	]);
+
+	// Classify the certificate probe: a verification failure whose message names
+	// expiry reads as "expired"; a valid chain inside the warn window reads as
+	// "expiring"; everything else valid is "ok".
+	let tlsStatus: GameHealthTlsStatus;
+	if (tlsProbe.status === "error") {
+		tlsStatus = /expired/i.test(tlsProbe.error ?? "") ? "expired" : "error";
+	} else {
+		tlsStatus =
+			(tlsProbe.daysRemaining ?? Number.POSITIVE_INFINITY) <= certWarnDays ? "expiring" : "ok";
+	}
 
 	let overall: GameHealthOverall;
 	if (dnsStatus !== "ok" || pageStatus !== "ok") overall = "down";
-	else if (socket843.status !== "ok" || socket8080.status !== "ok") overall = "degraded";
+	else if (
+		socket843.status !== "ok" ||
+		socket8080.status !== "ok" ||
+		httpsPage.status !== "ok" ||
+		tlsStatus === "expired" ||
+		tlsStatus === "error"
+	)
+		overall = "degraded";
 	else overall = "healthy";
 
 	return {
@@ -212,6 +349,18 @@ export async function checkGameHealth(options: GameHealthCheckOptions = {}): Pro
 			status: pageStatus,
 			...(pageHttpStatus === undefined ? {} : { httpStatus: pageHttpStatus }),
 			...(pageError ? { error: pageError } : {}),
+		},
+		https: {
+			status: httpsPage.status,
+			...(httpsPage.httpStatus === undefined ? {} : { httpStatus: httpsPage.httpStatus }),
+			...(httpsPage.error ? { error: httpsPage.error } : {}),
+		},
+		tls: {
+			status: tlsStatus,
+			...(tlsProbe.daysRemaining === undefined ? {} : { daysRemaining: tlsProbe.daysRemaining }),
+			...(tlsProbe.expiresAt === undefined ? {} : { expiresAt: tlsProbe.expiresAt }),
+			...(tlsProbe.issuer === undefined ? {} : { issuer: tlsProbe.issuer }),
+			...(tlsProbe.error === undefined ? {} : { error: tlsProbe.error }),
 		},
 		socket843: {
 			status: socket843.status,
@@ -239,6 +388,18 @@ export function summarizeGameHealth(report: GameHealthReport): string {
 		report.page.status === "ok"
 			? `Page: HTTP ${report.page.httpStatus}`
 			: `Page: failed${report.page.httpStatus === undefined ? "" : ` (HTTP ${report.page.httpStatus})`}${report.page.error ? ` (${report.page.error})` : ""}`;
+	const httpsLine =
+		report.https.status === "ok"
+			? `HTTPS page: HTTP ${report.https.httpStatus}`
+			: `HTTPS page: failed${report.https.httpStatus === undefined ? "" : ` (HTTP ${report.https.httpStatus})`}${report.https.error ? ` (${report.https.error})` : ""}`;
+	const tlsLine =
+		report.tls.status === "ok"
+			? `TLS cert: valid, ${report.tls.daysRemaining} day(s) left (expires ${report.tls.expiresAt ?? "unknown"}${report.tls.issuer ? `, ${report.tls.issuer}` : ""})`
+			: report.tls.status === "expiring"
+				? `TLS cert: ⚠️ expires in ${report.tls.daysRemaining} day(s) (${report.tls.expiresAt ?? "unknown date"})`
+				: report.tls.status === "expired"
+					? "TLS cert: EXPIRED — browsers refuse the site"
+					: `TLS cert: check failed (${report.tls.error ?? "unknown error"})`;
 	const p843 =
 		report.socket843.status === "ok"
 			? `answering${report.socket843.answeredPolicy ? " (policy served)" : ""}`
@@ -246,6 +407,8 @@ export function summarizeGameHealth(report: GameHealthReport): string {
 	return [
 		dnsLine,
 		pageLine,
+		httpsLine,
+		tlsLine,
 		`Port 843 (policy server): ${p843}`,
 		`Port 8080 (game protocol): ${report.socket8080.status}`,
 		`Overall: ${report.overall} at ${report.checkedAt}`,
@@ -382,6 +545,45 @@ export async function maybeAlertOnGameHealth(
 				lastReminderAt: previous.lastReminderAt,
 				lastRecoveryAt: result.sent ? now.toISOString() : previous.lastRecoveryAt,
 				lastSummary: "healthy",
+				certWarningOpen: previous.certWarningOpen ?? false,
+			});
+			return result;
+		}
+		// Certificate-expiry warnings run here, in the healthy lane, because they
+		// are maintenance warnings rather than outages: warn once when the cert
+		// enters the warn window, confirm once once it is renewed, and never let
+		// them interact with the up/down alert machinery.
+		if (report.tls.status === "expiring" && !previous?.certWarningOpen) {
+			const result = await attempt(
+				"warning",
+				`⚠️ Dungeon Blitz TLS certificate expires in ${report.tls.daysRemaining ?? "?"} day(s): ${report.hostname}\n(expires ${report.tls.expiresAt ?? "unknown date"}${report.tls.issuer ? `, issued by ${report.tls.issuer}` : ""})\nCaddy renews automatically; only act if the expiry date is not moving across checks.`,
+			);
+			await persist({
+				_id: report.hostname,
+				alertOpen: false,
+				...(previous?.firstUnhealthyAt ? { firstUnhealthyAt: previous.firstUnhealthyAt } : {}),
+				...(previous?.lastAlertAt ? { lastAlertAt: previous.lastAlertAt } : {}),
+				lastHealthyAt: now.toISOString(),
+				lastSummary: "healthy",
+				certWarningOpen: result.sent,
+				...(result.sent ? { lastCertWarningAt: now.toISOString() } : {}),
+			});
+			return result;
+		}
+		if (report.tls.status !== "expiring" && previous?.certWarningOpen) {
+			const result = await attempt(
+				"warning",
+				`✅ Dungeon Blitz TLS certificate renewed: ${report.hostname}\n${summarizeGameHealth(report)}`,
+			);
+			await persist({
+				_id: report.hostname,
+				alertOpen: false,
+				...(previous?.firstUnhealthyAt ? { firstUnhealthyAt: previous.firstUnhealthyAt } : {}),
+				...(previous?.lastAlertAt ? { lastAlertAt: previous.lastAlertAt } : {}),
+				lastHealthyAt: now.toISOString(),
+				lastSummary: "healthy",
+				certWarningOpen: false,
+				lastCertWarningAt: previous.lastCertWarningAt,
 			});
 			return result;
 		}
@@ -392,6 +594,7 @@ export async function maybeAlertOnGameHealth(
 			...(previous?.lastAlertAt ? { lastAlertAt: previous.lastAlertAt } : {}),
 			lastHealthyAt: now.toISOString(),
 			lastSummary: "healthy",
+			certWarningOpen: previous?.certWarningOpen ?? false,
 		});
 		return { sent: false, kind: null, channel: null };
 	}
@@ -408,6 +611,7 @@ export async function maybeAlertOnGameHealth(
 			lastUnhealthyAt: now.toISOString(),
 			lastAlertAt: result.sent ? now.toISOString() : undefined,
 			lastSummary: summary,
+			certWarningOpen: previous?.certWarningOpen ?? false,
 		});
 		return result;
 	}

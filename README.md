@@ -38,7 +38,13 @@ Account OAuth state is HMAC-signed with `ACCOUNT_OAUTH_STATE_SECRET`, or with `D
 
 ## Game health monitoring
 
-The bot exposes an independent health check for the game host at `/api/game-health`. It resolves the game hostname, fetches a site page, and probes both game sockets (843 policy server, 8080 game protocol) **from Vercel's network** — a vantage point that catches DNS and routing outages that look perfectly healthy from the server itself. The 2026-09 outage, where the `dungeonblitzr` A record went missing during a DNS migration and nobody noticed for hours, is what this guards against.
+The bot exposes an independent health check for the game host at `/api/game-health`. It resolves the game hostname, fetches a site page over **both HTTP and HTTPS**, inspects the TLS certificate on :443, and probes both game sockets (843 policy server, 8080 game protocol) **from Vercel's network** — a vantage point that catches DNS and routing outages that look perfectly healthy from the server itself. The 2026-09 outage, where the `dungeonblitzr` A record went missing during a DNS migration and nobody noticed for hours, is what this guards against; the HTTPS/TLS checks cover the 2026-09-20 addition of Caddy on 443 — a dead Caddy, a closed 443, or an unrenewed certificate all alert.
+
+Verdicts:
+
+- **down** — DNS does not resolve/point at the expected IP, or the HTTP page fails. Everything else being up cannot make this less than down.
+- **degraded** — the HTTPS page fails, the TLS certificate is expired or fails verification, or either game socket is dead. Some or all players cannot get in even though the deployment answers.
+- **healthy** — everything answers. A certificate inside the expiry warn window still reads healthy but sends a one-time ⚠️ warning (and a ✅ confirmation when it is renewed), because Caddy normally renews automatically and the alert exists to catch that silently stopping.
 
 A summary JSON is returned to any caller; alerting is only evaluated for authenticated requests:
 
@@ -49,6 +55,8 @@ To receive the alerts, set exactly one of these in the bot deployment:
 
 - `GAME_HEALTH_WEBHOOK_URL` — a Discord webhook URL; or
 - `GAME_HEALTH_ALERT_DISCORD_ID` — your Discord user ID (the bot DMs you; requires `DISCORD_BOT_TOKEN`, already set).
+
+Optional: `GAME_HEALTH_EXPECTED_IP` overrides the expected VM address (default `35.241.250.170`, the reserved IP attached to `dungeon-blitz-eu`), and `GAME_HEALTH_REMINDER_MINUTES` caps the reminder cadence.
 
 And set the same secret value as the game server's `HEALTH_PING_SECRET` in the bot's `HEALTH_CHECK_SECRET`.
 
