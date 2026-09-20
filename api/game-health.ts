@@ -1,4 +1,3 @@
-import * as crypto from "node:crypto";
 import {
 	checkGameHealth,
 	maybeAlertOnGameHealth,
@@ -7,6 +6,7 @@ import {
 	type GameHealthCheckOptions,
 	type GameHealthReport,
 } from "../src/utils/gameHealthCheck.js";
+import { isRequestAuthorized, requestSecrets, sendJson } from "../src/utils/requestAuth.js";
 
 /**
  * Independent health check for the Dungeon Blitz game host, run from Vercel —
@@ -28,38 +28,6 @@ import {
 
 function cleanEnvValue(value: string | undefined): string {
 	return (value ?? "").trim();
-}
-
-function getSecrets(): string[] {
-	return [cleanEnvValue(process.env.HEALTH_CHECK_SECRET), cleanEnvValue(process.env.CRON_SECRET)].filter(
-		Boolean
-	);
-}
-
-function matchesSecret(candidate: string, secret: string): boolean {
-	const a = Buffer.from(candidate, "utf8");
-	const b = Buffer.from(secret, "utf8");
-	return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
-
-function isAuthorized(req: any): boolean {
-	const secrets = getSecrets();
-	if (secrets.length === 0) return false;
-	const header = String(req?.headers?.authorization ?? "");
-	const bearer = header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
-	const candidates = [
-		bearer,
-		String(req?.headers?.["x-health-secret"] ?? ""),
-		String(req?.query?.secret ?? ""),
-	].filter(Boolean);
-	return candidates.some((candidate) => secrets.some((secret) => matchesSecret(candidate, secret)));
-}
-
-function sendJson(res: any, statusCode: number, payload: unknown): void {
-	res.statusCode = statusCode;
-	res.setHeader("content-type", "application/json; charset=utf-8");
-	res.setHeader("cache-control", "no-store");
-	res.end(JSON.stringify(payload));
 }
 
 /**
@@ -85,7 +53,7 @@ export default async function handler(req: any, res: any) {
 		return;
 	}
 
-	const alerting = isAuthorized(req);
+	const alerting = isRequestAuthorized(req);
 	const checkOptions = resolveCheckOptions();
 	let report: GameHealthReport;
 	try {
@@ -110,7 +78,7 @@ export default async function handler(req: any, res: any) {
 		summary: summarizeGameHealth(report),
 		report,
 		...(alert ? { alert } : {}),
-		...(alerting ? {} : getSecrets().length > 0
+		...(alerting ? {} : requestSecrets().length > 0
 			? { note: "alerting not run: present HEALTH_CHECK_SECRET (or CRON_SECRET) to arm it" }
 			: { note: "alerting not configured on this deployment: set HEALTH_CHECK_SECRET plus GAME_HEALTH_WEBHOOK_URL (or GAME_HEALTH_ALERT_DISCORD_ID)" }),
 	});
