@@ -129,6 +129,10 @@ export type PlayerProfile = {
 
 let clientPromise: Promise<MongoClient> | null = null;
 
+/** Kept well inside the interaction function's time budget so a stalled DB surfaces as an error. */
+const MONGO_SERVER_SELECTION_TIMEOUT_MS = 5_000;
+const MONGO_SOCKET_TIMEOUT_MS = 8_000;
+
 function normalizeBalance(value: unknown): number {
 	const amount = Number(value ?? 0);
 	return Number.isFinite(amount) ? Math.max(0, Math.round(amount)) : 0;
@@ -263,7 +267,16 @@ async function getClient(): Promise<MongoClient> {
 	if (!uri) throw new Error("GAME_MONGODB_URI or MONGODB_URI is required");
 
 	clientPromise = (async () => {
-		const client = new MongoClient(uri, { ignoreUndefined: true });
+		const client = new MongoClient(uri, {
+			ignoreUndefined: true,
+			// A dead or unreachable database must fail fast. Without a bounded
+			// server selection the driver stalls for its 30s default, which is
+			// longer than a Discord interaction lives, so the player would be left
+			// on an endless "thinking…" state instead of a readable error.
+			serverSelectionTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
+			connectTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
+			socketTimeoutMS: MONGO_SOCKET_TIMEOUT_MS,
+		});
 		await client.connect();
 		return client;
 	})().catch((error) => {
@@ -661,6 +674,23 @@ export async function recordPackPurchase(
 			// MongoDB's $push typing is overly strict on Document intersections.
 			$push: { packPurchases: purchase },
 		} as never,
+	);
+	return updated !== null;
+}
+
+/**
+ * Clears a player's pack ledger — the spent-cents total and the purchase list.
+ * Paired with `stripPackRewards` it fully undoes a purchase: the credit becomes
+ * spendable again and a one-time Sponsor Pack claim can be made again. Returns
+ * false when no linked profile exists for the Discord ID.
+ */
+export async function resetPackLedger(discordId: string): Promise<boolean> {
+	const normalized = discordId.trim();
+	if (!normalized) return false;
+	const profiles = await getLinkedProfileCollection();
+	const updated = await profiles.findOneAndUpdate(
+		{ $or: [{ _id: normalized }, { userId: normalized }] } as Filter<RawLinkedProfile>,
+		{ $set: { packUsedCents: 0, packPurchases: [] } },
 	);
 	return updated !== null;
 }

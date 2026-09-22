@@ -1,78 +1,59 @@
-import * as crypto from "node:crypto";
 import { discordOAuthConfig } from "./oauthConfig.js";
-import { accountLinkScopes, resolveWidgetScopeEnabled } from "./gameStatsProfile.js";
+import {
+	createSignedOAuthState,
+	isSignedOAuthState,
+	parseSignedOAuthState,
+	signedOAuthStateMatchesUser,
+	type SignedOAuthState,
+} from "./oauthState.js";
+import {
+	accountLinkScopes,
+	resolveWidgetScopeEnabled,
+} from "./gameStatsProfile.js";
 
 const ACCOUNT_OAUTH_STATE_PREFIX = "dba1";
-const ACCOUNT_OAUTH_TTL_MS = 10 * 60 * 1000;
 
-type AccountOAuthState = {
-	mode: "account-create";
-	discordId: string;
-	expiresAt: number;
-	nonce: string;
-};
+type AccountOAuthState = SignedOAuthState & { mode: "account-create" };
 
-function stateSecret(): string {
-	return process.env.ACCOUNT_OAUTH_STATE_SECRET?.trim() || discordOAuthConfig.appSecret;
-}
-
-function signPayload(payload: string): string {
-	return crypto.createHmac("sha256", stateSecret()).update(payload).digest("base64url");
+/**
+ * The account link predates `OAUTH_STATE_SECRET`, so it keeps its own variable first and falls
+ * back to the OAuth client secret — the one value every deployment already has, which is what
+ * keeps a missing dedicated secret from locking players out of creating an account.
+ */
+function accountOAuthStateOptions() {
+	return {
+		prefix: ACCOUNT_OAUTH_STATE_PREFIX,
+		secret: process.env.ACCOUNT_OAUTH_STATE_SECRET?.trim() || discordOAuthConfig.appSecret,
+	};
 }
 
 export function createAccountOAuthState(discordIdInput: string, now = Date.now()): string {
-	const discordId = String(discordIdInput ?? "").trim();
-	if (!discordId) throw new Error("Discord user id is required");
-	const payload = Buffer.from(JSON.stringify({
-		mode: "account-create",
-		discordId,
-		expiresAt: now + ACCOUNT_OAUTH_TTL_MS,
-		nonce: crypto.randomBytes(12).toString("base64url"),
-	} satisfies AccountOAuthState)).toString("base64url");
-	return `${ACCOUNT_OAUTH_STATE_PREFIX}.${payload}.${signPayload(payload)}`;
+	return createSignedOAuthState("account-create", discordIdInput, {
+		...accountOAuthStateOptions(),
+		now,
+	});
 }
 
 export function parseAccountOAuthState(
 	stateInput: unknown,
 	now = Date.now()
 ): AccountOAuthState | null {
-	const [prefix, payload, signature, ...rest] = String(stateInput ?? "").split(".");
-	if (prefix !== ACCOUNT_OAUTH_STATE_PREFIX || !payload || !signature || rest.length > 0) {
-		return null;
-	}
-	const expected = Buffer.from(signPayload(payload), "utf8");
-	const actual = Buffer.from(signature, "utf8");
-	if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
-		return null;
-	}
-	try {
-		const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-		if (
-			parsed?.mode !== "account-create" ||
-			typeof parsed.discordId !== "string" ||
-			!parsed.discordId ||
-			!Number.isSafeInteger(parsed.expiresAt) ||
-			parsed.expiresAt < now ||
-			typeof parsed.nonce !== "string" ||
-			!parsed.nonce
-		) {
-			return null;
-		}
-		return parsed as AccountOAuthState;
-	} catch {
-		return null;
-	}
+	return parseSignedOAuthState(stateInput, {
+		...accountOAuthStateOptions(),
+		mode: "account-create",
+		now,
+	}) as AccountOAuthState | null;
 }
 
 export function isAccountOAuthState(state: unknown): boolean {
-	return String(state ?? "").startsWith(`${ACCOUNT_OAUTH_STATE_PREFIX}.`);
+	return isSignedOAuthState(state, ACCOUNT_OAUTH_STATE_PREFIX);
 }
 
 export function accountOAuthStateMatchesUser(
 	state: AccountOAuthState,
 	discordIdInput: unknown
 ): boolean {
-	return state.discordId === String(discordIdInput ?? "").trim();
+	return signedOAuthStateMatchesUser(state, discordIdInput);
 }
 
 /**
