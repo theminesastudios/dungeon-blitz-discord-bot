@@ -3,9 +3,11 @@ import {
 	getPlayerProfile,
 	grantBonusCredit,
 	recordPackPurchase,
+	refundPackPurchase,
 	type PackPurchase,
 } from "./gameWallet.js";
 import {
+	LockedCharacterError,
 	applyPackRewardsToSave,
 	findDefaultGameSaveCharacter,
 	findGameUserIdForDiscord,
@@ -32,7 +34,7 @@ export type ConsumableId = "exp" | "gear" | "gold" | "material";
 
 /** A concrete game reward: written into the save document at purchase time. */
 export type PackReward =
-	| { kind: "mount"; mountId: number; label: string; exclusive: boolean }
+	| { kind: "mount"; mountId: number; mountIds?: number[]; label: string; exclusive: boolean }
 	| { kind: "dye"; dyeId: number; label: string; legendary: boolean }
 	| { kind: "lockbox"; lockboxId: number; count: number; label: string }
 	| { kind: "consumable"; consumableId: ConsumableId; count: number; label: string }
@@ -63,6 +65,17 @@ function pickRandom<T>(values: readonly T[]): T {
 
 function mountReward(mountId: number, exclusive: boolean): PackReward {
 	return { kind: "mount", mountId, exclusive, label: "Mount" };
+}
+
+function mountBundleReward(mountIds: number[], exclusive: boolean): PackReward {
+	const first = mountIds[0] ?? 0;
+	return {
+		kind: "mount",
+		mountId: first,
+		mountIds: mountIds.length > 1 ? [...mountIds] : undefined,
+		exclusive,
+		label: "Mount",
+	};
 }
 
 function dyeReward(dyeId: number): PackReward {
@@ -117,7 +130,8 @@ export function buildPackRewards(pack: Pick<SponsorPack, "id">): PackReward[] {
 		case "champions":
 			return [
 				lockboxReward(50),
-				...EXCLUSIVE_MOUNT_IDS.map((mountId) => mountReward(mountId, true)),
+				// One bundle so the summary lists all 11 mounts together.
+				mountBundleReward([...EXCLUSIVE_MOUNT_IDS], true),
 				{ kind: "sigils", amount: 750 },
 				...LEGENDARY_DYE_IDS.map((dyeId) => dyeReward(dyeId)),
 				{ kind: "gold", amount: 250_000 },
@@ -356,8 +370,48 @@ export type PackPurchaseResult =
 	| { status: "insufficient"; pack: SponsorPack; balanceCents: number }
 	| { status: "missing-role"; pack: SponsorPack }
 	| { status: "already-claimed"; pack: SponsorPack }
-	| { status: "conflict"; pack: SponsorPack };
+	| { status: "conflict"; pack: SponsorPack }
+	| {
+			status: "no-character";
+			pack: SponsorPack;
+			/** Player-facing explanation of why delivery failed. */
+			reason: string;
+			/** Per-reward outcomes when the save was reachable but the writes failed. */
+			deliveries: PackRewardDeliveryResult[];
+	  };
 
+function hasNoSuccessfulDelivery(deliveries: PackRewardDeliveryResult[]): boolean {
+	return deliveries.length > 0 && deliveries.every((outcome) => outcome.status !== "delivered");
+}
+
+function failedDeliveryReason(deliveries: PackRewardDeliveryResult[]): string {
+	return (
+		deliveries.find((outcome) => outcome.status === "failed")?.error ??
+		"The rewards could not be delivered."
+	);
+}
+
+/** Best-effort revert of a charge whose rewards never landed; failures are logged for follow-up. */
+async function refundQuietly(discordId: string, purchase: PackPurchase): Promise<boolean> {
+	try {
+		return await refundPackPurchase(discordId.trim(), purchase);
+	} catch (error) {
+		console.error("[sponsorPacks] Automatic refund failed:", error);
+		return false;
+	}
+}
+
+/**
+ * One shop purchase, start to finish.
+ *
+ * Order of operations matters: credit is deducted (or the claim recorded)
+ * atomically first, and only then are rewards rolled and written. A charge or
+ * free claim that is not followed by at least one successful reward write —
+ * including a locked target character — is reverted automatically, so a player
+ * can never lose credit or burn the one-time Sponsor claim to a broken save.
+ * The failure is reported as `no-character` with the delivery errors; unexpected
+ * infrastructure errors still throw, after the same revert.
+ */
 export async function purchaseSponsorPack(
 	discordId: string,
 	packId: string,
@@ -385,8 +439,8 @@ export async function purchaseSponsorPack(
 		const purchase: PackPurchase = {
 			packId: pack.id,
 			packName: pack.name,
-			priceCents: 0,
 			purchasedAtMs: Date.now(),
+			priceCents: 0,
 		};
 		const recorded = await recordPackPurchase(
 			discordId.trim(),
@@ -395,7 +449,28 @@ export async function purchaseSponsorPack(
 		);
 		if (!recorded) return { status: "conflict", pack };
 
-		const deliveries = await deliverPackRewards(discordId, pack, targetCharacterName);
+		let deliveries: PackRewardDeliveryResult[];
+		try {
+			deliveries = await deliverPackRewards(discordId, pack, targetCharacterName);
+		} catch (error) {
+			// The claim is already on the ledger — release it before surfacing the
+			// failure so the one-time pack is never burned by a bad delivery.
+			await refundQuietly(discordId.trim(), purchase);
+			if (error instanceof LockedCharacterError) {
+				return { status: "no-character", pack, reason: error.message, deliveries: [] };
+			}
+			throw error;
+		}
+		if (hasNoSuccessfulDelivery(deliveries)) {
+			await refundQuietly(discordId.trim(), purchase);
+			return {
+				status: "no-character",
+				pack,
+				reason: failedDeliveryReason(deliveries),
+				deliveries,
+			};
+		}
+
 		const credit = await getSponsorCredit(discordId);
 		return {
 			status: "ok",
@@ -423,19 +498,42 @@ export async function purchaseSponsorPack(
 		return { status: "insufficient", pack, balanceCents: credit.balanceCents };
 	}
 
+	// Charge first so a double-click can never double-deliver, then deliver.
+	const purchase: PackPurchase = {
+		packId: pack.id,
+		packName: pack.name,
+		priceCents: pack.priceCents,
+		purchasedAtMs: Date.now(),
+	};
 	const recorded = await recordPackPurchase(
 		discordId.trim(),
-		{
-			packId: pack.id,
-			packName: pack.name,
-			priceCents: pack.priceCents,
-			purchasedAtMs: Date.now(),
-		},
+		purchase,
 		credit.balanceCents - pack.priceCents,
 	);
 	if (!recorded) return { status: "conflict", pack };
 
-	const deliveries = await deliverPackRewards(discordId, pack, targetCharacterName);
+	let deliveries: PackRewardDeliveryResult[];
+	try {
+		deliveries = await deliverPackRewards(discordId, pack, targetCharacterName);
+	} catch (error) {
+		// The charge is already on the ledger — revert it before surfacing the
+		// failure so a broken delivery never costs the player money.
+		await refundQuietly(discordId.trim(), purchase);
+		if (error instanceof LockedCharacterError) {
+			return { status: "no-character", pack, reason: error.message, deliveries: [] };
+		}
+		throw error;
+	}
+	if (hasNoSuccessfulDelivery(deliveries)) {
+		await refundQuietly(discordId.trim(), purchase);
+		return {
+			status: "no-character",
+			pack,
+			reason: failedDeliveryReason(deliveries),
+			deliveries,
+		};
+	}
+
 	const updated = await getSponsorCredit(discordId);
 	return {
 		status: "ok",
@@ -456,8 +554,11 @@ export async function purchaseSponsorPack(
 /**
  * Rolls the pack's rewards and writes them into the buyer's game save. Every
  * reward is attempted independently so one failure does not block the rest.
- * When the buyer picked a target character, the whole pack goes there; the
- * fallback is their most recently updated character.
+ *
+ * When the buyer picked a target character, the whole pack goes there and a
+ * locked pick throws `LockedCharacterError` before anything is written. The
+ * fallback is their most recently updated unlocked character — resolved from
+ * the game user id so the write can only ever land on the buyer's own save.
  */
 export async function deliverPackRewards(
 	discordId: string,
@@ -467,27 +568,45 @@ export async function deliverPackRewards(
 	const rewards = buildPackRewards(pack);
 	if (rewards.length === 0) return [];
 
+	const userId = await findGameUserIdForDiscord(discordId);
+	if (userId === null) {
+		return noCharacterResults(rewards, targetCharacterName);
+	}
+
 	let character: GameSaveCharacterRef | null = null;
 	if (targetCharacterName) {
-		const userId = await findGameUserIdForDiscord(discordId);
-		if (userId !== null) {
-			const characters = await listGameSaveCharacters(discordId);
-			const match = characters.find(
-				(option) => option.name.toLowerCase() === targetCharacterName.trim().toLowerCase(),
-			);
-			if (match) character = { userId, characterName: match.name };
+		const characters = await listGameSaveCharacters(discordId);
+		const wanted = targetCharacterName.trim().toLowerCase();
+		const match = characters.find((option) => option.name.toLowerCase() === wanted);
+		if (!match) {
+			return rewards.map((reward) => ({
+				status: "failed" as const,
+				delivery: { reward, characterName: targetCharacterName },
+				error: "The chosen character no longer exists on your save. Pick another and buy the pack again.",
+			}));
 		}
+		if (match.locked === true) {
+			throw new LockedCharacterError(match.name);
+		}
+		character = { userId, characterName: match.name };
 	}
 	if (!character) {
-		character = await findDefaultGameSaveCharacter(discordId);
+		character = await findDefaultGameSaveCharacter(discordId, userId);
 	}
 	if (!character) {
-		return rewards.map((reward) => ({
-			status: "failed" as const,
-			delivery: { reward, characterName: targetCharacterName ?? "(no character found)" },
-			error: "No game save character found for your Discord account.",
-		}));
+		return noCharacterResults(rewards, targetCharacterName);
 	}
 
 	return applyPackRewardsToSave(character.userId, character.characterName, rewards);
+}
+
+function noCharacterResults(
+	rewards: PackReward[],
+	targetCharacterName?: string,
+): PackRewardDeliveryResult[] {
+	return rewards.map((reward) => ({
+		status: "failed" as const,
+		delivery: { reward, characterName: targetCharacterName ?? "(no character found)" },
+		error: "No game save character found for your Discord account. Create one in-game, then claim the pack again.",
+	}));
 }
