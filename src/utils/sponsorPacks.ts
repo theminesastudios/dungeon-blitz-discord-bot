@@ -411,6 +411,11 @@ async function refundQuietly(discordId: string, purchase: PackPurchase): Promise
  * can never lose credit or burn the one-time Sponsor claim to a broken save.
  * The failure is reported as `no-character` with the delivery errors; unexpected
  * infrastructure errors still throw, after the same revert.
+ *
+ * Every network lookup — the profile, the ledger and the GitHub donation total —
+ * is done before the charge, and the post-purchase balance is derived locally.
+ * Delivery therefore runs with no remote round trip behind it, so the
+ * confirmation reply cannot be outlived by a slow dependency.
  */
 export async function purchaseSponsorPack(
 	discordId: string,
@@ -435,6 +440,13 @@ export async function purchaseSponsorPack(
 		if (ledger.purchases.some((purchase) => purchase.packId === pack.id)) {
 			return { status: "already-claimed", pack };
 		}
+
+		// Read the sponsor balance before the claim is recorded rather than after
+		// delivery. This is the only GitHub round trip on the free path, and
+		// paying for it up front keeps the acknowledgement edit off the network's
+		// critical path — a slow GitHub response must never outlive the
+		// interaction and leave the player on an endless "thinking" state.
+		const credit = await getSponsorCredit(discordId).catch(() => null);
 
 		const purchase: PackPurchase = {
 			packId: pack.id,
@@ -471,22 +483,20 @@ export async function purchaseSponsorPack(
 			};
 		}
 
-		const credit = await getSponsorCredit(discordId);
 		return {
 			status: "ok",
 			pack,
 			deliveries,
-			credit:
-				credit ?? {
-					githubUsername: profile.githubUsername ?? "",
-					isSponsor: profile.isSponsor === true,
-					sponsoredCents: null,
-					bonusCents: ledger.bonusCents,
-					usedCents: ledger.usedCents,
-					balanceCents:
-						ledger.bonusCents > 0 ? ledger.bonusCents - ledger.usedCents : null,
-					purchases: [...ledger.purchases, purchase],
-				},
+			credit: credit ?? {
+				githubUsername: profile.githubUsername ?? "",
+				isSponsor: profile.isSponsor === true,
+				sponsoredCents: null,
+				bonusCents: ledger.bonusCents,
+				usedCents: ledger.usedCents,
+				balanceCents:
+					ledger.bonusCents > 0 ? ledger.bonusCents - ledger.usedCents : null,
+				purchases: [...ledger.purchases, purchase],
+			},
 		};
 	}
 
@@ -534,20 +544,23 @@ export async function purchaseSponsorPack(
 		};
 	}
 
-	const updated = await getSponsorCredit(discordId);
+	// The new balance is derived from the charge we just recorded. Re-reading the
+	// credit here would add a profile lookup, three wallet searches and a second
+	// GitHub request *after* delivery, which is exactly where a slow dependency
+	// outlives the interaction and strands the player on "thinking…".
 	return {
 		status: "ok",
 		pack,
 		deliveries,
-		credit:
-			updated ??
-			{
-				...credit,
-				usedCents: credit.usedCents + pack.priceCents,
-				balanceCents: credit.balanceCents === null
+		credit: {
+			...credit,
+			usedCents: credit.usedCents + pack.priceCents,
+			balanceCents:
+				credit.balanceCents === null
 					? null
 					: Math.max(0, credit.balanceCents - pack.priceCents),
-			},
+			purchases: [...credit.purchases, purchase],
+		},
 	};
 }
 

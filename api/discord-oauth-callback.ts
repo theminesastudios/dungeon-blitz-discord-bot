@@ -14,6 +14,7 @@ import {
 import {
 	createGameAccountFromDiscord,
 	GameAccountConflictError,
+	recordDiscordConnections,
 } from "../src/utils/gameAccount.js";
 import { getVerifiedDiscordOAuthUser } from "../src/utils/discordOAuthUser.js";
 import {
@@ -23,6 +24,13 @@ import {
 	type GameStatsAccessReport,
 } from "../src/utils/gameStatsProfile.js";
 import { syncGameStatsForDiscordId } from "../src/utils/gameStatsSync.js";
+import {
+	authorizeOAuthStateMatchesUser,
+	describeGrantedConnections,
+	grantedConnections,
+	isAuthorizeOAuthState,
+	parseAuthorizeOAuthState,
+} from "../src/utils/discordConnections.js";
 
 const database = MiniDatabase.fromEnv();
 const failedPage = mini.failedOAuthPage("pages/failed.html");
@@ -96,7 +104,7 @@ function sendAccountPage(
     p { line-height: 1.6; margin-bottom: 0; }
   </style>
 </head>
-<body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></main></body>
+<body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message).replaceAll("\n", "<br>")}</p></main></body>
 </html>`);
 }
 
@@ -259,6 +267,140 @@ async function handleAccountOAuth(req: any, res: any) {
 	}
 }
 
+/**
+ * A connection refusal is reported in terms of who can clear it. Both scope families need
+ * Discord's approval for the *application* — the Social SDK scopes and the game-stats scope alike
+ * — so an `invalid_scope` here is an operator-level gate, not something the player can retry
+ * their way past.
+ */
+function authorizeRefusalMessage(
+	errorCode: string,
+	errorDescription: string,
+	access: GameStatsAccessReport | null
+): string {
+	const base = `Discord returned "${errorCode}"${errorDescription ? ` (${errorDescription})` : ""}, so nothing was connected.`;
+	if (errorCode !== "invalid_scope") {
+		return `${base} Run /authorize again in Discord; if it repeats, this deployment needs a look.`;
+	}
+
+	switch (access?.state) {
+		case "not-enabled":
+		case "not-authorized":
+			return `${base} This application is not approved for Discord's game surfaces yet, so the scopes the link asks for are refused. The deployment owner has to enable the Social SDK and claim the game in the Discord Developer Portal; retrying will not clear it.`;
+		case "bad-credentials":
+			return `${base} Discord rejected this deployment's application credentials, so authorizing cannot work until the owner fixes them.`;
+		default:
+			return `${base} The link asks for scopes Discord will not grant this application, so the deployment needs a look before /authorize can work.`;
+	}
+}
+
+/**
+ * `/authorize` connections: the Game Stats widget, the Social SDK's friends and presence, and its
+ * lobbies and chat. The signed state says which connection the player asked for and which Discord
+ * user owns the link; what was actually granted comes from Discord's own scope list, because a
+ * player can decline part of a request on the consent screen.
+ */
+async function handleAuthorizeOAuth(req: any, res: any) {
+	const q = req?.query ?? {};
+	const state = parseAuthorizeOAuthState(q.state);
+	if (!state) {
+		sendAccountPage(res, 400, "Invalid link", "This authorization link has expired or was modified. Run /authorize again in Discord.");
+		return;
+	}
+	if (typeof q.error === "string" && q.error) {
+		const errorCode = String(q.error);
+		const errorDescription =
+			typeof q.error_description === "string" ? String(q.error_description) : "";
+		console.warn(
+			`[authorize-oauth] Discord refused the authorization: ${errorCode}${errorDescription ? ` (${errorDescription})` : ""}`
+		);
+		if (errorCode === "access_denied") {
+			sendAccountPage(
+				res,
+				400,
+				"Authorization cancelled",
+				"Nothing was connected. Run /authorize again in Discord and choose Authorize."
+			);
+			return;
+		}
+		const access =
+			errorCode === "invalid_scope" ? await probeGameStatsAccess(state.discordId) : null;
+		sendAccountPage(
+			res,
+			400,
+			"Discord refused the authorization",
+			authorizeRefusalMessage(errorCode, errorDescription, access)
+		);
+		return;
+	}
+	if (typeof q.code !== "string" || !q.code) {
+		sendAccountPage(res, 400, "Missing code", "The Discord OAuth code was not received. Run /authorize again in Discord.");
+		return;
+	}
+
+	try {
+		const tokens = await getOAuthTokens(q.code, discordOAuthConfig);
+		const scopes = String(tokens.scope ?? "").split(/\s+/).filter(Boolean);
+		const user = await getVerifiedDiscordOAuthUser(tokens.access_token);
+		if (!authorizeOAuthStateMatchesUser(state, user.id)) {
+			sendAccountPage(res, 403, "Discord account mismatch", "Only the Discord account that ran /authorize can complete this link.");
+			return;
+		}
+
+		const granted = grantedConnections(scopes);
+		let accountLinked: boolean | null = null;
+		if (granted.length > 0) {
+			try {
+				accountLinked = await recordDiscordConnections(
+					user.id,
+					granted.map((connection) => ({ connection, scopes }))
+				);
+			} catch (error) {
+				// The consent already happened; failing the page would only hide a good result.
+				console.error("[authorize-oauth] Could not record the connections:", error);
+			}
+		}
+
+		// Widget profiles are written by this bot and by nobody else, so publish the player's while
+		// we know they just granted access instead of waiting for the next scheduled sync.
+		if (granted.includes("widget")) publishGameStatsInBackground(user.id);
+
+		const requestedWidget =
+			state.connection === "widget" || state.connection === "everything";
+		const lines =
+			granted.length > 0
+				? [`Connected: ${describeGrantedConnections(scopes).join(", ")}.`]
+				: [
+						"Discord did not report any of the requested connections, so nothing changed. Run /authorize again and choose Authorize on every screen.",
+					];
+
+		if (granted.includes("widget")) {
+			lines.push(
+				"Add the widget to show it off: open your Discord profile, choose Add Widget, pick Dungeon Blitz, then Add to profile."
+			);
+			if (accountLinked === false) {
+				lines.push(
+					"No Dungeon Blitz account is linked to this Discord account yet, so the widget has nothing to show until you run /account create."
+				);
+			}
+		} else if (requestedWidget && (await resolveWidgetScopeEnabled())) {
+			// The link asked for game-stats access and Discord granted everything else, which is
+			// what an unapproved application looks like from here. Say so instead of leaving the
+			// player with a widget that never fills in.
+			logGameStatsAccess("Authorization completed without game-stats access;", user.id);
+			lines.push(
+				"Game Stats access was not granted, so the widget cannot be filled in yet: the deployment owner has to enable game stats for this application."
+			);
+		}
+		lines.push("You can close this page and return to Discord.");
+
+		sendAccountPage(res, 200, "Dungeon Blitz is connected", lines.join("\n"));
+	} catch (error) {
+		console.error("[authorize-oauth] Authorization failed:", error);
+		sendAccountPage(res, 500, "Authorization could not be completed", "An unexpected error occurred. Please try /authorize again later.");
+	}
+}
+
 const linkedRolesHandler = mini.discordOAuthCallback({
 	templates: {
 		success: mini.connectedOAuthPage("pages/connected.html"),
@@ -314,6 +456,9 @@ export default async function handler(req: any, res: any) {
 	const q = req?.query ?? {};
 	if (isAccountOAuthState(q.state)) {
 		return handleAccountOAuth(req, res);
+	}
+	if (isAuthorizeOAuthState(q.state)) {
+		return handleAuthorizeOAuth(req, res);
 	}
 	const origin = parseGameCb(q.state);
 	if (origin) {

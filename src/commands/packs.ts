@@ -27,6 +27,7 @@ import {
 	formatUsd,
 	purchaseSponsorPack,
 	findSponsorPack,
+	type PackPurchaseResult,
 	type PackRewardDeliveryResult,
 	type SponsorCredit,
 	type SponsorPack,
@@ -37,6 +38,8 @@ import {
 	type GameCharacterOption,
 } from "../utils/gameRewards.js";
 import { getMemberRoleIds, interactionDiscordId } from "../utils/discordInteractions.js";
+import { publishGameLog, type GameLogPayload } from "../utils/gameLogChannel.js";
+import { waitUntil } from "@vercel/functions";
 
 const BUY_BUTTON_PREFIX = "packs:buy:";
 const PACK_SELECT_ID = "packs:view";
@@ -267,6 +270,100 @@ function buildPurchasedContainer(
 	return container;
 }
 
+/**
+ * Purchase outcomes are reported to the operator log channel as well as to the
+ * buyer. The buyer's reply is ephemeral and depends on Discord accepting a
+ * components-v2 edit, so the log is the record that still exists when a
+ * delivery or a reply fails — it is also what makes a stuck interaction
+ * diagnosable without deploying anything.
+ *
+ * `publishGameLog` never throws and `waitUntil` keeps the delivery alive past
+ * the response, so logging cannot slow a purchase down or break it.
+ */
+function reportPurchase(payload: GameLogPayload) {
+	const promise = publishGameLog(payload);
+	try {
+		waitUntil(promise);
+	} catch {
+		// Vercel-only helper; the promise keeps running while the function lives.
+		void promise.catch(() => {});
+	}
+}
+
+function describePurchaseResult(
+	result: PackPurchaseResult,
+	discordId: string,
+	packId: string,
+): string {
+	const packLabel =
+		"pack" in result
+			? `${result.pack.emoji} ${result.pack.name} — ${formatUsd(result.pack.priceCents)}`
+			: packId;
+	const lines = [`**${packLabel}**`, `Player: <@${discordId}>`, `Status: \`${result.status}\``];
+
+	if (result.status === "ok") {
+		const delivered = result.deliveries.filter(
+			(outcome) => outcome.status === "delivered",
+		).length;
+		lines.push(`Delivered: ${delivered}/${result.deliveries.length} rewards`);
+		lines.push(
+			`Remaining balance: ${result.credit.balanceCents === null ? "unknown" : formatUsd(result.credit.balanceCents)}`,
+		);
+	}
+
+	if (result.status === "insufficient") {
+		lines.push(`Balance: ${formatUsd(result.balanceCents)}`);
+	}
+
+	if (result.status === "no-character") {
+		lines.push(`Reason: ${result.reason}`);
+		const errors = result.deliveries
+			.map((outcome) => outcome.error)
+			.filter((error): error is string => Boolean(error));
+		if (errors.length > 0) lines.push(`Delivery errors: ${errors.slice(0, 3).join(" | ")}`);
+	}
+
+	return lines.join("\n");
+}
+
+function buildPurchaseSummary(
+	pack: SponsorPack,
+	credit: SponsorCredit,
+	deliveries: PackRewardDeliveryResult[],
+): string {
+	return [
+		`### ${pack.emoji} ${pack.name} purchased!${pack.priceCents === 0 ? " (free claim)" : ""}`,
+		`**Price:** ${packPriceLabel(pack)}`,
+		`**Remaining balance:** ${credit.balanceCents === null ? "Unknown" : formatUsd(credit.balanceCents)}`,
+		...buildDeliverySummary(deliveries),
+	].join("\n");
+}
+
+/**
+ * Sends the rich components-v2 confirmation, retrying as plain text when Discord
+ * rejects the payload. The purchase has already been recorded and delivered at
+ * this point, so the reply must always replace the deferred "thinking…" state
+ * rather than leaving the player with a stuck interaction.
+ */
+async function editWithFallback(
+	editReply: (data: Record<string, unknown>) => Promise<unknown>,
+	rich: Record<string, unknown>,
+	fallbackContent: string,
+) {
+	try {
+		return await editReply(rich);
+	} catch (error) {
+		console.error(
+			"[packs] Component reply rejected, falling back to text:",
+			error,
+		);
+		return editReply({
+			content: fallbackContent,
+			flags: InteractionFlags.Ephemeral,
+		});
+	}
+}
+
 async function respondWithPurchase(
 	discordId: string,
 	packId: string,
@@ -275,6 +372,17 @@ async function respondWithPurchase(
 	editReply: (data: Record<string, unknown>) => Promise<unknown>,
 ) {
 	const result = await purchaseSponsorPack(discordId, packId, memberRoleIds, characterName);
+	// Every outcome that means something happened to a save or a balance is
+	// logged. A random member clicking a sponsor-only pack is not an event an
+	// operator needs to read.
+	if (result.status !== "no-profile" && result.status !== "not-sponsor") {
+		reportPurchase({
+			event: `pack-purchase-${result.status}`,
+			title: `🛍️ Pack purchase: ${result.status}`,
+			message: describePurchaseResult(result, discordId, packId),
+		});
+	}
+
 	switch (result.status) {
 		case "no-profile":
 			return editReply({
@@ -330,10 +438,14 @@ async function respondWithPurchase(
 	}
 
 	const { pack, credit, deliveries } = result;
-	return editReply({
-		components: [buildPurchasedContainer(pack, credit, deliveries)],
-		flags: CONTAINER_EPHEMERAL_FLAGS,
-	});
+	return editWithFallback(
+		editReply,
+		{
+			components: [buildPurchasedContainer(pack, credit, deliveries)],
+			flags: CONTAINER_EPHEMERAL_FLAGS,
+		},
+		buildPurchaseSummary(pack, credit, deliveries),
+	);
 }
 
 async function handleBuy(
@@ -360,6 +472,17 @@ async function handleBuy(
 		);
 	} catch (error) {
 		console.error("[packs] Purchase failed:", error);
+		// A thrown purchase is the one outcome the player only sees as a generic
+		// message, so the operator log carries the real error.
+		reportPurchase({
+			event: "pack-purchase-error",
+			title: "🛑 Pack purchase failed",
+			message: [
+				`Player: <@${discordId}>`,
+				`Pack: \`${packId}\``,
+				`\`\`\`\n${error instanceof Error ? error.message : String(error)}\n\`\`\``,
+			].join("\n"),
+		});
 		return interaction.editReply({
 			content:
 				"The purchase could not be processed right now. Please try again later.",

@@ -7,11 +7,14 @@ This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord 
 - `/account create` sends an owner-bound Discord OAuth link. A MongoDB-backed game account and complete empty save document are created only after Discord returns a verified email; the player then sets the initial password through the message button and modal.
 - `/account reset-password` opens an owner-scoped modal and replaces the linked game account's password hash.
 - `/account view` privately shows the linked account's Discord email, game user ID, and password setup state.
+- `/authorize [connection]` sends owner-bound Discord OAuth links that connect a player's Discord account to the game's Discord surfaces: the Game Stats widget on their profile, the Social SDK's friends and rich presence, and its lobbies and chat. `connection` picks one; without it the reply offers a link for each, plus an "everything" link that authorizes them together. Links expire after 10 minutes and only the player who invoked the command can complete them.
 - `/sponsor-info github_username` lets administrators inspect the visible GitHub sponsorship tier, status, and estimated total.
 - `/add-credits player dollars [note]` lets administrators add shop credit to a linked player, converting donated dollars 1:1 into spendable credit. It stacks on top of the player's GitHub-reported donation total, is audited on the player's profile, and can be spent in `/packs` like sponsor credit.
 - `/idols player operation amount` lets administrators atomically add or subtract Mammoth Idols. Player autocomplete displays the character's current Idols, Gold, and Dragon Keys.
 - `/profile player` lets administrators inspect a linked Discord/GitHub profile and the player's current wallet values across the current game saves and legacy wallet stores.
-- `/add-credits` and `/maintenance` are administrator commands; they require the invoking member to hold Discord Administrator permissions.
+- `/packs` opens the sponsor pack shop. It writes each pack's rewards straight into the chosen character's save: credit is deducted (or the one-time Sponsor Pack claim recorded) before the rewards roll, and a purchase whose rewards cannot be written is refunded automatically.
+- `/pack-rewards player [character] [reset-credit]` removes the mounts and legendary dyes the shop wrote into a player's save, and with `reset-credit` also clears their pack purchase history so a pack can be bought again. Rewards are written to the stored save, so run it while the target character is out of game — the game server owns the save of a character that is online.
+- `/add-credits`, `/pack-rewards` and `/maintenance` are administrator commands; they require the invoking member to hold Discord Administrator permissions.
 
 The `/maintenance` and `/idols` commands require matching `DISCORD_MAINTENANCE_API_SECRET` values in the bot and game-server environments. The game server defaults to `http://35.185.71.109`; override it with `GAME_SERVER_BASE_URL` in the bot deployment when the game moves.
 
@@ -34,7 +37,7 @@ The wallet commands use `MONGODB_URI` by default. The current game schema is rea
 - `MONGODB_SAVES_COLLECTION` (default `saves`)
 - `MONGODB_COUNTERS_COLLECTION` (default `counters`)
 
-Account OAuth state is HMAC-signed with `ACCOUNT_OAUTH_STATE_SECRET`, or with `DISCORD_CLIENT_SECRET` when a dedicated state secret is not configured. Links expire after 10 minutes and can only be completed by the Discord user who invoked `/account create`.
+Account OAuth state is HMAC-signed with `ACCOUNT_OAUTH_STATE_SECRET`, or with `DISCORD_CLIENT_SECRET` when a dedicated state secret is not configured. Links expire after 10 minutes and can only be completed by the Discord user who invoked `/account create`. `/authorize` links are signed the same way (`OAUTH_STATE_SECRET` first, then the same fallbacks) and carry which connection they authorize, so one callback route serves both flows while keeping them apart.
 
 ## Game health monitoring
 
@@ -104,6 +107,8 @@ Widget writes need a player who authorized the application with `application_ide
 It is off by default because Discord approves game stats per application, an unapproved application is refused the scope with `invalid_scope`, and that refusal fails the **entire** authorization — so asking unconditionally stopped `/account create` and the in-game Discord login from working at all, with nothing a player could do about it.
 
 The bot reads the switch fail-closed: an unreachable game server means account scopes only, which can only ever under-ask. The answer is cached for five minutes. Once Discord approves the application, set `WIDGET_SCOPE_ENABLED=1` on the game server and restart it, then have players re-link to pick the scope up.
+
+`/authorize` is the re-link that does not recreate anything: it hands out an owner-bound link asking for one connection's scopes (the widget's own link asks for `application_identities.write`, and only while the switch is on), so a player who linked before the widget existed can grant it with one click. The scopes for the other connections are the Social SDK's — `sdk.social_layer_presence` for friends and rich presence, `sdk.social_layer` for lobbies and chat — and Discord documents them as already covering `application_identities.write`, which is why a player who authorizes either one is also reported as widget-authorized. The result page names the connections Discord actually granted, records them on the account, and publishes the widget profile immediately; it also spells out the step only the player can take, adding the widget to their profile: **profile → Add Widget → Dungeon Blitz → Add to profile**.
 
 While the switch is off no player holds the write scope, so widget writes are refused with `403`. That `403` now means "this **application** is not authorized for game stats" — Discord approves that per application, not per player — rather than "this player must re-link with `/account create`". The sync reports those players as `needs-authorization`.
 

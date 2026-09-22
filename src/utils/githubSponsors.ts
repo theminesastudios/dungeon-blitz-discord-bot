@@ -36,6 +36,7 @@ const MANUAL_PAST_SPONSORS = [
 ];
 const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 const DEFAULT_SPONSOR_CACHE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_SPONSOR_FETCH_TIMEOUT_MS = 8 * 1000;
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 15 * 60 * 1000;
 const DEFAULT_SPONSOR_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -246,6 +247,21 @@ function getGitHubToken() {
 
 function isSponsorDebugEnabled() {
 	return process.env.GITHUB_SPONSOR_DEBUG?.trim().toLowerCase() === "true";
+}
+
+/**
+ * Bounds a GitHub request so a stalled connection cannot outlive the Discord
+ * interaction that is waiting on it.
+ */
+function getSponsorFetchSignal(): AbortSignal | undefined {
+	const raw = Number(process.env.GITHUB_SPONSOR_FETCH_TIMEOUT_MS);
+	const timeoutMs =
+		Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SPONSOR_FETCH_TIMEOUT_MS;
+	try {
+		return AbortSignal.timeout(timeoutMs);
+	} catch {
+		return undefined;
+	}
 }
 
 function getSponsorCacheTtlMs() {
@@ -1282,6 +1298,7 @@ export async function getSponsorDonationInfo(
 					...(token ? { Authorization: `Bearer ${token}` } : {}),
 					"Content-Type": "application/json",
 				},
+				signal: getSponsorFetchSignal(),
 				body: JSON.stringify({
 					query,
 					variables: {

@@ -1,6 +1,11 @@
 import { MongoClient, type Collection, type Filter } from "mongodb";
 import type { PackReward, PackRewardDeliveryResult } from "./sponsorPacks.js";
-import { CONSUMABLE_ID_BY_KIND } from "./sponsorPacks.js";
+import {
+	CONSUMABLE_ID_BY_KIND,
+	EXCLUSIVE_MOUNT_IDS,
+	LEGENDARY_DYE_IDS,
+	NON_EXCLUSIVE_MOUNT_IDS,
+} from "./sponsorPacks.js";
 
 type RewardDocument = Document & {
 	_id: string;
@@ -108,6 +113,10 @@ async function listSaveCharactersForUser(userId: number): Promise<GameCharacterO
 
 let clientPromise: Promise<MongoClient> | null = null;
 
+/** Kept well inside the interaction function's time budget so a stalled DB surfaces as an error. */
+const MONGO_SERVER_SELECTION_TIMEOUT_MS = 5_000;
+const MONGO_SOCKET_TIMEOUT_MS = 8_000;
+
 function normalizeAmount(value: unknown): number {
 	const amount = Number(value ?? 0);
 	return Number.isFinite(amount) ? Math.max(0, Math.round(amount)) : 0;
@@ -122,7 +131,15 @@ function getMongoUri(): string {
 async function getClient(): Promise<MongoClient> {
 	if (clientPromise) return clientPromise;
 	clientPromise = (async () => {
-		const client = new MongoClient(getMongoUri(), { ignoreUndefined: true });
+		const client = new MongoClient(getMongoUri(), {
+			ignoreUndefined: true,
+			// Delivery must fail fast when the save DB is unreachable: an unbounded
+			// wait outlives the Discord interaction and hides the error behind a
+			// permanent "thinking…" state.
+			serverSelectionTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
+			connectTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
+			socketTimeoutMS: MONGO_SOCKET_TIMEOUT_MS,
+		});
 		await client.connect();
 		return client;
 	})().catch((error) => {
@@ -183,6 +200,112 @@ export async function findDefaultGameSaveCharacter(
 	const unlocked = characters.filter((character) => character.locked !== true);
 	const pick = unlocked[0] ?? characters[0];
 	return { userId, characterName: pick.name };
+}
+
+export type PackRewardStripCharacter = {
+	name: string;
+	removedDyes: number[];
+	removedMounts: number[];
+	remainingDyes: number[];
+	remainingMounts: number[];
+};
+
+export type PackRewardStripResult = {
+	userId: number;
+	characters: PackRewardStripCharacter[];
+};
+
+function toNumberArray(value: unknown): number[] {
+	return Array.isArray(value)
+		? value.map((entry) => Number(entry)).filter((entry) => Number.isFinite(entry))
+		: [];
+}
+
+function characterInventory(character: unknown, field: "OwnedDyes" | "mounts"): number[] {
+	const record = character as { OwnedDyes?: unknown; mounts?: unknown } | null;
+	if (!record) return [];
+	return toNumberArray(field === "OwnedDyes" ? record.OwnedDyes : record.mounts);
+}
+
+/**
+ * Removes the mounts and legendary dyes the pack shop wrote into a save
+ * (`applyPackRewardsToSave`), so a test purchase can be undone. Only the ids the
+ * shop grants are pulled — anything else the player owns stays untouched.
+ *
+ * Returns the ids that were actually removed, read back from the save, or null
+ * when the Discord account has no game account/save.
+ */
+export async function stripPackRewards(
+	discordId: string,
+	characterName?: string,
+): Promise<PackRewardStripResult | null> {
+	// Read the pack id pools here rather than at module scope: this module and
+	// `sponsorPacks` import each other, so a top-level read runs while that
+	// module is still evaluating and would spread `undefined`.
+	const packDyeIds: number[] = [...LEGENDARY_DYE_IDS];
+	const packMountIds: number[] = [
+		...NON_EXCLUSIVE_MOUNT_IDS,
+		...EXCLUSIVE_MOUNT_IDS,
+	];
+
+	const userId = await findGameUserIdForDiscord(discordId);
+	if (!userId) return null;
+
+	const saves = await getSavesCollection();
+	const save = await saves
+		.findOne({ user_id: userId } as Filter<RewardDocument>, { sort: { updatedAt: -1 } })
+		.catch(() => null);
+	const before = Array.isArray(save?.characters) ? save!.characters! : [];
+	if (before.length === 0) return { userId, characters: [] };
+
+	const wanted = characterName?.trim().toLowerCase();
+	const names = before
+		.map((character) => String((character as { name?: unknown } | null)?.name ?? "").trim())
+		.filter((name) => name.length > 0 && (!wanted || name.toLowerCase() === wanted));
+	if (names.length === 0) return { userId, characters: [] };
+
+	for (const name of names) {
+		await saves.updateOne(
+			{ user_id: userId, "characters.name": name } as Filter<RewardDocument>,
+			{
+				$pull: {
+					"characters.$[char].OwnedDyes": { $in: packDyeIds },
+					"characters.$[char].mounts": { $in: packMountIds },
+				},
+				$set: { updatedAt: new Date() },
+			} as never,
+			{ arrayFilters: [{ "char.name": name }] } as never,
+		);
+	}
+
+	const characters: PackRewardStripCharacter[] = [];
+	for (const name of names) {
+		const beforeDyes = characterInventory(
+			before.find(
+				(character) =>
+					String((character as { name?: unknown } | null)?.name ?? "").trim() === name,
+			),
+			"OwnedDyes",
+		);
+		const beforeMounts = characterInventory(
+			before.find(
+				(character) =>
+					String((character as { name?: unknown } | null)?.name ?? "").trim() === name,
+			),
+			"mounts",
+		);
+		const remainingDyes = beforeDyes.filter((id) => !packDyeIds.includes(id));
+		const remainingMounts = beforeMounts.filter((id) => !packMountIds.includes(id));
+		characters.push({
+			name,
+			removedDyes: beforeDyes.filter((id) => !remainingDyes.includes(id)),
+			removedMounts: beforeMounts.filter((id) => !remainingMounts.includes(id)),
+			remainingDyes,
+			remainingMounts,
+		});
+	}
+
+	return { userId, characters };
 }
 
 /** Formats one reward into a short "what you got" line for the shop confirmation. */

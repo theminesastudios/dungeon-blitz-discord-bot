@@ -8,6 +8,12 @@ const PASSWORD_PARAMS = {
 	keylen: 64,
 } as const;
 
+/** One Discord connection a player authorized, and the scopes Discord reported for it. */
+export type DiscordConnectionGrant = {
+	scopes: string[];
+	authorizedAt: Date;
+};
+
 type AccountDocument = Document & {
 	_id: string;
 	email: string;
@@ -17,6 +23,14 @@ type AccountDocument = Document & {
 	passwordSalt?: string;
 	passwordHash?: string;
 	passwordParams?: typeof PASSWORD_PARAMS;
+	/** Connection ids from `/authorize`, keyed by id. */
+	discordConnections?: Record<string, DiscordConnectionGrant>;
+	gameStats?: {
+		state?: string;
+		error?: string | null;
+		syncedAt?: Date;
+		providerIssuedUserId?: string;
+	};
 };
 
 type SaveDocument = Document & {
@@ -45,6 +59,10 @@ export type PublicGameAccount = {
 	userId: number;
 	discordId: string;
 	passwordConfigured: boolean;
+	/** Discord connections this account has authorized, so `/authorize` can show what is done. */
+	connections: string[];
+	/** Last recorded Game Stats Widget sync state, `null` until one has run. */
+	widgetState: string | null;
 };
 
 export type CreateGameAccountResult = {
@@ -198,6 +216,8 @@ function publicAccount(account: AccountDocument): PublicGameAccount {
 		userId: account.user_id,
 		discordId: account.discordId,
 		passwordConfigured: typeof account.passwordHash === "string" && account.passwordHash.length > 0,
+		connections: Object.keys(account.discordConnections ?? {}).sort(),
+		widgetState: typeof account.gameStats?.state === "string" ? account.gameStats.state : null,
 	};
 }
 
@@ -277,6 +297,37 @@ export async function recordGameStatsSyncStatus(
 			},
 		}
 	);
+}
+
+/**
+ * Records the Discord connections a player just authorized, so `/authorize` can report what is
+ * already connected instead of asking for the same consent again.
+ *
+ * Returns false when the player has no linked game account: presence and lobby access do not
+ * need one, so that is a normal outcome with nowhere to be recorded rather than an error.
+ *
+ * Connection ids come from this bot's own catalog and are used as MongoDB field paths, so they
+ * are validated against a safe shape instead of being trusted.
+ */
+export async function recordDiscordConnections(
+	discordIdInput: string,
+	grants: ReadonlyArray<{ connection: string; scopes: readonly string[] }>
+): Promise<boolean> {
+	const discordId = String(discordIdInput ?? "").trim();
+	const valid = grants.filter((grant) => /^[a-z][a-z0-9-]{0,31}$/.test(grant.connection));
+	if (!discordId || valid.length === 0) return false;
+	await ensureIndexes();
+	const { accounts } = await getCollections();
+	const now = new Date();
+	const set: Document = { updatedAt: now };
+	for (const grant of valid) {
+		set[`discordConnections.${grant.connection}`] = {
+			scopes: [...grant.scopes],
+			authorizedAt: now,
+		};
+	}
+	const result = await accounts.updateOne({ discordId }, { $set: set });
+	return result.matchedCount > 0;
 }
 
 export async function createGameAccountFromDiscord(

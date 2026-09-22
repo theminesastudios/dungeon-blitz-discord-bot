@@ -30,6 +30,7 @@ import {
   resetPasswordModal,
 } from "../src/commands/account.js";
 import { sponsorInfoCommand } from "../src/commands/sponsor-info.js";
+import { authorizeCommand } from "../src/commands/authorize.js";
 import {
   addCreditsCommand,
   handleAddCreditsAutocomplete,
@@ -45,6 +46,10 @@ import {
   packsSelectComponent,
   packsCharacterSelectComponent,
 } from "../src/commands/packs.js";
+import {
+  packRewardsCommand,
+  handlePackRewardsAutocomplete,
+} from "../src/commands/pack-rewards.js";
 
 const applicationId = process.env.DISCORD_APPLICATION_ID?.trim();
 const botToken = process.env.DISCORD_BOT_TOKEN?.trim();
@@ -82,11 +87,13 @@ type AutocompleteModule = { command: string; handler: AutocompleteHandler };
 const commandModules: CommandModule[] = [
   maintenanceCommand,
   accountCommand,
+  authorizeCommand,
   sponsorInfoCommand,
   addCreditsCommand,
   idolsCommand,
   profileCommand,
   packsCommand,
+  packRewardsCommand,
 ];
 
 const componentModules: ComponentModule[] = [
@@ -105,6 +112,7 @@ const autocompleteModules: AutocompleteModule[] = [
   { command: "add-credits", handler: handleAddCreditsAutocomplete },
   { command: "idols", handler: handleIdolsAutocomplete },
   { command: "profile", handler: handleProfileAutocomplete },
+  { command: "pack-rewards", handler: handlePackRewardsAutocomplete },
 ];
 
 /** Command payloads for global registration (see scripts/register.ts). */
