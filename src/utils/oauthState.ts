@@ -18,7 +18,7 @@ import { discordOAuthConfig } from "./oauthConfig.js";
  * makes a reader — or a security scan — mistake the signature for a password hash.
  */
 
-export const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+export const LINK_STATE_TTL_MS = 10 * 60 * 1000;
 
 export type SignedOAuthState = {
 	mode: string;
@@ -38,7 +38,7 @@ export type OAuthStateOptions = {
  * so a missing dedicated key is never a lockout. Both flows sign with the same value, which is
  * what lets one callback route serve them while their prefixes keep them apart.
  */
-function oauthStateSigningKey(): string {
+function linkStateSigningKey(): string {
 	return (
 		process.env.OAUTH_STATE_SECRET?.trim() ||
 		process.env.ACCOUNT_OAUTH_STATE_SECRET?.trim() ||
@@ -48,7 +48,7 @@ function oauthStateSigningKey(): string {
 
 function signPayload(payload: string): string {
 	return crypto
-		.createHmac("sha256", oauthStateSigningKey())
+		.createHmac("sha256", linkStateSigningKey())
 		.update(payload)
 		.digest("base64url");
 }
@@ -69,7 +69,7 @@ export function createSignedOAuthState(
 		JSON.stringify({
 			mode,
 			discordId,
-			expiresAt: (options.now ?? Date.now()) + (options.ttlMs ?? OAUTH_STATE_TTL_MS),
+			expiresAt: (options.now ?? Date.now()) + (options.ttlMs ?? LINK_STATE_TTL_MS),
 			nonce: crypto.randomBytes(12).toString("base64url"),
 			...(options.extra ?? {}),
 		})

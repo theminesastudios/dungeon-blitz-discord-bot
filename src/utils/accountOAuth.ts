@@ -11,20 +11,20 @@ import {
 	resolveWidgetScopeEnabled,
 } from "./gameStatsProfile.js";
 
-const ACCOUNT_OAUTH_STATE_PREFIX = "dba1";
+const ACCOUNT_LINK_STATE_PREFIX = "dba1";
 
 type AccountOAuthState = SignedOAuthState & { mode: "account-create" };
 
 /**
  * The account link predates `OAUTH_STATE_SECRET`; its own `ACCOUNT_OAUTH_STATE_SECRET` still takes
- * precedence (see `oauthStateSigningKey`), so links signed before `/authorize` existed keep
+ * precedence (see `linkStateSigningKey`), so links signed before `/authorize` existed keep
  * parsing.
  */
-const ACCOUNT_OAUTH_STATE_OPTIONS = { prefix: ACCOUNT_OAUTH_STATE_PREFIX } as const;
+const ACCOUNT_LINK_STATE_OPTIONS = { prefix: ACCOUNT_LINK_STATE_PREFIX } as const;
 
 export function createAccountOAuthState(discordIdInput: string, now = Date.now()): string {
 	return createSignedOAuthState("account-create", discordIdInput, {
-		...ACCOUNT_OAUTH_STATE_OPTIONS,
+		...ACCOUNT_LINK_STATE_OPTIONS,
 		now,
 	});
 }
@@ -34,14 +34,14 @@ export function parseAccountOAuthState(
 	now = Date.now()
 ): AccountOAuthState | null {
 	return parseSignedOAuthState(stateInput, {
-		...ACCOUNT_OAUTH_STATE_OPTIONS,
+		...ACCOUNT_LINK_STATE_OPTIONS,
 		mode: "account-create",
 		now,
 	}) as AccountOAuthState | null;
 }
 
 export function isAccountOAuthState(state: unknown): boolean {
-	return isSignedOAuthState(state, ACCOUNT_OAUTH_STATE_PREFIX);
+	return isSignedOAuthState(state, ACCOUNT_LINK_STATE_PREFIX);
 }
 
 export function accountOAuthStateMatchesUser(

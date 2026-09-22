@@ -31,7 +31,7 @@ import {
  * verifies which Discord user actually completed the link.
  */
 
-export const AUTHORIZE_OAUTH_STATE_PREFIX = "dba2";
+export const AUTHORIZE_LINK_STATE_PREFIX = "dba2";
 
 export const SOCIAL_LAYER_PRESENCE_SCOPE = "sdk.social_layer_presence";
 export const SOCIAL_LAYER_SCOPE = "sdk.social_layer";
@@ -149,7 +149,7 @@ export function createAuthorizeOAuthState(
 	now = Date.now()
 ): string {
 	return createSignedOAuthState("authorize", discordId, {
-		prefix: AUTHORIZE_OAUTH_STATE_PREFIX,
+		prefix: AUTHORIZE_LINK_STATE_PREFIX,
 		now,
 		extra: { connection },
 	});
@@ -161,7 +161,7 @@ export type AuthorizeOAuthState = SignedOAuthState & {
 };
 
 export function isAuthorizeOAuthState(state: unknown): boolean {
-	return isSignedOAuthState(state, AUTHORIZE_OAUTH_STATE_PREFIX);
+	return isSignedOAuthState(state, AUTHORIZE_LINK_STATE_PREFIX);
 }
 
 /** Verifies a returned `state` and rejects one naming a connection this bot does not have. */
@@ -170,7 +170,7 @@ export function parseAuthorizeOAuthState(
 	now = Date.now()
 ): AuthorizeOAuthState | null {
 	const state = parseSignedOAuthState(stateInput, {
-		prefix: AUTHORIZE_OAUTH_STATE_PREFIX,
+		prefix: AUTHORIZE_LINK_STATE_PREFIX,
 		mode: "authorize",
 		now,
 	});
