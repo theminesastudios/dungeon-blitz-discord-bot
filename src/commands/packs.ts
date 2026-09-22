@@ -315,6 +315,18 @@ async function respondWithPurchase(
 					"Your balance changed while processing the purchase. Please try again.",
 				flags: InteractionFlags.Ephemeral,
 			});
+		case "no-character":
+			// The purchase (or free claim) was automatically reverted — credit is
+			// back and the Sponsor Pack claim is released, so nothing was lost.
+			return editReply({
+				content: [
+					`❌ The **${result.pack.name}** could not be delivered — ${result.reason}`,
+					result.pack.priceCents === 0
+						? "Your claim was released; try again once you have an unlocked character."
+						: "You were not charged; your balance is unchanged.",
+				].join("\n"),
+				flags: InteractionFlags.Ephemeral,
+			});
 	}
 
 	const { pack, credit, deliveries } = result;

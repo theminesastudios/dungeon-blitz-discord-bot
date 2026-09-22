@@ -25,7 +25,23 @@ export type GameCharacterOption = {
 	name: string;
 	level: number;
 	class: string;
+	/** The game locks characters the player has not chosen yet; rewards written there are lost. */
+	locked?: boolean;
 };
+
+/**
+ * Thrown when the buyer explicitly picked a character that the game has locked.
+ * The purchase stays recorded, so callers surface this and let the player pick
+ * another character instead of silently eating the pack.
+ */
+export class LockedCharacterError extends Error {
+	constructor(characterName: string) {
+		super(
+			`The character "${characterName}" is currently locked in-game. Unlock it (or pick another character) and buy the pack again.`,
+		);
+		this.name = "LockedCharacterError";
+	}
+}
 
 /**
  * Resolves the Dungeon Blitz user ID linked to a Discord account, or null.
@@ -59,6 +75,15 @@ export async function listGameSaveCharacters(
 	const userId = normalizeAmount(account?.user_id);
 	if (!userId) return [];
 
+	return listSaveCharactersForUser(userId);
+}
+
+/**
+ * Named characters on one save document. The game itself writes this document,
+ * so the shop must only ever touch the save that belongs to `userId` — never a
+ * similarly-named character on someone else's save.
+ */
+async function listSaveCharactersForUser(userId: number): Promise<GameCharacterOption[]> {
 	const saves = await getSavesCollection();
 	const save = await saves
 		.findOne({ user_id: userId } as Filter<RewardDocument>, { sort: { updatedAt: -1 } })
@@ -66,13 +91,16 @@ export async function listGameSaveCharacters(
 	const characters = Array.isArray(save?.characters) ? save!.characters! : [];
 	return characters
 		.map((character) => {
-			const record = character as { name?: unknown; level?: unknown; class?: unknown } | null;
+			const record = character as
+				| { name?: unknown; level?: unknown; class?: unknown; locked?: unknown }
+				| null;
 			const name = String(record?.name ?? "").trim();
 			if (!name) return null;
 			return {
 				name,
 				level: normalizeAmount(record?.level),
 				class: String(record?.class ?? "").trim(),
+				...(record?.locked === true ? { locked: true } : {}),
 			};
 		})
 		.filter((character): character is GameCharacterOption => character !== null);
@@ -131,43 +159,39 @@ async function getSavesCollection(): Promise<Collection<RewardDocument>> {
 }
 
 /**
- * Picks the buyer's game character: the save linked to their Dungeon Blitz
- * account (matched through the accounts collection by Discord ID), preferring
- * the most recently updated character when the account owns several.
+ * Picks the buyer's game character for reward delivery. `userId` comes from the
+ * accounts collection matched by Discord ID — the fallback character is always
+ * chosen from that player's own save document, never by searching all saves.
+ *
+ * The game locks characters the player has not chosen yet, so the most recently
+ * updated *unlocked* character is preferred; a locked character is only used as
+ * a last resort (and delivery onto it is reported as failed).
  */
 export async function findDefaultGameSaveCharacter(
 	discordId: string,
+	knownUserId?: number,
 ): Promise<GameSaveCharacterRef | null> {
 	const normalized = String(discordId ?? "").trim();
 	if (!normalized) return null;
 
-	const accounts = await getAccountsCollection();
-	const account = await accounts
-		.findOne({ discordId: normalized } as Filter<AccountDocument>, { projection: { user_id: 1 } })
-		.catch(() => null);
-	const userId = normalizeAmount(account?.user_id);
+	const userId = knownUserId ?? (await findGameUserIdForDiscord(normalized));
 	if (!userId) return null;
 
-	const saves = await getSavesCollection();
-	const save = await saves
-		.findOne(
-			{ user_id: userId, "characters.name": { $exists: true, $ne: "" } } as Filter<RewardDocument>,
-			{ sort: { updatedAt: -1 } },
-		)
-		.catch(() => null);
-	const characters = Array.isArray(save?.characters) ? save!.characters! : [];
-	const named = characters
-		.map((character) => String((character as { name?: unknown } | null)?.name ?? "").trim())
-		.find(Boolean);
-	if (!named) return null;
-	return { userId, characterName: named };
+	const characters = await listSaveCharactersForUser(userId);
+	if (characters.length === 0) return null;
+
+	const unlocked = characters.filter((character) => character.locked !== true);
+	const pick = unlocked[0] ?? characters[0];
+	return { userId, characterName: pick.name };
 }
 
 /** Formats one reward into a short "what you got" line for the shop confirmation. */
 export function formatRewardLine(reward: PackReward): string {
 	switch (reward.kind) {
 		case "mount":
-			return `Mount #${reward.mountId}${reward.exclusive ? " (exclusive)" : ""}`;
+			return reward.mountIds && reward.mountIds.length > 1
+				? `${reward.mountIds.length} mounts`
+				: `Mount #${reward.mountId}${reward.exclusive ? " (exclusive)" : ""}`;
 		case "dye":
 			return `Legendary dye #${reward.dyeId}`;
 		case "lockbox":
@@ -181,10 +205,77 @@ export function formatRewardLine(reward: PackReward): string {
 	}
 }
 
+type CharacterUpdate = {
+	$addToSet?: Record<string, unknown>;
+	$push?: Record<string, unknown>;
+	$inc?: Record<string, unknown>;
+	$set?: Record<string, unknown>;
+};
+
+type CharacterUpdateOptions = {
+	/** Extra array filters, e.g. a stacked entry selector inside the character. */
+	arrayFilters?: Record<string, unknown>[];
+	/**
+	 * When true, a match with no modification (the entry already existed) counts
+	 * as delivered — used by $addToSet rewards that are duplicate-free by design.
+	 */
+	noopCountsAsDelivered?: boolean;
+};
+
+type CharacterUpdateOutcome =
+	| "delivered"
+	| "character-not-found"
+	| "field-missing";
+
+/**
+ * Runs one atomic update against the target character using arrayFilters, so a
+ * concurrent game-server save can never clobber an unrelated field.
+ *
+ * The discriminator `"characters.name": characterName` inside the filter is what
+ * keeps the write on the buyer's own save: together with the `user_id` match it
+ * cannot hit a character of the same name on another player's save.
+ */
+async function runCharacterUpdate(
+	saves: Collection<RewardDocument>,
+	userId: number,
+	characterName: string,
+	update: CharacterUpdate,
+	options: CharacterUpdateOptions = {},
+): Promise<CharacterUpdateOutcome> {
+	const result = await saves.updateOne(
+		{ user_id: userId, "characters.name": characterName } as Filter<RewardDocument>,
+		{
+			...update,
+			$set: { ...(update.$set ?? {}), updatedAt: new Date() },
+		} as never,
+		{ arrayFilters: [{ "char.name": characterName }, ...(options.arrayFilters ?? [])] } as never,
+	);
+	if (result.matchedCount === 0) return "character-not-found";
+	if (result.modifiedCount === 0 && !options.noopCountsAsDelivered) return "field-missing";
+	return "delivered";
+}
+
+function outcomeError(outcome: Exclude<CharacterUpdateOutcome, "delivered">): string {
+	switch (outcome) {
+		case "character-not-found":
+			return "Character not found in the game save.";
+		case "field-missing":
+			return "The character's save does not have this inventory field yet — play once more in-game, then claim the pack again.";
+	}
+}
+
+function fail(
+	reward: PackReward,
+	characterName: string,
+	error: string,
+): PackRewardDeliveryResult {
+	return { status: "failed", delivery: { reward, characterName }, error };
+}
+
 /**
  * Writes every reward into the target character's save document using atomic
- * per-field updates (arrayFilters target the exact character), so a concurrent
- * game-server save can never clobber an unrelated field.
+ * per-field updates. Every reward is attempted independently so one failure
+ * does not block the rest.
  */
 export async function applyPackRewardsToSave(
 	userId: number,
@@ -208,52 +299,44 @@ export async function applyPackRewardsToSave(
 	return results;
 }
 
-function fail(reward: PackReward, characterName: string, error: string): PackRewardDeliveryResult {
-	return { status: "failed", delivery: { reward, characterName }, error };
-}
-
 async function applySingleReward(
 	saves: Collection<RewardDocument>,
 	userId: number,
 	characterName: string,
 	reward: PackReward,
 ): Promise<PackRewardDeliveryResult> {
-	const arrayFilters = [{ "char.name": characterName }];
-	const touch = { updatedAt: new Date() };
-
 	switch (reward.kind) {
 		case "mount": {
 			// $addToSet keeps the mount list duplicate-free even if the game client
 			// already granted the same mount.
-			const result = await saves.updateOne(
-				{ user_id: userId, "characters.name": characterName } as Filter<RewardDocument>,
-				{
-					$addToSet: { "characters.$[char].mounts": reward.mountId },
-					$set: touch,
-				} as never,
-				{ arrayFilters } as never,
+			const mountIds = reward.mountIds ?? [reward.mountId];
+			const outcome = await runCharacterUpdate(
+				saves,
+				userId,
+				characterName,
+				{ $addToSet: { "characters.$[char].mounts": { $each: mountIds } } },
+				{ noopCountsAsDelivered: true },
 			);
-			if (result.matchedCount === 0) {
-				return fail(reward, characterName, "Character not found in the game save.");
+			if (outcome !== "delivered") {
+				return fail(reward, characterName, outcomeError(outcome));
 			}
 			break;
 		}
 		case "dye": {
-			const result = await saves.updateOne(
-				{ user_id: userId, "characters.name": characterName } as Filter<RewardDocument>,
-				{
-					$addToSet: { "characters.$[char].OwnedDyes": reward.dyeId },
-					$set: touch,
-				} as never,
-				{ arrayFilters } as never,
+			const outcome = await runCharacterUpdate(
+				saves,
+				userId,
+				characterName,
+				{ $addToSet: { "characters.$[char].OwnedDyes": reward.dyeId } },
+				{ noopCountsAsDelivered: true },
 			);
-			if (result.matchedCount === 0) {
-				return fail(reward, characterName, "Character not found in the game save.");
+			if (outcome !== "delivered") {
+				return fail(reward, characterName, outcomeError(outcome));
 			}
 			break;
 		}
 		case "lockbox": {
-			const delivered = await bumpStackedEntry(
+			const outcome = await bumpStackedEntry(
 				saves,
 				userId,
 				characterName,
@@ -261,16 +344,15 @@ async function applySingleReward(
 				"lockboxID",
 				reward.lockboxId,
 				reward.count,
-				arrayFilters,
 			);
-			if (!delivered) {
-				return fail(reward, characterName, "Character not found in the game save.");
+			if (outcome !== "delivered") {
+				return fail(reward, characterName, outcomeError(outcome));
 			}
 			break;
 		}
 		case "consumable": {
 			const consumableId = CONSUMABLE_ID_BY_KIND[reward.consumableId];
-			const delivered = await bumpStackedEntry(
+			const outcome = await bumpStackedEntry(
 				saves,
 				userId,
 				characterName,
@@ -278,35 +360,27 @@ async function applySingleReward(
 				"consumableID",
 				consumableId,
 				reward.count,
-				arrayFilters,
 			);
-			if (!delivered) {
-				return fail(reward, characterName, "Character not found in the game save.");
+			if (outcome !== "delivered") {
+				return fail(reward, characterName, outcomeError(outcome));
 			}
 			break;
 		}
 		case "gold": {
-			const result = await saves.updateOne(
-				{ user_id: userId, "characters.name": characterName } as Filter<RewardDocument>,
-				{ $inc: { "characters.$[char].gold": reward.amount }, $set: touch } as never,
-				{ arrayFilters } as never,
-			);
-			if (result.matchedCount === 0) {
-				return fail(reward, characterName, "Character not found in the game save.");
+			const outcome = await runCharacterUpdate(saves, userId, characterName, {
+				$inc: { "characters.$[char].gold": reward.amount },
+			});
+			if (outcome !== "delivered") {
+				return fail(reward, characterName, outcomeError(outcome));
 			}
 			break;
 		}
 		case "sigils": {
-			const result = await saves.updateOne(
-				{ user_id: userId, "characters.name": characterName } as Filter<RewardDocument>,
-				{
-					$inc: { "characters.$[char].SilverSigils": reward.amount },
-					$set: touch,
-				} as never,
-				{ arrayFilters } as never,
-			);
-			if (result.matchedCount === 0) {
-				return fail(reward, characterName, "Character not found in the game save.");
+			const outcome = await runCharacterUpdate(saves, userId, characterName, {
+				$inc: { "characters.$[char].SilverSigils": reward.amount },
+			});
+			if (outcome !== "delivered") {
+				return fail(reward, characterName, outcomeError(outcome));
 			}
 			break;
 		}
@@ -318,7 +392,8 @@ async function applySingleReward(
 /**
  * Adds `count` to a stacked array entry such as lockboxes/consumables. Tries an
  * atomic $inc on the matching entry first; when the character does not own that
- * stack yet (modifiedCount 0 despite a match), falls back to $push.
+ * stack yet (modifiedCount 0 despite a match), upserts the entry by pushing it
+ * with the full count, or creates the array itself when the character has none.
  */
 async function bumpStackedEntry(
 	saves: Collection<RewardDocument>,
@@ -328,30 +403,31 @@ async function bumpStackedEntry(
 	idField: "lockboxID" | "consumableID",
 	entryId: number,
 	count: number,
-	arrayFilters: Record<string, unknown>[],
-): Promise<boolean> {
-	const saveFilter = { user_id: userId, "characters.name": characterName } as Filter<RewardDocument>;
-	const increment = await saves.updateOne(
-		saveFilter,
-		{
-			$inc: { [`characters.$[char].${field}.$[entry].count`]: count },
-			$set: { updatedAt: new Date() },
-		} as never,
-		{
-			arrayFilters: [...arrayFilters, { [`entry.${idField}`]: entryId }],
-		} as never,
+): Promise<CharacterUpdateOutcome> {
+	const increment = await runCharacterUpdate(
+		saves,
+		userId,
+		characterName,
+		{ $inc: { [`characters.$[char].${field}.$[entry].count`]: count } },
+		{ arrayFilters: [{ [`entry.${idField}`]: entryId }] },
 	);
-	if (increment.matchedCount === 0) return false;
-	if (increment.modifiedCount > 0) return true;
+	if (increment !== "field-missing") return increment;
 
 	// The character exists but does not own this stack yet — create it.
-	const push = await saves.updateOne(
-		saveFilter,
-		{
-			$push: { [`characters.$[char].${field}`]: { [idField]: entryId, count } },
-			$set: { updatedAt: new Date() },
-		} as never,
-		{ arrayFilters } as never,
+	const push = await runCharacterUpdate(
+		saves,
+		userId,
+		characterName,
+		{ $push: { [`characters.$[char].${field}`]: { [idField]: entryId, count } } },
 	);
-	return push.matchedCount > 0;
+	if (push !== "field-missing") return push;
+
+	// The character has no array at all (e.g. a brand-new save) — create it.
+	const create = await runCharacterUpdate(
+		saves,
+		userId,
+		characterName,
+		{ $set: { [`characters.$[char].${field}`]: [{ [idField]: entryId, count }] } },
+	);
+	return create;
 }

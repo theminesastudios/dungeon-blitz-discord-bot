@@ -560,7 +560,9 @@ function toPackPurchase(value: unknown): PackPurchase | null {
 	if (typeof record.packId !== "string" || typeof record.packName !== "string") return null;
 	const priceCents = Number(record.priceCents);
 	const purchasedAtMs = Number(record.purchasedAtMs);
-	if (!Number.isFinite(priceCents) || priceCents <= 0) return null;
+	// priceCents === 0 is valid: the Sponsor Pack is a free claim that still
+	// occupies the ledger so it cannot be claimed twice.
+	if (!Number.isFinite(priceCents) || priceCents < 0) return null;
 	return {
 		packId: record.packId,
 		packName: record.packName,
@@ -658,6 +660,42 @@ export async function recordPackPurchase(
 			$inc: { packUsedCents: purchase.priceCents },
 			// MongoDB's $push typing is overly strict on Document intersections.
 			$push: { packPurchases: purchase },
+		} as never,
+	);
+	return updated !== null;
+}
+
+/**
+ * Atomically reverts a failed purchase: subtracts the price from `packUsedCents`
+ * and removes the purchase from the ledger. For a free claim (priceCents 0) it
+ * only removes the ledger entry, which releases the claim so it can be tried
+ * again. Returns false when the exact purchase is no longer on the ledger (e.g.
+ * a refund already ran), so a double refund can never corrupt the balance.
+ */
+export async function refundPackPurchase(
+	discordId: string,
+	purchase: PackPurchase,
+): Promise<boolean> {
+	if (!Number.isSafeInteger(purchase.priceCents) || purchase.priceCents < 0) {
+		throw new Error("Pack price must be a non-negative whole number of cents");
+	}
+	const normalized = discordId.trim();
+	if (!normalized) return false;
+	const profiles = await getLinkedProfileCollection();
+	const updated = await profiles.findOneAndUpdate(
+		{
+			$and: [
+				{ $or: [{ _id: normalized }, { userId: normalized }] },
+				// The exact purchase entry must still be on the ledger, and the used
+				// total must still cover its price, for the revert to be safe.
+				{ packUsedCents: { $gte: purchase.priceCents } },
+				{ packPurchases: purchase },
+			],
+		} as Filter<RawLinkedProfile>,
+		{
+			$inc: { packUsedCents: -purchase.priceCents },
+			// MongoDB's $pull typing is overly strict on Document intersections.
+			$pull: { packPurchases: purchase },
 		} as never,
 	);
 	return updated !== null;
