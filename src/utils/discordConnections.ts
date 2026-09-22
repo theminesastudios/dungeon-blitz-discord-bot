@@ -150,19 +150,9 @@ export function createAuthorizeOAuthState(
 ): string {
 	return createSignedOAuthState("authorize", discordId, {
 		prefix: AUTHORIZE_OAUTH_STATE_PREFIX,
-		secret: authorizeOAuthStateSecret(),
 		now,
 		extra: { connection },
 	});
-}
-
-/** Same fallback chain as the account link: a dedicated secret, then the OAuth client secret. */
-function authorizeOAuthStateSecret(): string {
-	return (
-		process.env.OAUTH_STATE_SECRET?.trim() ||
-		process.env.ACCOUNT_OAUTH_STATE_SECRET?.trim() ||
-		discordOAuthConfig.appSecret
-	);
 }
 
 export type AuthorizeOAuthState = SignedOAuthState & {
@@ -181,7 +171,6 @@ export function parseAuthorizeOAuthState(
 ): AuthorizeOAuthState | null {
 	const state = parseSignedOAuthState(stateInput, {
 		prefix: AUTHORIZE_OAUTH_STATE_PREFIX,
-		secret: authorizeOAuthStateSecret(),
 		mode: "authorize",
 		now,
 	});

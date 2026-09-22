@@ -1,4 +1,5 @@
 import * as crypto from "node:crypto";
+import { discordOAuthConfig } from "./oauthConfig.js";
 
 /**
  * The signed `state` parameter every Discord authorization link this bot hands out uses.
@@ -11,6 +12,10 @@ import * as crypto from "node:crypto";
  * A link is only ever valid for the user who invoked the command, for a few minutes, and exactly
  * once it comes back. Account creation (`/account create`) and connections (`/authorize`) are the
  * two flows that use this; keep their prefixes distinct.
+ *
+ * The key is resolved here and never travels as an argument. That is not just tidier: the value
+ * is an HMAC key signing this bot's own state payload, and handing it around as an option is what
+ * makes a reader — or a security scan — mistake the signature for a password hash.
  */
 
 export const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
@@ -25,15 +30,27 @@ export type SignedOAuthState = {
 export type OAuthStateOptions = {
 	/** Namespaces the state so one callback route can serve several flows. */
 	prefix: string;
-	/**
-	 * The signing secret. Every flow falls back to the OAuth client secret, which every
-	 * deployment already has, so a missing dedicated secret is never a lockout.
-	 */
-	secret: string;
 };
 
-function signPayload(payload: string, secret: string): string {
-	return crypto.createHmac("sha256", secret).update(payload).digest("base64url");
+/**
+ * The one key-resolution chain, shared by every link: a dedicated state key, then the account
+ * link's older variable, then the OAuth client secret — the value every deployment already has,
+ * so a missing dedicated key is never a lockout. Both flows sign with the same value, which is
+ * what lets one callback route serve them while their prefixes keep them apart.
+ */
+function oauthStateSigningKey(): string {
+	return (
+		process.env.OAUTH_STATE_SECRET?.trim() ||
+		process.env.ACCOUNT_OAUTH_STATE_SECRET?.trim() ||
+		discordOAuthConfig.appSecret
+	);
+}
+
+function signPayload(payload: string): string {
+	return crypto
+		.createHmac("sha256", oauthStateSigningKey())
+		.update(payload)
+		.digest("base64url");
 }
 
 export function createSignedOAuthState(
@@ -57,7 +74,7 @@ export function createSignedOAuthState(
 			...(options.extra ?? {}),
 		})
 	).toString("base64url");
-	return `${options.prefix}.${payload}.${signPayload(payload, options.secret)}`;
+	return `${options.prefix}.${payload}.${signPayload(payload)}`;
 }
 
 /** Cheap check for a raw `state` value, before spending an HMAC on it. */
@@ -77,7 +94,7 @@ export function parseSignedOAuthState(
 	if (prefix !== options.prefix || !payload || !signature || rest.length > 0) {
 		return null;
 	}
-	const expected = Buffer.from(signPayload(payload, options.secret), "utf8");
+	const expected = Buffer.from(signPayload(payload), "utf8");
 	const actual = Buffer.from(signature, "utf8");
 	if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
 		return null;

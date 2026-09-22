@@ -16,20 +16,15 @@ const ACCOUNT_OAUTH_STATE_PREFIX = "dba1";
 type AccountOAuthState = SignedOAuthState & { mode: "account-create" };
 
 /**
- * The account link predates `OAUTH_STATE_SECRET`, so it keeps its own variable first and falls
- * back to the OAuth client secret — the one value every deployment already has, which is what
- * keeps a missing dedicated secret from locking players out of creating an account.
+ * The account link predates `OAUTH_STATE_SECRET`; its own `ACCOUNT_OAUTH_STATE_SECRET` still takes
+ * precedence (see `oauthStateSigningKey`), so links signed before `/authorize` existed keep
+ * parsing.
  */
-function accountOAuthStateOptions() {
-	return {
-		prefix: ACCOUNT_OAUTH_STATE_PREFIX,
-		secret: process.env.ACCOUNT_OAUTH_STATE_SECRET?.trim() || discordOAuthConfig.appSecret,
-	};
-}
+const ACCOUNT_OAUTH_STATE_OPTIONS = { prefix: ACCOUNT_OAUTH_STATE_PREFIX } as const;
 
 export function createAccountOAuthState(discordIdInput: string, now = Date.now()): string {
 	return createSignedOAuthState("account-create", discordIdInput, {
-		...accountOAuthStateOptions(),
+		...ACCOUNT_OAUTH_STATE_OPTIONS,
 		now,
 	});
 }
@@ -39,7 +34,7 @@ export function parseAccountOAuthState(
 	now = Date.now()
 ): AccountOAuthState | null {
 	return parseSignedOAuthState(stateInput, {
-		...accountOAuthStateOptions(),
+		...ACCOUNT_OAUTH_STATE_OPTIONS,
 		mode: "account-create",
 		now,
 	}) as AccountOAuthState | null;
