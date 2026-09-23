@@ -14,7 +14,8 @@ This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord 
 - `/profile player` lets administrators inspect a linked Discord/GitHub profile and the player's current wallet values across the current game saves and legacy wallet stores.
 - `/packs` opens the sponsor pack shop. It writes each pack's rewards straight into the chosen character's save: credit is deducted (or the one-time Sponsor Pack claim recorded) before the rewards roll, and a purchase whose rewards cannot be written is refunded automatically.
 - `/pack-rewards player [character] [reset-credit]` removes the mounts and legendary dyes the shop wrote into a player's save, and with `reset-credit` also clears their pack purchase history so a pack can be bought again. Rewards are written to the stored save, so run it while the target character is out of game — the game server owns the save of a character that is online.
-- `/add-credits`, `/pack-rewards` and `/maintenance` are administrator commands; they require the invoking member to hold Discord Administrator permissions.
+- `/widget-status [player]` (administrator only) reports what is standing between a player and a working Game Stats profile widget: the application's game-stats access, the game server's scope switch, the connections the player authorized, the record Discord actually stores, and the payload the sync would send (built in dry-run mode, so it writes nothing).
+- `/add-credits`, `/pack-rewards`, `/widget-status` and `/maintenance` are administrator commands; they require the invoking member to hold Discord Administrator permissions.
 
 The `/maintenance` and `/idols` commands require matching `DISCORD_MAINTENANCE_API_SECRET` values in the bot and game-server environments. The game server defaults to `http://35.185.71.109`; override it with `GAME_SERVER_BASE_URL` in the bot deployment when the game moves.
 
@@ -109,6 +110,35 @@ It is off by default because Discord approves game stats per application, an una
 The bot reads the switch fail-closed: an unreachable game server means account scopes only, which can only ever under-ask. The answer is cached for five minutes. Once Discord approves the application, set `WIDGET_SCOPE_ENABLED=1` on the game server and restart it, then have players re-link to pick the scope up.
 
 `/authorize` is the re-link that does not recreate anything: it hands out an owner-bound link asking for one connection's scopes (the widget's own link asks for `application_identities.write`, and only while the switch is on), so a player who linked before the widget existed can grant it with one click. The scopes for the other connections are the Social SDK's — `sdk.social_layer_presence` for friends and rich presence, `sdk.social_layer` for lobbies and chat — and Discord documents them as already covering `application_identities.write`, which is why a player who authorizes either one is also reported as widget-authorized. The result page names the connections Discord actually granted, records them on the account, and publishes the widget profile immediately; it also spells out the step only the player can take, adding the widget to their profile: **profile → Add Widget → Dungeon Blitz → Add to profile**.
+
+### When the widget is empty, or the profile will not save
+
+Discord puts four independent gates in front of a widget, and from the player's side they all
+look the same. `/widget-status [player]` checks all four and names the one that is closed:
+
+| Gate | Cleared where |
+| --- | --- |
+| The application is approved for game stats | Developer Portal: Social SDK enabled, game claimed |
+| `WIDGET_SCOPE_ENABLED` is on | the game server's environment, then restart it |
+| The player granted `application_identities.write` | the player runs `/authorize connection:widget` |
+| The bot has written profile data | `/authorize` publishes on link; later refreshes come from `/api/game-stats/sync` |
+
+While the switch is off, every `/authorize` link asks for account scopes only, so no player can
+hold the write scope: Discord has no game stats for anyone, and the widget renders the portal's
+**Sample Data** (or its field fallbacks) instead of real values.
+
+Two further Discord-side requirements matter when a profile refuses to save:
+
+1. **The widget has to be published.** Choose a layout for **Widget Top**, **Widget Bottom** and
+   **Add Widget Preview**, fill in their required fields and press **Publish**. A draft widget can
+   only be added by members of your developer team, with Developer Mode on.
+2. **The account has to be linked first.** A player can only add a game widget to a profile once
+   their account is linked with `application_identities.write` — the same gate as the `/authorize`
+   link above.
+
+The widget portrait comes from the game server's `/portraits/<name>.png`. Discord requires media
+URLs to be reachable from the public internet, so a character whose portrait has not been
+published yet renders the portal's fallback asset instead.
 
 While the switch is off no player holds the write scope, so widget writes are refused with `403`. That `403` now means "this **application** is not authorized for game stats" — Discord approves that per application, not per player — rather than "this player must re-link with `/account create`". The sync reports those players as `needs-authorization`.
 

@@ -50,6 +50,10 @@ import {
   packRewardsCommand,
   handlePackRewardsAutocomplete,
 } from "../src/commands/pack-rewards.js";
+import {
+  widgetStatusCommand,
+  handleWidgetStatusAutocomplete,
+} from "../src/commands/widget-status.js";
 
 const applicationId = process.env.DISCORD_APPLICATION_ID?.trim();
 const botToken = process.env.DISCORD_BOT_TOKEN?.trim();
@@ -94,6 +98,7 @@ const commandModules: CommandModule[] = [
   profileCommand,
   packsCommand,
   packRewardsCommand,
+  widgetStatusCommand,
 ];
 
 const componentModules: ComponentModule[] = [
@@ -113,6 +118,7 @@ const autocompleteModules: AutocompleteModule[] = [
   { command: "idols", handler: handleIdolsAutocomplete },
   { command: "profile", handler: handleProfileAutocomplete },
   { command: "pack-rewards", handler: handlePackRewardsAutocomplete },
+  { command: "widget-status", handler: handleWidgetStatusAutocomplete },
 ];
 
 /** Command payloads for global registration (see scripts/register.ts). */

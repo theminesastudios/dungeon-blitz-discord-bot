@@ -56,11 +56,12 @@ for (let roll = 0; roll < 25; roll += 1) {
 	assert.equal(mount.exclusive, true);
 }
 
-// Champions' pack grants every exclusive mount and every legendary dye.
+// Champions' pack grants every exclusive mount and every legendary dye. The mounts arrive as one
+// bundle reward (the pack shows them as a single line), so collect ids from both shapes.
 const championsRewards = buildPackRewards(findSponsorPack("champions")!);
 const championMounts = championsRewards
 	.filter((reward): reward is PackReward & { kind: "mount" } => reward.kind === "mount")
-	.map((reward) => reward.mountId)
+	.flatMap((reward) => reward.mountIds ?? [reward.mountId])
 	.sort((a, b) => a - b);
 assert.deepEqual(championMounts, [...EXCLUSIVE_MOUNT_IDS].sort((a, b) => a - b));
 const championDyes = championsRewards
