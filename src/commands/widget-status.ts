@@ -101,7 +101,7 @@ export function nextSteps(input: {
 		);
 	}
 	steps.push(
-		"Publish the widget in the portal (Widget Top, Widget Bottom and Add Widget Preview configured) — a draft can only be added by developer-team members."
+		"Publish the widget in the portal (Widget Top, Widget Bottom and Add Widget Preview configured). Until it is published it is a draft, and a draft can only be added by members of the application's team with Developer Mode on — the portal roles do not matter, Read Only can add it too, and everyone else cannot."
 	);
 	steps.push(
 		"Then the player adds it: profile → **Add Widget** → **Dungeon Blitz** → **Add to profile**, and saves."

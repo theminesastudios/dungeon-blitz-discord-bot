@@ -130,8 +130,11 @@ hold the write scope: Discord has no game stats for anyone, and the widget rende
 Two further Discord-side requirements matter when a profile refuses to save:
 
 1. **The widget has to be published.** Choose a layout for **Widget Top**, **Widget Bottom** and
-   **Add Widget Preview**, fill in their required fields and press **Publish**. A draft widget can
-   only be added by members of your developer team, with Developer Mode on.
+   **Add Widget Preview**, fill in their required fields and press **Publish**. Until then it is a
+   draft, and Discord only lets *members of the application's team* add a draft — with Developer
+   Mode on. Team **roles** do not enter into it (a `Read Only` member can add a draft just like the
+   owner; the role only limits portal editing), and a player who is not on the team cannot add one
+   at all. That is why a draft can appear to work for the developers and fail for everyone else.
 2. **The account has to be linked first.** A player can only add a game widget to a profile once
    their account is linked with `application_identities.write` — the same gate as the `/authorize`
    link above.

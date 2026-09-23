@@ -135,7 +135,14 @@ const ready = nextSteps({
 assert.equal(ready.length, 4, ready.join(" | "));
 assert.ok(ready.some((step) => step.includes("/authorize")), ready.join(" | "));
 assert.ok(ready.some((step) => step.includes("/api/game-stats/sync")), ready.join(" | "));
-assert.ok(ready.some((step) => step.includes("Publish")), ready.join(" | "));
+
+// The draft rule is the thing operators get wrong: it is team membership plus Developer Mode, not
+// a portal role. Losing that sentence would send someone around the team page again.
+const publishStep = ready.find((step) => step.includes("Publish")) ?? "";
+assert.ok(publishStep.length > 0, ready.join(" | "));
+assert.match(publishStep, /Developer Mode/, publishStep);
+assert.match(publishStep, /Read Only/, publishStep);
+assert.match(publishStep, /team/, publishStep);
 
 // The sync step is only reachable once the scope switch is on: suggesting a sync that would be
 // refused with 403 would send the operator in a circle.
