@@ -169,6 +169,10 @@ export type PackRewardDeliveryResult = {
 	status: "delivered" | "failed";
 	delivery: PackRewardDelivery;
 	error?: string;
+	/** The save document the reward was written to, so an operator can check that exact one. */
+	saveId?: string;
+	/** What the field read after the write, or why it could not be read back. */
+	verified?: string;
 };
 
 // Prices mirror the community pack sheet; credit comes from what each sponsor has donated.
@@ -579,7 +583,13 @@ export async function deliverPackRewards(
 	targetCharacterName?: string,
 ): Promise<PackRewardDeliveryResult[]> {
 	const rewards = buildPackRewards(pack);
-	if (rewards.length === 0) return [];
+	// A pack that rolls nothing must not charge and then hand back an empty delivery list:
+	// throwing here reverts the charge, which is the only honest outcome for a misconfigured pack.
+	if (rewards.length === 0) {
+		throw new Error(
+			`${pack.name} has no rewards configured, so nothing was delivered. Your credit has been refunded.`,
+		);
+	}
 
 	const userId = await findGameUserIdForDiscord(discordId);
 	if (userId === null) {

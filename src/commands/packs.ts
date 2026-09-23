@@ -309,6 +309,23 @@ function describePurchaseResult(
 		lines.push(
 			`Remaining balance: ${result.credit.balanceCents === null ? "unknown" : formatUsd(result.credit.balanceCents)}`,
 		);
+		// What the save actually reads after the writes, plus which document was written. This is
+		// the line that answers "the credit went but the rewards are not in the database": either
+		// the values are named here and something else is reading a different save, or the
+		// delivery is reported as failed above.
+		const values = result.deliveries
+			.filter((outcome) => outcome.status === "delivered")
+			.slice(0, 6)
+			.map((outcome) => `${formatRewardLine(outcome.delivery.reward)}: ${outcome.verified ?? "not verified"}`);
+		if (values.length > 0) lines.push(`After write — ${values.join(" · ")}`);
+		const saveIds = [
+			...new Set(
+				result.deliveries
+					.map((outcome) => outcome.saveId)
+					.filter((id): id is string => Boolean(id)),
+			),
+		];
+		if (saveIds.length > 0) lines.push(`Save: ${saveIds.join(", ")}`);
 	}
 
 	if (result.status === "insufficient") {
@@ -321,6 +338,16 @@ function describePurchaseResult(
 			.map((outcome) => outcome.error)
 			.filter((error): error is string => Boolean(error));
 		if (errors.length > 0) lines.push(`Delivery errors: ${errors.slice(0, 3).join(" | ")}`);
+		// A refunded purchase still has to say where the write went, or the operator has nothing
+		// to compare against the save they are looking at.
+		const saveIds = [
+			...new Set(
+				result.deliveries
+					.map((outcome) => outcome.saveId)
+					.filter((id): id is string => Boolean(id)),
+			),
+		];
+		if (saveIds.length > 0) lines.push(`Save: ${saveIds.join(", ")}`);
 	}
 
 	return lines.join("\n");
