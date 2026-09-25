@@ -6,6 +6,7 @@ import {
 	LEGENDARY_DYE_IDS,
 	NON_EXCLUSIVE_MOUNT_IDS,
 } from "./sponsorPacks.js";
+import { dyeLabel, mountLabel } from "./gameItemNames.js";
 
 type RewardDocument = Document & {
 	_id: string;
@@ -344,15 +345,19 @@ export async function stripPackRewards(
 	return { userId, characters };
 }
 
-/** Formats one reward into a short "what you got" line for the shop confirmation. */
+/**
+ * Formats one reward into a short "what you got" line for the shop confirmation and the
+ * operator log. Mounts and dyes are named through the shared registry, so a purchase reads
+ * "Skybone Wyrm" rather than "Mount #81" once the game has reported its names.
+ */
 export function formatRewardLine(reward: PackReward): string {
 	switch (reward.kind) {
 		case "mount":
 			return reward.mountIds && reward.mountIds.length > 1
 				? `${reward.mountIds.length} mounts`
-				: `Mount #${reward.mountId}${reward.exclusive ? " (exclusive)" : ""}`;
+				: `${mountLabel(reward.mountId)}${reward.exclusive ? " (exclusive)" : ""}`;
 		case "dye":
-			return `Legendary dye #${reward.dyeId}`;
+			return dyeLabel(reward.dyeId);
 		case "lockbox":
 			return `${reward.count.toLocaleString()}× Trove Chest`;
 		case "consumable":
@@ -756,4 +761,202 @@ async function bumpStackedEntry(
 		return pushed === "written" ? null : CHARACTER_GONE;
 	}
 	return null;
+}
+
+/* ------------------------------------------------------------------
+ * Admin item grants
+ *
+ * A grant is a single, arbitrary change to one character's save — a currency delta,
+ * a mount/dye added or removed, or a stacked entry bumped. It shares the same safety
+ * rules as the shop: the write is addressed by the `_id` of the save document that was
+ * read, the character is matched by name, and the result is confirmed by reading the
+ * character back so an operator is never told "done" for a write that did not land.
+ * ------------------------------------------------------------------ */
+
+/** Currency fields a grant can adjust, as they are spelled in the save document. */
+export type CurrencyField =
+	| "gold"
+	| "mammothIdols"
+	| "DragonKeys"
+	| "DragonOre"
+	| "SilverSigils"
+	| "RoyalSigils";
+
+/** One atomic change applied to a character's save. */
+export type CharacterMutation =
+	| { kind: "currency"; field: CurrencyField; delta: number }
+	| {
+			kind: "list";
+			field: "mounts" | "OwnedDyes";
+			add?: number[];
+			remove?: number[];
+	  }
+	| {
+			kind: "stack";
+			field: "lockboxes" | "consumables";
+			idField: "lockboxID" | "consumableID";
+			entryId: number;
+			delta: number;
+	  };
+
+export type CharacterMutationOutcome =
+	| {
+			status: "ok";
+			userId: number;
+			characterName: string;
+			before: Document;
+			after: Document;
+	  }
+	| { status: "no-account" }
+	| { status: "no-character"; userId: number }
+	| { status: "character-not-found"; userId: number }
+	| {
+			status: "insufficient";
+			userId: number;
+			characterName: string;
+			/** What the field holds now. */
+			available: number;
+			/** How much the removal asked for. */
+			requested: number;
+	  };
+
+/**
+ * Applies one mutation to a linked player's character and reads the character back.
+ *
+ * The currency and stack removals are guarded both before the write (a fast, readable
+ * refusal) and inside the filter (`$gte` on the current value), so two operators running
+ * at once can never drive a balance negative.
+ */
+export async function mutateGameCharacter(
+	discordId: string,
+	characterName: string,
+	mutation: CharacterMutation,
+): Promise<CharacterMutationOutcome> {
+	const userId = await findGameUserIdForDiscord(discordId);
+	if (userId === null) return { status: "no-account" };
+
+	const saves = await getSavesCollection();
+	const save = await resolveSaveDocument(saves, userId);
+	if (!save) return { status: "no-character", userId };
+
+	const before = findCharacter(save.characters, characterName);
+	if (!before) return { status: "character-not-found", userId };
+
+	const now = new Date();
+	const arrayFilters = [{ "char.name": characterName }];
+
+	if (mutation.kind === "currency") {
+		const current = numberField(before, mutation.field);
+		const next = current + mutation.delta;
+		if (next < 0) {
+			return {
+				status: "insufficient",
+				userId,
+				characterName,
+				available: current,
+				requested: Math.abs(mutation.delta),
+			};
+		}
+		const filter: Filter<RewardDocument> = {
+			_id: save.id,
+			"characters.name": characterName,
+		};
+		// A removal re-checks the guard on the server so a concurrent write cannot overdraw.
+		if (mutation.delta < 0) {
+			filter.characters = {
+				$elemMatch: {
+					name: characterName,
+					[mutation.field]: { $gte: -mutation.delta },
+				},
+			} as never;
+			delete (filter as Record<string, unknown>)["characters.name"];
+		}
+		const result = await saves.updateOne(
+			filter,
+			{
+				$inc: { [`characters.$[char].${mutation.field}`]: mutation.delta },
+				$set: { updatedAt: now },
+			} as never,
+			{ arrayFilters } as never,
+		);
+		if (result.matchedCount === 0) {
+			return {
+				status: "insufficient",
+				userId,
+				characterName,
+				available: current,
+				requested: Math.abs(mutation.delta),
+			};
+		}
+	} else if (mutation.kind === "list") {
+		const update: Record<string, unknown> = { $set: { updatedAt: now } };
+		const path = `characters.$[char].${mutation.field}`;
+		if (mutation.add && mutation.add.length > 0) {
+			update.$addToSet = { [path]: { $each: mutation.add } };
+		}
+		if (mutation.remove && mutation.remove.length > 0) {
+			update.$pull = { [path]: { $in: mutation.remove } };
+		}
+		const result = await saves.updateOne(
+			{ _id: save.id, "characters.name": characterName } as Filter<RewardDocument>,
+			update as never,
+			{ arrayFilters } as never,
+		);
+		if (result.matchedCount === 0) return { status: "character-not-found", userId };
+	} else {
+		const entryId = mutation.entryId;
+		const currentCount = stackCount(before, mutation.field, mutation.idField, entryId);
+		const next = currentCount + mutation.delta;
+		if (next < 0) {
+			return {
+				status: "insufficient",
+				userId,
+				characterName,
+				available: currentCount,
+				requested: Math.abs(mutation.delta),
+			};
+		}
+		if (currentCount === 0 && mutation.delta > 0) {
+			// The stack does not exist yet, so `$inc` cannot traverse it: create it outright.
+			await runCharacterUpdate(saves, save.id, characterName, {
+				$push: { [`characters.$[char].${mutation.field}`]: { [mutation.idField]: entryId, count: mutation.delta } },
+			});
+		} else {
+			const filter: Filter<RewardDocument> = {
+				_id: save.id,
+				"characters.name": characterName,
+			};
+			if (mutation.delta < 0) {
+				delete (filter as Record<string, unknown>)["characters.name"];
+				filter.characters = {
+					$elemMatch: {
+						name: characterName,
+						[mutation.field]: {
+							$elemMatch: { [mutation.idField]: entryId, count: { $gte: -mutation.delta } },
+						},
+					},
+				} as never;
+			}
+			const result = await saves.updateOne(
+				filter,
+				{
+					$inc: { [`characters.$[char].${mutation.field}.$[entry].count`]: mutation.delta },
+					$set: { updatedAt: now },
+				} as never,
+				{ arrayFilters: [{ "char.name": characterName, [`entry.${mutation.idField}`]: entryId }] } as never,
+			);
+			if (result.matchedCount === 0) {
+				return {
+					status: "insufficient",
+					userId,
+					characterName,
+					available: currentCount,
+					requested: Math.abs(mutation.delta),
+				};
+			}
+		}
+	}
+
+	const after = await readSaveCharacter(saves, save.id, characterName);
+	return { status: "ok", userId, characterName, before, after: after ?? before };
 }

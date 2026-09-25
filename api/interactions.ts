@@ -22,20 +22,14 @@ import {
   type APIInteractionResponse,
 } from "discord-api-types/v10";
 import { waitUntil } from "@vercel/functions";
-import { maintenanceCommand } from "../src/commands/maintenance.js";
 import {
   accountCommand,
   initialPasswordButton,
   initialPasswordModal,
   resetPasswordModal,
 } from "../src/commands/account.js";
-import { sponsorInfoCommand } from "../src/commands/sponsor-info.js";
+import { adminCommand, handleAdminAutocomplete } from "../src/commands/admin.js";
 import { authorizeCommand } from "../src/commands/authorize.js";
-import {
-  addCreditsCommand,
-  handleAddCreditsAutocomplete,
-} from "../src/commands/add-credits.js";
-import { idolsCommand, handleIdolsAutocomplete } from "../src/commands/idols.js";
 import {
   profileCommand,
   handleProfileAutocomplete,
@@ -47,13 +41,14 @@ import {
   packsCharacterSelectComponent,
 } from "../src/commands/packs.js";
 import {
-  packRewardsCommand,
-  handlePackRewardsAutocomplete,
-} from "../src/commands/pack-rewards.js";
-import {
-  widgetStatusCommand,
-  handleWidgetStatusAutocomplete,
-} from "../src/commands/widget-status.js";
+  grantAmountModal,
+  grantCategorySelect,
+  grantCharacterSelect,
+  grantItemSelect,
+  grantOperationButtons,
+  grantStartButton,
+  grantUserSelect,
+} from "../src/commands/grant.js";
 
 const applicationId = process.env.DISCORD_APPLICATION_ID?.trim();
 const botToken = process.env.DISCORD_BOT_TOKEN?.trim();
@@ -89,16 +84,11 @@ type ModalModule = { customId: string; handler: ModalHandler };
 type AutocompleteModule = { command: string; handler: AutocompleteHandler };
 
 const commandModules: CommandModule[] = [
-  maintenanceCommand,
   accountCommand,
+  adminCommand,
   authorizeCommand,
-  sponsorInfoCommand,
-  addCreditsCommand,
-  idolsCommand,
   profileCommand,
   packsCommand,
-  packRewardsCommand,
-  widgetStatusCommand,
 ];
 
 const componentModules: ComponentModule[] = [
@@ -106,19 +96,23 @@ const componentModules: ComponentModule[] = [
   packsBuyComponent,
   packsSelectComponent,
   packsCharacterSelectComponent,
+  grantUserSelect,
+  grantCharacterSelect,
+  grantCategorySelect,
+  grantItemSelect,
+  grantOperationButtons,
+  grantStartButton,
 ];
 
 const modalModules: ModalModule[] = [
   initialPasswordModal,
   resetPasswordModal,
+  grantAmountModal,
 ];
 
 const autocompleteModules: AutocompleteModule[] = [
-  { command: "add-credits", handler: handleAddCreditsAutocomplete },
-  { command: "idols", handler: handleIdolsAutocomplete },
+  { command: "admin", handler: handleAdminAutocomplete },
   { command: "profile", handler: handleProfileAutocomplete },
-  { command: "pack-rewards", handler: handlePackRewardsAutocomplete },
-  { command: "widget-status", handler: handleWidgetStatusAutocomplete },
 ];
 
 /** Command payloads for global registration (see scripts/register.ts). */

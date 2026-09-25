@@ -5,21 +5,47 @@ This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord 
 ## Commands
 
 - `/account create` sends an owner-bound Discord OAuth link. A MongoDB-backed game account and complete empty save document are created only after Discord returns a verified email; the player then sets the initial password through the message button and modal.
+- `/account view` privately shows the linked account's Discord email, game user ID, password setup state, and the connections it authorized.
 - `/account reset-password` opens an owner-scoped modal and replaces the linked game account's password hash.
-- `/account view` privately shows the linked account's Discord email, game user ID, and password setup state.
+- `/account ban target duration [reason]` (staff) bans a Discord member from the game for a limited time. `duration` is one of `1 hour`, `1 day`, `3 days`, `7 days`, `30 days` or `permanent`; the bot resolves the member to their linked game user and asks the game server to enforce it, which also drops a live session.
+- `/account unban target [reason]` (staff) lifts a game ban, permanent or otherwise.
 - `/authorize [connection]` sends owner-bound Discord OAuth links that connect a player's Discord account to the game's Discord surfaces: the Game Stats widget on their profile, the Social SDK's friends and rich presence, and its lobbies and chat. `connection` picks one; without it the reply offers a link for each, plus an "everything" link that authorizes them together. Links expire after 10 minutes and only the player who invoked the command can complete them.
-- `/sponsor-info github_username` lets administrators inspect the visible GitHub sponsorship tier, status, and estimated total.
-- `/add-credits player dollars [note]` lets administrators add shop credit to a linked player, converting donated dollars 1:1 into spendable credit. It stacks on top of the player's GitHub-reported donation total, is audited on the player's profile, and can be spent in `/packs` like sponsor credit.
-- `/idols player operation amount` lets administrators atomically add or subtract Mammoth Idols. Player autocomplete displays the character's current Idols, Gold, and Dragon Keys.
-- `/profile player` lets administrators inspect a linked Discord/GitHub profile and the player's current wallet values across the current game saves and legacy wallet stores.
+- `/profile [player]` shows the invoking player their own linked profile and balances. Naming another player is a staff action: it needs the **Manage Server** permission, so a player can never read someone else's wallet through the command.
 - `/packs` opens the sponsor pack shop. It writes each pack's rewards straight into the chosen character's save: credit is deducted (or the one-time Sponsor Pack claim recorded) before the rewards roll, and a purchase whose rewards cannot be written is refunded automatically. Every write is addressed by the `_id` of the save document the shop read the character from, and each reward is **confirmed by reading the character back out of the save** — a write MongoDB accepted but the save does not show is reported as failed (and refunded) instead of confirmed, so the shop can never charge for rewards nobody can find.
-- `/pack-rewards player [character] [reset-credit]` removes the mounts and legendary dyes the shop wrote into a player's save, and with `reset-credit` also clears their pack purchase history so a pack can be bought again. Rewards are written to the stored save, so run it while the target character is out of game — the game server owns the save of a character that is online.
-- `/widget-status [player]` (administrator only) reports what is standing between a player and a working Game Stats profile widget: the application's game-stats access, the game server's scope switch, the connections the player authorized, the record Discord actually stores, and the payload the sync would send (built in dry-run mode, so it writes nothing).
-- `/add-credits`, `/pack-rewards`, `/widget-status` and `/maintenance` are administrator commands; they require the invoking member to hold Discord Administrator permissions.
+- `/admin maintenance seconds` (administrator) starts the in-game maintenance warning.
+- `/admin credits player dollars [note]` (administrator) adds shop credit to a linked player, converting donated dollars 1:1 into spendable credit. It stacks on top of the player's GitHub-reported donation total, is audited on the player's profile, and can be spent in `/packs` like sponsor credit.
+- `/admin idols player operation amount` (administrator) atomically adds or subtracts Mammoth Idols. Player autocomplete displays the character's current Idols, Gold, and Dragon Keys.
+- `/admin rewards player [character] [reset-credit]` (administrator) removes the mounts and legendary dyes the shop wrote into a player's save, and with `reset-credit` also clears their pack purchase history so a pack can be bought again. Rewards are written to the stored save, so run it while the target character is out of game — the game server owns the save of a character that is online.
+- `/admin grant` (administrator) opens an interactive panel for handing out one specific thing: pick the player, the character, the item type (gold, Mammoth Idols, Dragon Keys, Dragon Ore, Silver Sigils, Royal Sigils, mount, legendary dye, trove chest or potion), the exact item where one is needed, then **Add** or **Remove**. Balances and counted items ask for an amount in a modal; mounts and dyes are one-of-a-kind, so their add/remove applies on the click. Each write is confirmed by reading the character back out of the save, and the result is posted to the operator log.
+- `/admin widget [player]` (administrator) reports what is standing between a player and a working Game Stats profile widget: the application's game-stats access, the game server's scope switch, the connections the player authorized, the record Discord actually stores, and the payload the sync would send (built in dry-run mode, so it writes nothing).
+- `/admin sponsor github_username` (administrator) inspects the visible GitHub sponsorship tier, status, and estimated total.
 
-The `/maintenance` and `/idols` commands require matching `DISCORD_MAINTENANCE_API_SECRET` values in the bot and game-server environments. The game server defaults to `http://35.185.71.109`; override it with `GAME_SERVER_BASE_URL` in the bot deployment when the game moves.
+`/admin` is administrator-gated as a whole. The moderation and balance-inspection actions (`/account ban`, `/account unban` and `/profile`'s player lookup) require **Manage Server**, which an Administrator also holds.
 
-If `/maintenance` or `/idols` replies with `503 "Discord admin API is not configured"`, the **game server** has no admin secret configured: add `ADMIN_API_SECRET` (or `DISCORD_MAINTENANCE_API_SECRET`) to the game server's `src/server/.env` with the same value as the bot's `DISCORD_MAINTENANCE_API_SECRET`, then restart it (`pm2 restart dungeon-mp`). Conversely, if the bot is missing `DISCORD_MAINTENANCE_API_SECRET`, the commands fail before any request is sent; set it in the bot deployment environment and redeploy.
+### Grant item names
+
+Mount and dye ids are the game's own content ids: a save stores `mounts: [81]`, and only the game knows that `81` is called *Skybone Wyrm*. So the bot asks the game server rather than keeping a copy of the content list:
+
+```
+GET /api/admin/content          # same shared secret as the other admin routes
+{ "ok": true,
+  "mounts": [{ "id": 81, "name": "Skybone Wyrm" }],
+  "dyes":   [{ "id": 4,  "name": "Emberdusk" }] }
+```
+
+A plain `{ "81": "Skybone Wyrm" }` map works too, and names may sit under `items.mounts` / `items.dyes`. The answer is cached for five minutes and shared by every picker, shop confirmation and operator log line.
+
+The read is deliberately fail-open: a game server that has not added the route yet, or one that is unreachable, logs a warning and the bot falls back to `Mount #<id>` / `Legendary dye #<id>` rather than blocking a grant or a purchase. Nothing already loaded is cleared by a failed refresh.
+
+To pin or override a name by hand — or to name an id the game server reports differently — edit the tables in `src/utils/gameItemNames.ts`. Manual entries are never overwritten by a later load.
+
+### Ban enforcement
+
+The game server enforces bans — only the process holding the player connections can refuse a login and drop a session. `/account ban` and `/account unban` call `POST /api/admin/ban` and `POST /api/admin/unban` with the same shared secret as the other admin endpoints, so the game server needs those routes; a deployment that can run `/admin maintenance` can ban too.
+
+The `/admin maintenance` and `/admin idols` subcommands require matching `DISCORD_MAINTENANCE_API_SECRET` values in the bot and game-server environments. The game server defaults to `http://35.185.71.109`; override it with `GAME_SERVER_BASE_URL` in the bot deployment when the game moves.
+
+If `/admin maintenance` or `/admin idols` replies with `503 "Discord admin API is not configured"`, the **game server** has no admin secret configured: add `ADMIN_API_SECRET` (or `DISCORD_MAINTENANCE_API_SECRET`) to the game server's `src/server/.env` with the same value as the bot's `DISCORD_MAINTENANCE_API_SECRET`, then restart it (`pm2 restart dungeon-mp`). Conversely, if the bot is missing `DISCORD_MAINTENANCE_API_SECRET`, the commands fail before any request is sent; set it in the bot deployment environment and redeploy.
 
 ## Game wallet database
 
@@ -114,7 +140,7 @@ The bot reads the switch fail-closed: an unreachable game server means account s
 ### When the widget is empty, or the profile will not save
 
 Discord puts four independent gates in front of a widget, and from the player's side they all
-look the same. `/widget-status [player]` checks all four and names the one that is closed:
+look the same. `/admin widget [player]` checks all four and names the one that is closed:
 
 | Gate | Cleared where |
 | --- | --- |

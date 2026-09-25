@@ -37,8 +37,13 @@ import {
 	listGameSaveCharacters,
 	type GameCharacterOption,
 } from "../utils/gameRewards.js";
+import { ensureGameItemNames, primeGameItemNames } from "../utils/gameContent.js";
 import { getMemberRoleIds, interactionDiscordId } from "../utils/discordInteractions.js";
-import { publishGameLog, type GameLogPayload } from "../utils/gameLogChannel.js";
+import {
+	publishGameLog,
+	type GameLogField,
+	type GameLogPayload,
+} from "../utils/gameLogChannel.js";
 import { waitUntil } from "@vercel/functions";
 
 const BUY_BUTTON_PREFIX = "packs:buy:";
@@ -290,25 +295,78 @@ function reportPurchase(payload: GameLogPayload) {
 	}
 }
 
-function describePurchaseResult(
+/** Pretty labels for the outcome states, so the log never shows a raw `missing-role`. */
+const PURCHASE_STATUS: Record<string, { emoji: string; label: string }> = {
+	ok: { emoji: "✅", label: "Delivered" },
+	insufficient: { emoji: "💸", label: "Not enough credit" },
+	"missing-role": { emoji: "🎟️", label: "Sponsor role required" },
+	"already-claimed": { emoji: "📦", label: "Already claimed" },
+	"no-character": { emoji: "❌", label: "Delivery failed — refunded" },
+	"credit-unknown": { emoji: "⚠️", label: "Credit could not be verified" },
+	conflict: { emoji: "🔁", label: "Balance changed mid-purchase" },
+	"not-sponsor": { emoji: "🙅", label: "Not a sponsor" },
+	"no-profile": { emoji: "🔗", label: "Not linked" },
+};
+
+/**
+ * The operator-log card for one purchase: an embed with real fields rather than one long
+ * paragraph, so a row is scannable and the values an operator needs to compare against the
+ * save (the document id and what each reward field reads afterwards) get their own lines.
+ */
+function purchaseLogCard(
 	result: PackPurchaseResult,
 	discordId: string,
 	packId: string,
-): string {
-	const packLabel =
-		"pack" in result
-			? `${result.pack.emoji} ${result.pack.name} — ${formatUsd(result.pack.priceCents)}`
-			: packId;
-	const lines = [`**${packLabel}**`, `Player: <@${discordId}>`, `Status: \`${result.status}\``];
+): GameLogPayload {
+	const status = PURCHASE_STATUS[result.status] ?? {
+		emoji: "ℹ️",
+		label: result.status,
+	};
+	const fields: GameLogField[] = [
+		{ name: "Player", value: `<@${discordId}>`, inline: true },
+	];
+	if ("pack" in result) {
+		fields.push({
+			name: "Pack",
+			value: `${result.pack.emoji} ${result.pack.name}`,
+			inline: true,
+		});
+		fields.push({
+			name: "Price",
+			value: formatUsd(result.pack.priceCents),
+			inline: true,
+		});
+	} else {
+		fields.push({ name: "Pack", value: packId, inline: true });
+	}
+
+	let message = "";
 
 	if (result.status === "ok") {
 		const delivered = result.deliveries.filter(
 			(outcome) => outcome.status === "delivered",
 		).length;
-		lines.push(`Delivered: ${delivered}/${result.deliveries.length} rewards`);
-		lines.push(
-			`Remaining balance: ${result.credit.balanceCents === null ? "unknown" : formatUsd(result.credit.balanceCents)}`,
-		);
+		message = `Delivered to **${result.deliveries[0]?.delivery.characterName ?? "character"}**.`;
+		fields.push({
+			name: "Rewards",
+			value: `${delivered}/${result.deliveries.length} delivered`,
+			inline: true,
+		});
+		fields.push({
+			name: "Remaining",
+			value:
+				result.credit.balanceCents === null
+					? "unknown"
+					: formatUsd(result.credit.balanceCents),
+			inline: true,
+		});
+		if (result.credit.bonusCents > 0) {
+			fields.push({
+				name: "Bonus credit",
+				value: formatUsd(result.credit.bonusCents),
+				inline: true,
+			});
+		}
 		// What the save actually reads after the writes, plus which document was written. This is
 		// the line that answers "the credit went but the rewards are not in the database": either
 		// the values are named here and something else is reading a different save, or the
@@ -316,8 +374,13 @@ function describePurchaseResult(
 		const values = result.deliveries
 			.filter((outcome) => outcome.status === "delivered")
 			.slice(0, 6)
-			.map((outcome) => `${formatRewardLine(outcome.delivery.reward)}: ${outcome.verified ?? "not verified"}`);
-		if (values.length > 0) lines.push(`After write — ${values.join(" · ")}`);
+			.map(
+				(outcome) =>
+					`- ${formatRewardLine(outcome.delivery.reward)} → ${outcome.verified ?? "not verified"}`,
+			);
+		if (values.length > 0) {
+			fields.push({ name: "After write", value: values.join("\n") });
+		}
 		const saveIds = [
 			...new Set(
 				result.deliveries
@@ -325,19 +388,21 @@ function describePurchaseResult(
 					.filter((id): id is string => Boolean(id)),
 			),
 		];
-		if (saveIds.length > 0) lines.push(`Save: ${saveIds.join(", ")}`);
-	}
-
-	if (result.status === "insufficient") {
-		lines.push(`Balance: ${formatUsd(result.balanceCents)}`);
-	}
-
-	if (result.status === "no-character") {
-		lines.push(`Reason: ${result.reason}`);
+		if (saveIds.length > 0) fields.push({ name: "Save", value: saveIds.join(", ") });
+	} else if (result.status === "insufficient") {
+		fields.push({
+			name: "Balance",
+			value: formatUsd(result.balanceCents),
+			inline: true,
+		});
+	} else if (result.status === "no-character") {
+		message = result.reason;
 		const errors = result.deliveries
 			.map((outcome) => outcome.error)
 			.filter((error): error is string => Boolean(error));
-		if (errors.length > 0) lines.push(`Delivery errors: ${errors.slice(0, 3).join(" | ")}`);
+		if (errors.length > 0) {
+			fields.push({ name: "Delivery errors", value: errors.slice(0, 3).join("\n") });
+		}
 		// A refunded purchase still has to say where the write went, or the operator has nothing
 		// to compare against the save they are looking at.
 		const saveIds = [
@@ -347,10 +412,15 @@ function describePurchaseResult(
 					.filter((id): id is string => Boolean(id)),
 			),
 		];
-		if (saveIds.length > 0) lines.push(`Save: ${saveIds.join(", ")}`);
+		if (saveIds.length > 0) fields.push({ name: "Save", value: saveIds.join(", ") });
 	}
 
-	return lines.join("\n");
+	return {
+		event: `pack-purchase-${result.status}`,
+		title: `${status.emoji} Pack purchase — ${status.label}`,
+		...(message ? { message } : {}),
+		fields,
+	};
 }
 
 function buildPurchaseSummary(
@@ -399,15 +469,14 @@ async function respondWithPurchase(
 	editReply: (data: Record<string, unknown>) => Promise<unknown>,
 ) {
 	const result = await purchaseSponsorPack(discordId, packId, memberRoleIds, characterName);
+	// Loaded after the purchase, never before: the reward lines should name what was
+	// delivered ("Skybone Wyrm"), but a slow game server must not delay the write.
+	await ensureGameItemNames();
 	// Every outcome that means something happened to a save or a balance is
 	// logged. A random member clicking a sponsor-only pack is not an event an
 	// operator needs to read.
 	if (result.status !== "no-profile" && result.status !== "not-sponsor") {
-		reportPurchase({
-			event: `pack-purchase-${result.status}`,
-			title: `🛍️ Pack purchase: ${result.status}`,
-			message: describePurchaseResult(result, discordId, packId),
-		});
+		reportPurchase(purchaseLogCard(result, discordId, packId));
 	}
 
 	switch (result.status) {
@@ -504,11 +573,14 @@ async function handleBuy(
 		reportPurchase({
 			event: "pack-purchase-error",
 			title: "🛑 Pack purchase failed",
-			message: [
-				`Player: <@${discordId}>`,
-				`Pack: \`${packId}\``,
-				`\`\`\`\n${error instanceof Error ? error.message : String(error)}\n\`\`\``,
-			].join("\n"),
+			fields: [
+				{ name: "Player", value: `<@${discordId}>`, inline: true },
+				{ name: "Pack", value: packId, inline: true },
+				{
+					name: "Error",
+					value: `\`\`\`\n${error instanceof Error ? error.message : String(error)}\n\`\`\``,
+				},
+			],
 		});
 		return interaction.editReply({
 			content:
@@ -520,6 +592,11 @@ async function handleBuy(
 async function handlePackView(
 	interaction: MessageComponentInteraction,
 ) {
+	// Reward lines read better with the game's own names, and the shop is opened a few
+	// clicks before a purchase happens — so start the load now instead of waiting for it
+	// inside the purchase.
+	primeGameItemNames();
+
 	const packId = interaction.getStringValues()[0];
 	const pack = packId ? findSponsorPack(packId) : null;
 
@@ -542,6 +619,7 @@ async function handlePackView(
 async function handleShop(
 	interaction: CommandInteraction | MessageComponentInteraction,
 ) {
+	primeGameItemNames();
 	return interaction.reply({
 		components: [buildShopContainer()],
 		flags: CONTAINER_EPHEMERAL_FLAGS,

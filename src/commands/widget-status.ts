@@ -1,4 +1,3 @@
-import { CommandBuilder } from "@minesa-org/mini-interaction";
 import type {
 	AutocompleteContext,
 	CommandInteraction,
@@ -178,21 +177,9 @@ export function playerReportLines(input: WidgetPlayerInput): {
 	return { lines, payloadFields, storedFields };
 }
 
-export const widgetStatusCommand = {
-	data: new CommandBuilder()
-		.setName("widget-status")
-		.setDescription("Check what is blocking a player's Dungeon Blitz profile widget")
-		.setDefaultMemberPermissions(8n)
-		.setDMPermission(false)
-		.addStringOption((option) =>
-			option
-				.setName("player")
-				.setDescription("Inspect this player (leave empty for the application-level checks only)")
-				.setAutocomplete(true)
-				.setRequired(false)
-		),
-	handler: async (interaction: CommandInteraction) => {
-		if (!isAdministrator(interaction)) {
+/** `/admin widget` — reports what is blocking a player's Game Stats widget. */
+export async function handleWidgetStatus(interaction: CommandInteraction) {
+	if (!isAdministrator(interaction)) {
 			return interaction.reply({
 				content: "Administrator permission is required.",
 				flags: 64,
@@ -299,8 +286,7 @@ export const widgetStatusCommand = {
 		return interaction.editReply({
 			content: sections.join("\n\n").slice(0, 1900),
 		});
-	},
-};
+}
 
 export async function handleWidgetStatusAutocomplete(autocomplete: AutocompleteContext) {
 	const focused = autocomplete.getFocusedOption();

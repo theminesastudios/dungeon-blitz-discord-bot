@@ -1,28 +1,30 @@
 import assert from "node:assert/strict";
-import {
-	nextSteps,
-	playerReportLines,
-	widgetStatusCommand,
-} from "../src/commands/widget-status.js";
+import { nextSteps, playerReportLines } from "../src/commands/widget-status.js";
+import { adminCommand } from "../src/commands/admin.js";
 
-// The command payload is validated by CommandBuilder as it is built, so importing the module is
+// Command payloads are validated by CommandBuilder as they are built, so importing the module is
 // half the check: a bad option name or an over-long description throws here instead of taking
-// every interaction in the deployment down with it.
-const payload = widgetStatusCommand.data.toJSON() as {
+// every interaction in the deployment down with it. The widget tool now lives at `/admin widget`.
+const adminPayload = adminCommand.data.toJSON() as {
 	name: string;
 	description: string;
 	default_member_permissions?: string;
 	dm_permission?: boolean;
-	options?: Array<{ name: string; autocomplete?: boolean; required?: boolean }>;
+	options?: Array<{
+		name: string;
+		options?: Array<{ name: string; autocomplete?: boolean; required?: boolean }>;
+	}>;
 };
 
-assert.equal(payload.name, "widget-status");
-assert.ok(payload.description.length <= 100, "Discord allows 100 characters for a description");
-assert.equal(payload.default_member_permissions, "8", "administrator-only, like the other operator commands");
-assert.equal(payload.dm_permission, false);
+assert.equal(adminPayload.name, "admin");
+assert.ok(adminPayload.description.length <= 100, "Discord allows 100 characters for a description");
+assert.equal(adminPayload.default_member_permissions, "8", "administrator-only, like the other operator commands");
+assert.equal(adminPayload.dm_permission, false);
 
-const playerOption = payload.options?.find((option) => option.name === "player");
-assert.ok(playerOption, "the command must offer a player option");
+const widgetSubcommand = adminPayload.options?.find((option) => option.name === "widget");
+assert.ok(widgetSubcommand, "the admin command must offer the widget subcommand");
+const playerOption = widgetSubcommand!.options?.find((option) => option.name === "player");
+assert.ok(playerOption, "the widget subcommand must offer a player option");
 assert.equal(playerOption!.autocomplete, true);
 assert.equal(playerOption!.required, false, "the application-level checks work without a player");
 
