@@ -183,6 +183,18 @@ try {
 	assert.equal(calls.length, 2);
 	delete process.env.DAILY_RESTART_ENABLED;
 
+	// A rehearsal that cannot reach the game server answers with the reason and stays out of
+	// the channel — only a real failed run is an incident worth a message.
+	installFetch({ status: 404, body: { ok: false, error: "Cannot POST /api/admin/server/restart" } });
+	const rehearsalFailure = await request({
+		headers: { authorization: "Bearer cron-secret" },
+		query: { dryRun: "true" },
+	});
+	assert.equal(rehearsalFailure.status, 502);
+	assert.match(String(rehearsalFailure.body?.error), /Cannot POST/);
+	assert.equal(rehearsalFailure.body?.dryRun, true);
+	assert.equal(calls.length, 1, "a failed rehearsal posts nothing");
+
 	// A refusal from the game server is reported as a failure and recorded in the channel.
 	installFetch({
 		status: 409,

@@ -170,18 +170,26 @@ export default async function handler(req: any, res: any) {
 		});
 	} catch (error) {
 		const message = errorMessage(error);
-		logError("server-maintenance", "failed", { error: message, ms: elapsed() });
-		const log = await publishGameLog({
-			event: "deploy-failed",
-			message: `The daily 03:00 restart did not go through: ${message}`,
-			fields: [{ name: "Requested by", value: requestedBy, inline: true }],
-			host: "daily-restart cron",
-		});
+		logError("server-maintenance", "failed", { error: message, dryRun, ms: elapsed() });
+		// A rehearsal that cannot reach the game server is the operator learning something, not
+		// an incident: it answers with the reason and leaves the channel alone. A real run that
+		// failed is exactly what the channel is for.
+		const log = dryRun
+			? { sent: false, channel: null, error: "dry run: nothing to report" }
+			: await publishGameLog({
+					event: "deploy-failed",
+					message: `The daily 03:00 restart did not go through: ${message}`,
+					fields: [{ name: "Requested by", value: requestedBy, inline: true }],
+					host: "daily-restart cron",
+				});
 		sendJson(res, 502, {
 			ok: false,
+			dryRun,
 			error: message,
 			log: { sent: log.sent, channel: log.channel, ...(log.error ? { error: log.error } : {}) },
-			note: "The game server kept running; nothing was restarted.",
+			note: dryRun
+				? "Dry run: nothing was scheduled."
+				: "The game server kept running; nothing was restarted.",
 		});
 	}
 }
