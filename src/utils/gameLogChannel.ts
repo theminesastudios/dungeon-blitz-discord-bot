@@ -30,6 +30,9 @@ export type GameLogEvent =
 	| "crashed"
 	| "startup-failed"
 	| "reloading"
+	| "deploy-scheduled"
+	| "deploy-cancelled"
+	| "deploy-failed"
 	| (string & {});
 
 export type GameLogField = {
@@ -77,6 +80,11 @@ const EVENT_TITLES: Record<string, string> = {
 	crashed: "🛑 Game server crashed",
 	"startup-failed": "🔴 Game server failed to start",
 	reloading: "🔁 Game server reloading",
+	// A branch switch is a lifecycle event like any other: it belongs in the same channel as
+	// the start line it is about to produce, so the two read as one story.
+	"deploy-scheduled": "🛠️ Server restart scheduled",
+	"deploy-cancelled": "↩️ Server restart cancelled",
+	"deploy-failed": "⚠️ Server restart request failed",
 };
 
 const EVENT_COLORS: Record<string, number> = {
@@ -85,6 +93,9 @@ const EVENT_COLORS: Record<string, number> = {
 	crashed: 0xe74c3c,
 	"startup-failed": 0x992d22,
 	reloading: 0x3498db,
+	"deploy-scheduled": 0xf39c12,
+	"deploy-cancelled": 0x95a5a6,
+	"deploy-failed": 0xe67e22,
 };
 
 const DEFAULT_COLOR = 0x5865f2;

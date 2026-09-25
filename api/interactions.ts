@@ -23,6 +23,13 @@ import {
 } from "discord-api-types/v10";
 import { waitUntil } from "@vercel/functions";
 import {
+  serverCommand,
+  serverBranchSelectComponent,
+  serverRestartComponent,
+  serverRefreshComponent,
+  serverCancelComponent,
+} from "../src/commands/server.js";
+import {
   accountCommand,
   initialPasswordButton,
   initialPasswordModal,
@@ -49,6 +56,7 @@ import {
   grantStartButton,
   grantUserSelect,
 } from "../src/commands/grant.js";
+import { errorMessage, logError, logInfo, startTimer } from "../src/utils/logger.js";
 
 const applicationId = process.env.DISCORD_APPLICATION_ID?.trim();
 const botToken = process.env.DISCORD_BOT_TOKEN?.trim();
@@ -84,6 +92,7 @@ type ModalModule = { customId: string; handler: ModalHandler };
 type AutocompleteModule = { command: string; handler: AutocompleteHandler };
 
 const commandModules: CommandModule[] = [
+  serverCommand,
   accountCommand,
   adminCommand,
   authorizeCommand,
@@ -102,6 +111,10 @@ const componentModules: ComponentModule[] = [
   grantItemSelect,
   grantOperationButtons,
   grantStartButton,
+  serverBranchSelectComponent,
+  serverRestartComponent,
+  serverRefreshComponent,
+  serverCancelComponent,
 ];
 
 const modalModules: ModalModule[] = [
@@ -177,6 +190,36 @@ function defaultAck(interaction: APIInteraction): APIInteractionResponse {
 
 function responseData(response: APIInteractionResponse): object {
   return "data" in response ? response.data ?? {} : {};
+}
+
+/** What to call the interaction in a log line: the command name or the component id. */
+function interactionLabel(interaction: APIInteraction): {
+  kind: string;
+  name: string;
+} {
+  if (interaction.type === InteractionType.ApplicationCommand) {
+    return { kind: "command", name: interaction.data.name };
+  }
+  if (interaction.type === InteractionType.MessageComponent) {
+    return { kind: "component", name: interaction.data.custom_id };
+  }
+  if (interaction.type === InteractionType.ModalSubmit) {
+    return { kind: "modal", name: interaction.data.custom_id };
+  }
+  if (interaction.type === InteractionType.ApplicationCommandAutocomplete) {
+    return { kind: "autocomplete", name: interaction.data.name };
+  }
+  return { kind: "unknown", name: "unknown" };
+}
+
+function interactionUserId(interaction: APIInteraction): string {
+  const member = (interaction as { member?: { user?: { id?: string } } | null }).member;
+  const user = (interaction as { user?: { id?: string } | null }).user;
+  return String(member?.user?.id ?? user?.id ?? "").trim();
+}
+
+function interactionGuildId(interaction: APIInteraction): string {
+  return String((interaction as { guild_id?: string }).guild_id ?? "").trim();
 }
 
 const AUTOCOMPLETE_EMPTY: APIInteractionResponse = {
@@ -368,19 +411,38 @@ export default async function handler(request: any, response: any) {
     return true;
   };
 
+  // One line per interaction, written once when the outcome is known — the previous version
+  // logged the same failure twice (once in the catch, once after the race) and never said
+  // which command it was or how long Discord waited.
+  const elapsed = startTimer();
+  const label = interactionLabel(interaction);
+  let dispatchError: unknown = null;
+  const logHandled = (state: "ok" | "deferred" | "failed", error?: unknown): void => {
+    const fields = {
+      kind: label.kind,
+      name: label.name,
+      user: interactionUserId(interaction),
+      guild: interactionGuildId(interaction),
+      state,
+      ms: elapsed(),
+    };
+    if (state === "failed") {
+      logError("interactions", "failed", { ...fields, error: errorMessage(error) });
+    } else {
+      logInfo("interactions", "handled", fields);
+    }
+  };
+
   const dispatchPromise = dispatch(interaction, commitInitialResponse).catch(
     (error) => {
-      console.error("[interactions] Interaction handling failed:", error);
-      return undefined;
+      dispatchError = error;
+      return undefined as APIInteractionResponse | undefined;
     },
   );
 
   const settled = await Promise.race([
-    dispatchPromise.then(
-      (result) => ({ kind: "result" as const, result }),
-      (error) => ({ kind: "error" as const, error }),
-    ),
-    committedPromise.then(() => ({ kind: "committed" as const })),
+    dispatchPromise.then((result) => ({ kind: "result" as const, result })),
+    committedPromise.then(() => ({ kind: "committed" as const, result: undefined })),
   ]);
 
   if (settled.kind === "committed") {
@@ -389,15 +451,13 @@ export default async function handler(request: any, response: any) {
     } catch {
       // Vercel-only helper; the promise keeps running regardless.
     }
+    logHandled(dispatchError === null ? "deferred" : "failed", dispatchError);
     return;
   }
 
-  if (settled.kind === "error") {
-    console.error("[interactions] Interaction handling failed:", settled.error);
-  }
   if (!responseSent) {
     responseSent = true;
-    const result = settled.kind === "result" ? settled.result : undefined;
-    response.status(200).json(result ?? defaultAck(interaction));
+    response.status(200).json(settled.result ?? defaultAck(interaction));
   }
+  logHandled(dispatchError === null ? "ok" : "failed", dispatchError);
 }

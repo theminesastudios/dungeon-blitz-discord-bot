@@ -7,7 +7,7 @@ This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord 
 - `/account create` sends an owner-bound Discord OAuth link. A MongoDB-backed game account and complete empty save document are created only after Discord returns a verified email; the player then sets the initial password through the message button and modal.
 - `/account view` privately shows the linked account's Discord email, game user ID, password setup state, and the connections it authorized.
 - `/account reset-password` opens an owner-scoped modal and replaces the linked game account's password hash.
-- `/account ban target duration [reason]` (staff) bans a Discord member from the game for a limited time. `duration` is one of `1 hour`, `1 day`, `3 days`, `7 days`, `30 days` or `permanent`; the bot resolves the member to their linked game user and asks the game server to enforce it, which also drops a live session.
+- `/account ban target duration [reason]` (staff) bans a Discord member from the game for a limited time. `duration` is one of `1-hour`, `1-day`, `3-days`, `7-days`, `30-days` or `Permanent`; the bot resolves the member to their linked game user and asks the game server to enforce it, which also drops a live session.
 - `/account unban target [reason]` (staff) lifts a game ban, permanent or otherwise.
 - `/authorize [connection]` sends owner-bound Discord OAuth links that connect a player's Discord account to the game's Discord surfaces: the Game Stats widget on their profile, the Social SDK's friends and rich presence, and its lobbies and chat. `connection` picks one; without it the reply offers a link for each, plus an "everything" link that authorizes them together. Links expire after 10 minutes and only the player who invoked the command can complete them.
 - `/profile [player]` shows the invoking player their own linked profile and balances. Naming another player is a staff action: it needs the **Manage Server** permission, so a player can never read someone else's wallet through the command.
@@ -19,6 +19,7 @@ This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord 
 - `/admin grant` (administrator) opens an interactive panel for handing out one specific thing: pick the player, the character, the item type (gold, Mammoth Idols, Dragon Keys, Dragon Ore, Silver Sigils, Royal Sigils, mount, legendary dye, trove chest or potion), the exact item where one is needed, then **Add** or **Remove**. Balances and counted items ask for an amount in a modal; mounts and dyes are one-of-a-kind, so their add/remove applies on the click. Each write is confirmed by reading the character back out of the save, and the result is posted to the operator log.
 - `/admin widget [player]` (administrator) reports what is standing between a player and a working Game Stats profile widget: the application's game-stats access, the game server's scope switch, the connections the player authorized, the record Discord actually stores, and the payload the sync would send (built in dry-run mode, so it writes nothing).
 - `/admin sponsor github_username` (administrator) inspects the visible GitHub sponsorship tier, status, and estimated total.
+- `/server` (administrator) shows the live game server and restarts it onto another branch: the running branch, commit, uptime and player count, every branch the VM can pull, and a restart onto the selected one (with the one-minute player warning, or immediately). A scheduled restart can be cancelled from the same panel.
 
 `/admin` is administrator-gated as a whole. The moderation and balance-inspection actions (`/account ban`, `/account unban` and `/profile`'s player lookup) require **Manage Server**, which an Administrator also holds.
 
@@ -89,6 +90,68 @@ To receive the alerts, set exactly one of these in the bot deployment:
 Optional: `GAME_HEALTH_EXPECTED_IP` overrides the expected VM address (default `35.241.250.170`, the reserved IP attached to `dungeon-blitz-eu`), and `GAME_HEALTH_REMINDER_MINUTES` caps the reminder cadence.
 
 And set the same secret value as the game server's `HEALTH_PING_SECRET` in the bot's `HEALTH_CHECK_SECRET`.
+
+## Server control (`/server`) and the daily restart
+
+`/server` is a private container showing what the live server is doing and letting an
+administrator redeploy it onto another branch. It reads three routes on the game server
+(`api/admin/server/*`, implemented in the game repository's `src/server/integrations/ServerDeployApi.ts`):
+
+| Route | What it answers |
+| --- | --- |
+| `GET /api/admin/server/state` | the checkout and deploy branch, the running commit and build, uptime, online players, whether the checkout is dirty or held, and any restart already scheduled |
+| `GET /api/admin/server/branches` | every branch `origin` has, straight from `git ls-remote --heads origin` on the VM |
+| `POST /api/admin/server/restart` | `{ branch?, seconds?, force?, dryRun?, requestedBy? }` — warns players, then restarts onto the branch (default: the deployed one, `seconds` default 60) |
+| `POST /api/admin/server/restart/cancel` | stops a restart that has not fired yet |
+
+The branch list is deliberately the VM's own view rather than a GitHub query: it can only
+ever offer a branch the server is able to fetch, and the bot needs no repository token for
+it. A restart is the documented operator procedure run by the server itself
+(`DEPLOY_BRANCH=<branch> pm2 restart dungeon-mp --update-env`, then `tools/vm-start.sh`
+fetches, builds into `dist.next` and swaps it in), issued by a detached job so the process
+being replaced does not have to stay alive for it. A failed pull or build leaves the last
+good `dist/` running.
+
+Refusals are the game server's own words, shown in the panel: `409` when a maintenance hold
+is set (release it with `--release`, or `force`), `404` for a branch `origin` does not have,
+`429` after three restart requests in a minute.
+
+### Daily restart at 03:00 UTC
+
+`vercel.json` schedules `GET /api/server-maintenance` at `0 3 * * *` (Vercel presents
+`CRON_SECRET`). It asks the game server for exactly what `/server` asks for: the one-minute
+warning every connected player sees in game, then a restart onto the branch that is already
+deployed. That is what keeps the running build from silently drifting behind the branch.
+
+The endpoint is also callable by hand with `DISCORD_MAINTENANCE_API_SECRET` or
+`HEALTH_CHECK_SECRET`:
+
+```bash
+# What would the 03:00 restart do?
+curl -s -H "Authorization: Bearer $CRON_SECRET" "https://<deployment>/api/server-maintenance?dryRun=true"
+
+# Run it now, disarmed or not.
+curl -s -H "Authorization: Bearer $CRON_SECRET" "https://<deployment>/api/server-maintenance?run=now"
+```
+
+| Knob | Meaning |
+| --- | --- |
+| `DAILY_RESTART_ENABLED=false` | disarms the schedule; `?run=now` still runs it |
+| `DAILY_RESTART_WARNING_SECONDS` | warning length (default 60) |
+| `?branch=`, `?seconds=`, `?dryRun=true`, `?force=yes` | steer a manual run |
+
+On the Hobby plan a cron fires somewhere inside its hour rather than exactly at 03:00, so the
+warning players see is the reliable part, not the wall-clock minute. Every run — scheduled,
+rehearsed or refused — is recorded in the operator log channel as `deploy-scheduled`,
+`deploy-cancelled` or `deploy-failed`, next to the `started` line the restart produces.
+
+### Logging
+
+Server logs are one line per event, `[scope] event key=value …`, written once when the
+outcome is known (`src/utils/logger.ts`). Interactions log their command or component name,
+the invoking user, the guild, the outcome and how long Discord waited; the deploy routes log
+the branch, commit, players warned and duration. No request body, secret or stack trace is
+logged — those are what turn a serverless log view into noise.
 
 ## Discord Game Stats Widget
 

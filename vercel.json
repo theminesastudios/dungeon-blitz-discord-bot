@@ -3,6 +3,10 @@
 		{
 			"path": "/api/game-health",
 			"schedule": "0 12 * * *"
+		},
+		{
+			"path": "/api/server-maintenance",
+			"schedule": "0 3 * * *"
 		}
 	],
 	"rewrites": [
@@ -40,6 +44,10 @@
 			"includeFiles": "{src/utils/**}"
 		},
 		"api/game-health.ts": {
+			"maxDuration": 30,
+			"includeFiles": "{src/utils/**}"
+		},
+		"api/server-maintenance.ts": {
 			"maxDuration": 30,
 			"includeFiles": "{src/utils/**}"
 		}

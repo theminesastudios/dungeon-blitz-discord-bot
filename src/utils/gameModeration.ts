@@ -15,11 +15,14 @@ export const BAN_DURATION_CHOICES: Array<{
   name: string;
   value: BanDurationChoice;
 }> = [
-  { name: "1 hour", value: "1h" },
-  { name: "1 day", value: "1d" },
-  { name: "3 days", value: "3d" },
-  { name: "7 days", value: "7d" },
-  { name: "30 days", value: "30d" },
+  // Discord refuses a choice name containing a space (^[-_\p{L}\p{N}]{1,32}$), and the
+  // builder throws on it while the command tree is being built — which failed the whole
+  // deploy, not just this command. Hyphens keep the labels readable and registrable.
+  { name: "1-hour", value: "1h" },
+  { name: "1-day", value: "1d" },
+  { name: "3-days", value: "3d" },
+  { name: "7-days", value: "7d" },
+  { name: "30-days", value: "30d" },
   { name: "Permanent", value: "permanent" },
 ];
 
