@@ -12,7 +12,7 @@ This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord 
 - `/authorize [connection]` sends owner-bound Discord OAuth links that connect a player's Discord account to the game's Discord surfaces: the Game Stats widget on their profile, the Social SDK's friends and rich presence, and its lobbies and chat. `connection` picks one; without it the reply offers a link for each, plus an "everything" link that authorizes them together. Links expire after 10 minutes and only the player who invoked the command can complete them.
 - `/profile [player]` shows the invoking player their own linked profile and balances. Naming another player is a staff action: it needs the **Manage Server** permission, so a player can never read someone else's wallet through the command.
 - `/packs` opens the sponsor pack shop. It writes each pack's rewards straight into the chosen character's save: credit is deducted (or the one-time Sponsor Pack claim recorded) before the rewards roll, and a purchase whose rewards cannot be written is refunded automatically. Every write is addressed by the `_id` of the save document the shop read the character from, and each reward is **confirmed by reading the character back out of the save** — a write MongoDB accepted but the save does not show is reported as failed (and refunded) instead of confirmed, so the shop can never charge for rewards nobody can find.
-- `/report-bug` opens a modal and files the report as a GitHub issue in the private tracker, with the reporter's Discord identity and server attached automatically. Any guild member can use it, one report per hour; the confirmation is ephemeral and quotes the issue number rather than a link, because the tracker is private.
+- `/report-bug` opens a modal and files the report as a GitHub issue in the private tracker, recording the reporter as their Discord username and user ID and optionally linking screenshots they upload. Any guild member can use it, one report per 10 minutes; the confirmation is ephemeral and quotes the issue number rather than a link, because the tracker is private.
 - `/admin maintenance seconds` (administrator) starts the in-game maintenance warning.
 - `/admin credits player dollars [note]` (administrator) adds shop credit to a linked player, converting donated dollars 1:1 into spendable credit. It stacks on top of the player's GitHub-reported donation total, is audited on the player's profile, and can be spent in `/packs` like sponsor credit.
 - `/admin idols player operation amount` (administrator) atomically adds or subtracts Mammoth Idols. Player autocomplete displays the character's current Idols, Gold, and Dragon Keys.
@@ -51,11 +51,24 @@ If `/admin maintenance` or `/admin idols` replies with `503 "Discord admin API i
 
 ## Bug reports (`/report-bug`)
 
-Every guild member can file a bug straight into the private issue tracker. The command checks a per-player cooldown first, opens a modal (title, details, optional steps), then POSTs to `POST /repos/{owner}/{repo}/issues`.
+Every guild member can file a bug straight into the private issue tracker. The command checks a per-player cooldown first, opens a modal (title, details, optional steps, optional screenshots), then POSTs to `POST /repos/{owner}/{repo}/issues`.
 
-The issue body records the reporter, the server, the submission time, and both text fields. **Both are wrapped in fenced code blocks on purpose**: without the fence a player could inject an `@everyone` ping or a tracking link into a ticket that staff read. The tracker is private, but it is still a shared surface.
+The issue body records the reporter as **Discord username followed by the user ID in parentheses** (`Reported by hansklein (1234567890)`), then the two text fields. It does not record the server or a timestamp: every report lands in the one tracker, and GitHub stamps its own open time. **Both text fields are wrapped in fenced code blocks on purpose** — without the fence a player could inject an `@everyone` ping or a tracking link into a ticket that staff read. The tracker is private, but it is still a shared surface.
 
-Reports are labelled `from-discord` so Discord filings are filterable. A label that does not exist yet makes GitHub reject the whole request with a `422`, so the bot retries once without labels — the command works on a fresh tracker with no manual setup.
+Reports are labelled `from-discord` so Discord filings are filterable. The title carries no `[Discord]` prefix: the label already records provenance, and a prefix only spends the title budget restating it. A label that does not exist yet makes GitHub reject the whole request with a `422`, so the bot retries once without labels — the command works on a fresh tracker with no manual setup.
+
+### Screenshots
+
+The modal offers an optional upload of up to 3 files, which render inline in the issue body. Images become `![name](url)` and anything else (a log, a save) a plain bullet link.
+
+**GitHub's issues API cannot accept an uploaded file.** `POST /repos/{owner}/{repo}/issues` takes only `title`, `body`, `labels`, `assignees` and `milestone`; the attachment upload in GitHub's own issue editor is a separate web-only endpoint. So the file stays on Discord's CDN and the body links it there instead. Two consequences worth knowing:
+
+- The link is **unguessable, not private**. Anyone who obtains the URL can fetch the image, so a player screenshotting something sensitive should not upload it here.
+- Discord may in principle expire the link, which would leave a broken image in an old ticket. The text of the report is unaffected.
+
+Each submitted attachment id is resolved against the interaction's resolved attachments before it is used, so an id the bot cannot vouch for is dropped rather than linked blindly. The destination is wrapped in `<>` because `encodeURIComponent` leaves parentheses alone, and a file named `a)b.png` would otherwise close the Markdown link early. Non-HTTPS URLs are dropped outright, so a crafted value cannot smuggle a `javascript:` or `data:` link into a ticket staff read.
+
+`FileUpload` is component type 19, new enough that a Discord client which does not understand it rejects the whole modal — taking the working text-only flow down with it. It is therefore behind `BUG_REPORT_ALLOW_UPLOADS`, which **defaults to on**. If `/report-bug` ever stops opening its modal, set the flag to `false` and redeploy: reporting goes back to text-only with no code change.
 
 Confirmation is ephemeral and quotes the issue number (`#412`), not the URL. The repo is private, so a player following the link would only meet a `403`; staff correlate by number.
 
@@ -82,7 +95,8 @@ This is deliberately separate from `GITHUB_TOKEN`, which backs the sponsor and c
 - `GITHUB_APP_INSTALLATION_ID` — from the install confirmation URL.
 - `GITHUB_APP_PRIVATE_KEY` — the downloaded `.pem` contents. A dashboard field is one line, so paste it with `\n` escapes (or real newlines); the bot normalises both, and strips stray wrapping quotes. A key it cannot parse is reported as a setup error rather than failing silently.
 - `GITHUB_ISSUES_REPO_OWNER` / `GITHUB_ISSUES_REPO_NAME` — optional, default `theminesastudios` / `private-dungeon-blitz-r`.
-- `BUG_REPORT_COOLDOWN_MS` — optional, default one hour. A malformed or negative value falls back to the default rather than disabling the guard; set `0` deliberately to lift it.
+- `BUG_REPORT_COOLDOWN_MS` — optional, default 10 minutes. A malformed or negative value falls back to the default rather than disabling the guard; set `0` deliberately to lift it.
+- `BUG_REPORT_ALLOW_UPLOADS` — optional, default on. Set `false` to drop the screenshot upload from the modal; see [Screenshots](#screenshots) for why the escape hatch exists.
 
 Missing or unusable app credentials make the command reply "Bug reporting is not set up on the bot right now". A `404` from the token endpoint almost always means the app is not installed on the repository, or the installation ID is stale after a reinstall.
 

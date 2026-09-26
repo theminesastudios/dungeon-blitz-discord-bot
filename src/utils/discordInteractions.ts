@@ -1,12 +1,12 @@
 type MemberLike = {
   permissions?: string | number | bigint;
   roles?: readonly string[];
-  user?: { id?: string } | null;
+  user?: { id?: string; username?: string } | null;
 } | null;
 
 type InteractionLike = {
   member?: MemberLike;
-  user?: { id?: string } | null;
+  user?: { id?: string; username?: string } | null;
 };
 
 /** Discord permission bits we check by hand; the interaction payload is a raw bitfield. */
@@ -46,6 +46,17 @@ export function canManageGuild(interaction: InteractionLike): boolean {
 
 export function interactionDiscordId(interaction: InteractionLike): string {
   return String(interaction.member?.user?.id ?? interaction.user?.id ?? "").trim();
+}
+
+/**
+ * The invoking user's name. A guild interaction nests the user under `member`
+ * and omits the top-level one, so reading `interaction.user` alone silently
+ * yields nothing — the same member-then-user order as `interactionDiscordId`.
+ */
+export function interactionUsername(interaction: InteractionLike): string {
+  return String(
+    interaction.member?.user?.username ?? interaction.user?.username ?? "",
+  ).trim();
 }
 
 /** Guild members carry their role snowflakes on the interaction payload. */

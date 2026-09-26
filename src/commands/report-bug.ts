@@ -1,14 +1,17 @@
 import {
 	CommandBuilder,
 	CommandContext,
+	FileUploadBuilder,
 	IntegrationType,
 	InteractionFlags,
 	LabelBuilder,
 	ModalBuilder,
 	TextInputBuilder,
 	TextInputStyle,
+	attachmentURL,
 } from "@minesa-org/mini-interaction";
 import type { CommandInteraction, ModalSubmitInteraction } from "@minesa-org/mini-interaction";
+import type { APIAttachment } from "discord-api-types/v10";
 import {
 	buildIssueBody,
 	createBugReportIssue,
@@ -16,21 +19,23 @@ import {
 	normalizeIssueTitle,
 	recordBugReport,
 	type IssueFailureReason,
+	type ReportAttachment,
 } from "../utils/githubIssues.js";
-import { interactionDiscordId } from "../utils/discordInteractions.js";
+import { interactionDiscordId, interactionUsername } from "../utils/discordInteractions.js";
 import { errorMessage, logError, logWarn } from "../utils/logger.js";
 
 const REPORT_BUG_MODAL_ID = "bug:report-modal";
 const TITLE_INPUT_ID = "bug:title";
 const DESCRIPTION_INPUT_ID = "bug:description";
 const STEPS_INPUT_ID = "bug:steps";
+const UPLOAD_INPUT_ID = "bug:screenshots";
 
 const MIN_TITLE_LENGTH = 4;
 const MAX_DESCRIPTION_LENGTH = 2000;
 const MIN_DESCRIPTION_LENGTH = 10;
 
-/** A guild name is a nicety for triage, not worth spending the interaction budget on. */
-const GUILD_NAME_TIMEOUT_MS = 2_000;
+/** Discord's own cap for a file upload component is 10; three is enough for a bug. */
+const MAX_ATTACHMENTS = 3;
 
 const EPHEMERAL = InteractionFlags.Ephemeral;
 
@@ -91,48 +96,121 @@ export function describeFailure(reason: IssueFailureReason): string {
 	}
 }
 
+/**
+ * Whether the modal offers a screenshot upload.
+ *
+ * `FileUpload` is component type 19, which is new enough that a Discord client
+ * that does not understand it rejects the whole modal — taking the working
+ * text-only flow down with it. So the component is behind a flag that defaults
+ * on: if the modal ever fails to open, set `BUG_REPORT_ALLOW_UPLOADS=false` and
+ * redeploy, and reporting works again without a code change.
+ */
+export function uploadsAllowed(): boolean {
+	const raw = process.env.BUG_REPORT_ALLOW_UPLOADS?.trim().toLowerCase();
+	if (!raw) return true;
+	return raw !== "false" && raw !== "0" && raw !== "no" && raw !== "off";
+}
+
+/**
+ * Turns the attachment snowflakes Discord submits into links the issue body can
+ * render. Each id is looked up in the interaction's resolved attachments rather
+ * than trusted on its own: the id alone carries no filename, and an unrecognised
+ * id is dropped rather than turned into a link we cannot vouch for.
+ *
+ * The URL is rebuilt from the channel, id and filename rather than taken from
+ * `attachment.url`, so the pieces come from the interaction itself instead of a
+ * field inside the submitted payload. Note that `attachmentURL` leaves
+ * parentheses unencoded, so a file named `a)b.png` reaches the body with its
+ * paren intact — `buildIssueBody` brackets the destination to keep that from
+ * closing the Markdown link early.
+ */
+export function resolveUploadedAttachments(input: {
+	attachmentIds: string[];
+	resolved: Record<string, APIAttachment> | undefined;
+	channelId: string | null;
+}): ReportAttachment[] {
+	const attachments: ReportAttachment[] = [];
+
+	// Bounded independently of the modal's own max_values, in case a client sends more.
+	for (const id of input.attachmentIds.slice(0, MAX_ATTACHMENTS)) {
+		const resolved = input.resolved?.[id];
+		if (!resolved) continue;
+
+		const filename = resolved.filename?.trim() || `attachment-${id}`;
+		const url = input.channelId
+			? attachmentURL(input.channelId, id, filename)
+			: resolved.url;
+		if (!url) continue;
+
+		attachments.push({
+			url,
+			filename,
+			isImage: (resolved.content_type ?? "").startsWith("image/"),
+		});
+	}
+
+	return attachments;
+}
+
 /* ------------------------------------------------------------------
  * Modal
  * ------------------------------------------------------------------ */
 
 function reportModal() {
-	return new ModalBuilder()
-		.setCustomId(REPORT_BUG_MODAL_ID)
-		.setTitle("Report a bug")
-		.addComponents(
+	const labels = [
+		new LabelBuilder()
+			.setLabel("What went wrong?")
+			.setDescription("A short summary.")
+			.setComponent(
+				new TextInputBuilder()
+					.setCustomId(TITLE_INPUT_ID)
+					.setStyle(TextInputStyle.Short)
+					.setMinLength(MIN_TITLE_LENGTH)
+					.setMaxLength(120)
+					.setRequired(true),
+			),
+		new LabelBuilder()
+			.setLabel("Details")
+			.setDescription("What did you expect, and what happened instead?")
+			.setComponent(
+				new TextInputBuilder()
+					.setCustomId(DESCRIPTION_INPUT_ID)
+					.setStyle(TextInputStyle.Paragraph)
+					.setMinLength(MIN_DESCRIPTION_LENGTH)
+					.setMaxLength(MAX_DESCRIPTION_LENGTH)
+					.setRequired(true),
+			),
+		new LabelBuilder()
+			.setLabel("Steps to reproduce (optional)")
+			.setDescription("What did you do just before it went wrong?")
+			.setComponent(
+				new TextInputBuilder()
+					.setCustomId(STEPS_INPUT_ID)
+					.setStyle(TextInputStyle.Paragraph)
+					.setMaxLength(MAX_DESCRIPTION_LENGTH)
+					.setRequired(false),
+			),
+	];
+
+	if (uploadsAllowed()) {
+		labels.push(
 			new LabelBuilder()
-				.setLabel("What went wrong?")
-				.setDescription("A short summary.")
+				.setLabel("Screenshot (optional)")
+				.setDescription(`Up to ${MAX_ATTACHMENTS} images. Attached to the report.`)
 				.setComponent(
-					new TextInputBuilder()
-						.setCustomId(TITLE_INPUT_ID)
-						.setStyle(TextInputStyle.Short)
-						.setMinLength(MIN_TITLE_LENGTH)
-						.setMaxLength(120)
-						.setRequired(true),
-				),
-			new LabelBuilder()
-				.setLabel("Details")
-				.setDescription("What did you expect, and what happened instead?")
-				.setComponent(
-					new TextInputBuilder()
-						.setCustomId(DESCRIPTION_INPUT_ID)
-						.setStyle(TextInputStyle.Paragraph)
-						.setMinLength(MIN_DESCRIPTION_LENGTH)
-						.setMaxLength(MAX_DESCRIPTION_LENGTH)
-						.setRequired(true),
-				),
-			new LabelBuilder()
-				.setLabel("Steps to reproduce (optional)")
-				.setDescription("What did you do just before it went wrong?")
-				.setComponent(
-					new TextInputBuilder()
-						.setCustomId(STEPS_INPUT_ID)
-						.setStyle(TextInputStyle.Paragraph)
-						.setMaxLength(MAX_DESCRIPTION_LENGTH)
+					new FileUploadBuilder()
+						.setCustomId(UPLOAD_INPUT_ID)
+						.setMinValues(0)
+						.setMaxValues(MAX_ATTACHMENTS)
 						.setRequired(false),
 				),
 		);
+	}
+
+	return new ModalBuilder()
+		.setCustomId(REPORT_BUG_MODAL_ID)
+		.setTitle("Report a bug")
+		.addComponents(...labels);
 }
 
 /* ------------------------------------------------------------------
@@ -186,8 +264,15 @@ async function handleReportBugSubmit(interaction: ModalSubmitInteraction) {
 	// 3-second window and leave the player on an endless "thinking…".
 	interaction.deferReply({ flags: EPHEMERAL });
 
-	const guildId = String(interaction.guild_id ?? "").trim() || null;
-	const username = String(interaction.user?.username ?? "").trim();
+	const username = interactionUsername(interaction);
+
+	// The CDN copies are already hosted by Discord, so attaching an upload costs no
+	// extra round trip — the issue simply links them.
+	const attachments = resolveUploadedAttachments({
+		attachmentIds: interaction.getFileUploadValues(UPLOAD_INPUT_ID),
+		resolved: interaction.data.resolved?.attachments,
+		channelId: interaction.channel?.id ?? null,
+	});
 
 	try {
 		const issueTitle = normalizeIssueTitle(title);
@@ -196,11 +281,9 @@ async function handleReportBugSubmit(interaction: ModalSubmitInteraction) {
 			body: buildIssueBody({
 				reporterId: discordId,
 				reporterUsername: username || null,
-				guildName: await fetchGuildName(guildId),
-				guildId,
 				description: description.trim(),
 				steps: steps.trim(),
-				submittedAt: new Date(),
+				attachments,
 			}),
 		});
 
@@ -237,28 +320,6 @@ async function handleReportBugSubmit(interaction: ModalSubmitInteraction) {
 			error: errorMessage(error),
 		});
 		return interaction.editReply({ content: describeFailure("unavailable") });
-	}
-}
-
-/**
- * Best-effort guild name for triage. Returns null on any failure — the report is
- * still worth filing without it.
- */
-async function fetchGuildName(guildId: string | null): Promise<string | null> {
-	const token = process.env.DISCORD_BOT_TOKEN?.trim();
-	if (!guildId || !token) return null;
-
-	try {
-		const response = await fetch(`https://discord.com/api/v10/guilds/${guildId}`, {
-			headers: { Authorization: `Bot ${token}` },
-			signal: AbortSignal.timeout(GUILD_NAME_TIMEOUT_MS),
-		});
-		if (!response.ok) return null;
-		const payload = (await response.json()) as { name?: unknown };
-		const name = String(payload.name ?? "").trim();
-		return name || null;
-	} catch {
-		return null;
 	}
 }
 

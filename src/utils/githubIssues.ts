@@ -33,7 +33,7 @@ const APP_JWT_CLOCK_SKEW_SECONDS = 60;
 /** Installation tokens last an hour; renew this far ahead so a request never races expiry. */
 const INSTALLATION_TOKEN_REFRESH_MARGIN_MS = 60_000;
 
-const DEFAULT_COOLDOWN_MS = 60 * 60 * 1000;
+const DEFAULT_COOLDOWN_MS = 10 * 60 * 1000;
 
 /** How many past reports to keep per player as a triage breadcrumb. */
 const REPORT_HISTORY_LIMIT = 10;
@@ -233,18 +233,52 @@ function issuesUrl(owner: string, repo: string): string {
 	return `${GITHUB_API_URL}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues`;
 }
 
-/** Total issue-title budget, prefix included. GitHub's own cap is 256. */
+/** Total issue-title budget. GitHub's own cap is 256. */
 const MAX_TITLE_LENGTH = 120;
-const TITLE_PREFIX = "[Discord] ";
 
 export function normalizeIssueTitle(raw: string): string {
 	const collapsed = raw.replace(/\s+/g, " ").trim();
-	if (!collapsed) return TITLE_PREFIX.trim();
-	// The prefix is part of the budget, not something added on top of it.
-	const capped = collapsed
-		.slice(0, Math.max(0, MAX_TITLE_LENGTH - TITLE_PREFIX.length))
-		.trim();
-	return `${TITLE_PREFIX}${capped}`;
+	// No source prefix: the `from-discord` label already records provenance, and a
+	// prefix spends the title budget restating it.
+	return collapsed.slice(0, MAX_TITLE_LENGTH).trim();
+}
+
+/**
+ * One uploaded file, already resolved to the pieces the body needs.
+ *
+ * GitHub's issues API has no attachment field — `POST /repos/{owner}/{repo}/issues`
+ * accepts only title, body, labels, assignees and milestone — so a screenshot
+ * cannot be uploaded into the tracker the way the web editor does. What survives
+ * is a link to the Discord CDN copy, which GitHub renders inline. The URL is
+ * unguessable rather than private: anyone holding it can fetch the image.
+ */
+export type ReportAttachment = {
+	url: string;
+	filename: string;
+	isImage: boolean;
+};
+
+/** A body link is only ever rendered when it points at HTTPS, so a crafted value
+ * cannot smuggle a `javascript:` or `data:` link into a ticket staff read. */
+const HTTPS_PREFIX = "https://";
+
+/** Escapes the caption. An unescaped `[` or `]` would open a link inside the alt text. */
+function escapeMarkdownLabel(value: string): string {
+	return value.replace(/[\\[\]]/g, "\\$&");
+}
+
+/**
+ * Images render inline; anything else (a log, a save file) stays a plain link.
+ *
+ * The destination is wrapped in angle brackets — the CommonMark form for a URL
+ * that may contain parentheses. `encodeURIComponent` leaves `(` and `)` alone,
+ * so without this a file named `a)b.png` closes the link early and GitHub
+ * renders the whole thing as broken Markdown.
+ */
+function renderAttachment(attachment: ReportAttachment): string {
+	const name = escapeMarkdownLabel(attachment.filename.trim() || "attachment");
+	const url = `<${attachment.url}>`;
+	return attachment.isImage ? `![${name}](${url})` : `- [${name}](${url})`;
 }
 
 /**
@@ -255,32 +289,23 @@ export function normalizeIssueTitle(raw: string): string {
 export function buildIssueBody(input: {
 	reporterId: string;
 	reporterUsername: string | null;
-	guildName: string | null;
-	guildId: string | null;
 	description: string;
 	steps: string;
-	submittedAt: Date;
+	attachments?: ReportAttachment[];
 }): string {
-	// The mention already carries the snowflake, so the id is not repeated as text.
-	const reporter = input.reporterId
-		? input.reporterUsername
-			? `<@${input.reporterId}> (\`${input.reporterUsername}\`)`
-			: `<@${input.reporterId}>`
-		: (input.reporterUsername ?? "Unknown");
-	const server =
-		input.guildName && input.guildId
-			? `${input.guildName} (\`${input.guildId}\`)`
-			: input.guildId
-				? `\`${input.guildId}\``
-				: "Unknown (direct message)";
+	const reporter = input.reporterUsername
+		? input.reporterId
+			? `${input.reporterUsername} (${input.reporterId})`
+			: input.reporterUsername
+		: input.reporterId || "Unknown";
 
 	const steps = input.steps.trim() || "Not provided.";
+	const attachments = (input.attachments ?? []).filter((attachment) =>
+		attachment.url.startsWith(HTTPS_PREFIX),
+	);
 
 	return [
-		"## Reported in Discord",
-		`- **Reporter:** ${reporter}`,
-		`- **Server:** ${server}`,
-		`- **Submitted:** ${input.submittedAt.toISOString()}`,
+		`Reported by ${reporter}`,
 		"",
 		"## Description",
 		"```",
@@ -291,7 +316,9 @@ export function buildIssueBody(input: {
 		"```",
 		steps,
 		"```",
-		"",
+		...(attachments.length > 0
+			? ["", "## Attachments", ...attachments.map(renderAttachment), ""]
+			: [""]),
 	].join("\n");
 }
 
