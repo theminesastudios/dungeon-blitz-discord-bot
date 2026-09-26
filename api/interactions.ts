@@ -47,6 +47,7 @@ import {
   packsSelectComponent,
   packsCharacterSelectComponent,
 } from "../src/commands/packs.js";
+import { reportBugCommand, reportBugModal } from "../src/commands/report-bug.js";
 import {
   grantAmountModal,
   grantCategorySelect,
@@ -98,6 +99,7 @@ const commandModules: CommandModule[] = [
   authorizeCommand,
   profileCommand,
   packsCommand,
+  reportBugCommand,
 ];
 
 const componentModules: ComponentModule[] = [
@@ -121,6 +123,7 @@ const modalModules: ModalModule[] = [
   initialPasswordModal,
   resetPasswordModal,
   grantAmountModal,
+  reportBugModal,
 ];
 
 const autocompleteModules: AutocompleteModule[] = [

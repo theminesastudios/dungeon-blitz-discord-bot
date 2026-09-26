@@ -12,6 +12,7 @@ This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord 
 - `/authorize [connection]` sends owner-bound Discord OAuth links that connect a player's Discord account to the game's Discord surfaces: the Game Stats widget on their profile, the Social SDK's friends and rich presence, and its lobbies and chat. `connection` picks one; without it the reply offers a link for each, plus an "everything" link that authorizes them together. Links expire after 10 minutes and only the player who invoked the command can complete them.
 - `/profile [player]` shows the invoking player their own linked profile and balances. Naming another player is a staff action: it needs the **Manage Server** permission, so a player can never read someone else's wallet through the command.
 - `/packs` opens the sponsor pack shop. It writes each pack's rewards straight into the chosen character's save: credit is deducted (or the one-time Sponsor Pack claim recorded) before the rewards roll, and a purchase whose rewards cannot be written is refunded automatically. Every write is addressed by the `_id` of the save document the shop read the character from, and each reward is **confirmed by reading the character back out of the save** — a write MongoDB accepted but the save does not show is reported as failed (and refunded) instead of confirmed, so the shop can never charge for rewards nobody can find.
+- `/report-bug` opens a modal and files the report as a GitHub issue in the private tracker, with the reporter's Discord identity and server attached automatically. Any guild member can use it, one report per hour; the confirmation is ephemeral and quotes the issue number rather than a link, because the tracker is private.
 - `/admin maintenance seconds` (administrator) starts the in-game maintenance warning.
 - `/admin credits player dollars [note]` (administrator) adds shop credit to a linked player, converting donated dollars 1:1 into spendable credit. It stacks on top of the player's GitHub-reported donation total, is audited on the player's profile, and can be spent in `/packs` like sponsor credit.
 - `/admin idols player operation amount` (administrator) atomically adds or subtracts Mammoth Idols. Player autocomplete displays the character's current Idols, Gold, and Dragon Keys.
@@ -47,6 +48,34 @@ The game server enforces bans — only the process holding the player connection
 The `/admin maintenance` and `/admin idols` subcommands require matching `DISCORD_MAINTENANCE_API_SECRET` values in the bot and game-server environments. The game server defaults to `http://35.185.71.109`; override it with `GAME_SERVER_BASE_URL` in the bot deployment when the game moves.
 
 If `/admin maintenance` or `/admin idols` replies with `503 "Discord admin API is not configured"`, the **game server** has no admin secret configured: add `ADMIN_API_SECRET` (or `DISCORD_MAINTENANCE_API_SECRET`) to the game server's `src/server/.env` with the same value as the bot's `DISCORD_MAINTENANCE_API_SECRET`, then restart it (`pm2 restart dungeon-mp`). Conversely, if the bot is missing `DISCORD_MAINTENANCE_API_SECRET`, the commands fail before any request is sent; set it in the bot deployment environment and redeploy.
+
+## Bug reports (`/report-bug`)
+
+Every guild member can file a bug straight into the private issue tracker. The command checks a per-player cooldown first, opens a modal (title, details, optional steps), then POSTs to `POST /repos/{owner}/{repo}/issues`.
+
+The issue body records the reporter, the server, the submission time, and both text fields. **Both are wrapped in fenced code blocks on purpose**: without the fence a player could inject an `@everyone` ping or a tracking link into a ticket that staff read. The tracker is private, but it is still a shared surface.
+
+Reports are labelled `from-discord` so Discord filings are filterable. A label that does not exist yet makes GitHub reject the whole request with a `422`, so the bot retries once without labels — the command works on a fresh tracker with no manual setup.
+
+Confirmation is ephemeral and quotes the issue number (`#412`), not the URL. The repo is private, so a player following the link would only meet a `403`; staff correlate by number.
+
+### Authentication
+
+A **fine-grained personal access token** is enough — no GitHub App or bot registration needed:
+
+- Settings → Developer settings → **Fine-grained tokens** → Generate new token
+- Resource owner `theminesastudios`, repository access **Only select repositories** → `private-dungeon-blitz-r`
+- Permissions: **Issues → Read and write**
+
+This is a *separate* token from `GITHUB_TOKEN` on purpose. `GITHUB_TOKEN` backs the sponsor and contributor lookups and may be broadly scoped, so one credential cannot read sponsorship data and write issues. Set an expiry, and note that if the issuing account leaves the studio, reports start failing with `forbidden` — the `logError` line in the function output is the only signal.
+
+### Environment
+
+- `GITHUB_ISSUES_TOKEN` — required. Without it the command replies "Bug reporting is not set up on the bot right now" instead of failing noisily.
+- `GITHUB_ISSUES_REPO_OWNER` / `GITHUB_ISSUES_REPO_NAME` — optional, default `theminesastudios` / `private-dungeon-blitz-r`.
+- `BUG_REPORT_COOLDOWN_MS` — optional, default one hour. A malformed or negative value falls back to the default rather than disabling the guard; set `0` deliberately to lift it.
+
+Cooldowns live in the `bugReports` collection of the profile database (`PROFILE_MONGODB_DB_NAME`, default `minidb`), keyed by Discord ID, alongside a short history of what that player filed. A cooldown lookup that fails **allows** the report and logs — a database outage must not take bug reporting down with it.
 
 ## Game wallet database
 
