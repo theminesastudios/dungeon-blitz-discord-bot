@@ -324,12 +324,15 @@ async function handleReportBugSubmit(interaction: ModalSubmitInteraction) {
 }
 
 export const reportBugCommand = {
+	// GuildInstall + the Bot context: the bot is installed on the guild, so DM
+	// availability comes from the Bot context (Discord ignores dm_permission once
+	// contexts is set). Everything in the flow is per-user, so it works in DMs as-is:
+	// the cooldown is keyed by Discord ID and the modal opens without a channel.
 	data: new CommandBuilder()
-		.setContexts([CommandContext.Guild])
+		.setContexts([CommandContext.Guild, CommandContext.Bot])
 		.setIntegrationTypes([IntegrationType.GuildInstall])
 		.setName("report-bug")
-		.setDescription("Report a bug to the team")
-		.setDMPermission(true),
+		.setDescription("Report a bug to the team"),
 	handler: (interaction: CommandInteraction) => handleReportBug(interaction),
 };
 
