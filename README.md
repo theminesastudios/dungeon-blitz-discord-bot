@@ -61,19 +61,30 @@ Confirmation is ephemeral and quotes the issue number (`#412`), not the URL. The
 
 ### Authentication
 
-A **fine-grained personal access token** is enough — no GitHub App or bot registration needed:
+A **GitHub App** files the reports, not a personal token: the app belongs to the studio rather than to whoever set it up, so it survives staff turnover and nothing expires on a calendar.
 
-- Settings → Developer settings → **Fine-grained tokens** → Generate new token
-- Resource owner `theminesastudios`, repository access **Only select repositories** → `private-dungeon-blitz-r`
-- Permissions: **Issues → Read and write**
+The app's private key never calls the API. It signs a short-lived RS256 JWT, which GitHub exchanges for an **installation access token** scoped to the one repository — and that token is what posts the issue. It is cached until shortly before it expires, so a busy minute does not mint one token per report. Failures are never cached, so fixing the app and retrying works immediately.
 
-This is a *separate* token from `GITHUB_TOKEN` on purpose. `GITHUB_TOKEN` backs the sponsor and contributor lookups and may be broadly scoped, so one credential cannot read sponsorship data and write issues. Set an expiry, and note that if the issuing account leaves the studio, reports start failing with `forbidden` — the `logError` line in the function output is the only signal.
+Creating the app:
+
+1. Settings → Developer settings → **GitHub Apps** → New GitHub App
+2. Any name and description; set the Homepage URL to `https://dungeonblitzr.theminesa.studio`
+3. Under **Repository permissions**, set **Issues → Read and write**. Nothing else is needed.
+4. Under **Where can this app be installed?**, choose *Only on repositories owned by* `theminesastudios`
+5. Create the app, then **Generate a private key** and download the `.pem`
+6. **Install App** on `private-dungeon-blitz-r`, and copy the installation ID from the URL
+
+This is deliberately separate from `GITHUB_TOKEN`, which backs the sponsor and contributor lookups: one credential cannot read sponsorship data and write issues.
 
 ### Environment
 
-- `GITHUB_ISSUES_TOKEN` — required. Without it the command replies "Bug reporting is not set up on the bot right now" instead of failing noisily.
+- `GITHUB_APP_ID` — the app's client ID (Settings → your app).
+- `GITHUB_APP_INSTALLATION_ID` — from the install confirmation URL.
+- `GITHUB_APP_PRIVATE_KEY` — the downloaded `.pem` contents. A dashboard field is one line, so paste it with `\n` escapes (or real newlines); the bot normalises both, and strips stray wrapping quotes. A key it cannot parse is reported as a setup error rather than failing silently.
 - `GITHUB_ISSUES_REPO_OWNER` / `GITHUB_ISSUES_REPO_NAME` — optional, default `theminesastudios` / `private-dungeon-blitz-r`.
 - `BUG_REPORT_COOLDOWN_MS` — optional, default one hour. A malformed or negative value falls back to the default rather than disabling the guard; set `0` deliberately to lift it.
+
+Missing or unusable app credentials make the command reply "Bug reporting is not set up on the bot right now". A `404` from the token endpoint almost always means the app is not installed on the repository, or the installation ID is stale after a reinstall.
 
 Cooldowns live in the `bugReports` collection of the profile database (`PROFILE_MONGODB_DB_NAME`, default `minidb`), keyed by Discord ID, alongside a short history of what that player filed. A cooldown lookup that fails **allows** the report and logs — a database outage must not take bug reporting down with it.
 

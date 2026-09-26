@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import { createVerify, createPublicKey, generateKeyPairSync } from "node:crypto";
 import {
 	buildIssueBody,
+	createBugReportIssue,
+	getAppConfig,
 	getIssueRepo,
 	getReportCooldownMs,
 	normalizeIssueTitle,
+	normalizePrivateKey,
+	__resetInstallationTokenCache,
 	type IssueFailureReason,
 } from "../src/utils/githubIssues.js";
 import {
@@ -154,3 +159,170 @@ assert.equal(getReportCooldownMs(), 60 * 60 * 1000, "a negative cooldown falls b
 process.env.BUG_REPORT_COOLDOWN_MS = "0";
 assert.equal(getReportCooldownMs(), 0, "zero is honoured, so the guard can be lifted deliberately");
 delete process.env.BUG_REPORT_COOLDOWN_MS;
+
+/* ------------------------------------------------------------------
+ * GitHub App authentication
+ *
+ * The app signs a short-lived JWT that is exchanged for an installation
+ * token; the key itself never calls the API. These cover the two things
+ * that actually break in production — a PEM mangled by the environment,
+ * and minting a fresh token on every single report.
+ * ------------------------------------------------------------------ */
+
+const PEM = "-----BEGIN PRIVATE KEY-----\nline-one\nline-two\n-----END PRIVATE KEY-----\n";
+
+// A PEM pasted into a single-line env var arrives with literal backslash-n.
+assert.equal(
+	normalizePrivateKey(PEM.replace(/\n/g, "\\n")),
+	PEM,
+	"escaped newlines are restored",
+);
+// Some shells leave the wrapping quotes behind; node:crypto then rejects the key.
+assert.equal(normalizePrivateKey(`"${PEM}"`), PEM, "wrapping quotes are stripped");
+assert.equal(normalizePrivateKey(PEM), PEM, "a real PEM is left alone");
+
+const originalEnv = { ...process.env };
+function clearAppEnv() {
+	delete process.env.GITHUB_APP_ID;
+	delete process.env.GITHUB_APP_INSTALLATION_ID;
+	delete process.env.GITHUB_APP_PRIVATE_KEY;
+	__resetInstallationTokenCache();
+}
+
+const realFetch = globalThis.fetch;
+
+function stubGitHub(handler: (url: string, init: RequestInit) => Response | Promise<Response>) {
+	const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+	globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+		calls.push({ url: String(url), init });
+		return handler(String(url), init ?? {});
+	}) as typeof fetch;
+	return calls;
+}
+
+// No app configured must be reported as a setup problem, not attempted.
+clearAppEnv();
+assert.equal(getAppConfig().appId, null, "app id is unset");
+assert.equal(getAppConfig().installationId, null, "installation id is unset");
+assert.equal(getAppConfig().privateKey, null, "private key is unset");
+
+{
+	const calls = stubGitHub(() => new Response("{}"));
+	const result = await createBugReportIssue({ title: "[Discord] t", body: "b" });
+	assert.equal(result.ok, false, "an unconfigured app cannot file a report");
+	assert.equal(result.ok === false && result.reason, "not-configured");
+	assert.equal(calls.length, 0, "no request is attempted without credentials");
+	globalThis.fetch = realFetch;
+}
+
+// A private key that is not a usable PEM fails loudly, not silently.
+{
+	process.env.GITHUB_APP_ID = "1";
+	process.env.GITHUB_APP_INSTALLATION_ID = "2";
+	process.env.GITHUB_APP_PRIVATE_KEY = "not-a-key";
+	__resetInstallationTokenCache();
+	stubGitHub(() => new Response("{}"));
+	const result = await createBugReportIssue({ title: "[Discord] t", body: "b" });
+	assert.equal(result.ok, false, "a malformed key cannot file a report");
+	assert.equal(result.ok === false && result.reason, "not-configured");
+	globalThis.fetch = realFetch;
+	clearAppEnv();
+}
+
+// The full chain: a real RSA key, a verifiable JWT, a cached installation token.
+{
+	const { privateKey, publicKey } = generateKeyPairSync("rsa", {
+		modulusLength: 2048,
+		privateKeyEncoding: { type: "pkcs8", format: "pem" },
+		publicKeyEncoding: { type: "spki", format: "pem" },
+	});
+
+	process.env.GITHUB_APP_ID = "123456";
+	process.env.GITHUB_APP_INSTALLATION_ID = "999888";
+	// Exactly how a PEM arrives from a dashboard field: one line, escaped newlines.
+	process.env.GITHUB_APP_PRIVATE_KEY = privateKey.replace(/\n/g, "\\n");
+	__resetInstallationTokenCache();
+
+	let seenJwt: string | null = null;
+	const calls = stubGitHub((url, init) => {
+		if (url.includes("/access_tokens")) {
+			seenJwt = String((init.headers as Record<string, string>).Authorization).replace(
+				"Bearer ",
+				"",
+			);
+			return new Response(
+				JSON.stringify({
+					token: "ghs_installation_token",
+					expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
+				}),
+				{ status: 201 },
+			);
+		}
+		return new Response(JSON.stringify({ number: 5, html_url: "https://example/5" }), {
+			status: 201,
+		});
+	});
+
+	const first = await createBugReportIssue({ title: "[Discord] t", body: "b" });
+	assert.equal(first.ok, true, "a configured app files the report");
+	assert.equal(first.ok === true && first.number, 5);
+
+	// The JWT is a genuine RS256 token identifying the app.
+	assert.ok(seenJwt, "an app JWT was sent to the token endpoint");
+	const [header, payload, signature] = String(seenJwt).split(".");
+	assert.deepEqual(JSON.parse(Buffer.from(header, "base64url").toString()), {
+		alg: "RS256",
+		typ: "JWT",
+	});
+	const claims = JSON.parse(Buffer.from(payload, "base64url").toString());
+	assert.equal(claims.iss, "123456", "the JWT is issued by the app id");
+	// GitHub rejects an exp more than 10 minutes out.
+	assert.ok(claims.exp - claims.iat <= 600, "the JWT lifetime is within GitHub's limit");
+	assert.ok(
+		claims.iat <= Math.floor(Date.now() / 1000) + 1,
+		"the JWT is not issued in the future",
+	);
+	assert.equal(
+		createVerify("RSA-SHA256")
+			.update(`${header}.${payload}`)
+			.verify(createPublicKey(publicKey), Buffer.from(signature, "base64url")),
+		true,
+		"the JWT signature verifies against the app's public key",
+	);
+
+	// The issue itself is called with the installation token, never the JWT.
+	const issueCall = calls.find((call) => call.url.includes("/issues"));
+	assert.ok(issueCall, "the issue was POSTed");
+	assert.equal(
+		(issueCall!.init?.headers as Record<string, string>).Authorization,
+		"Bearer ghs_installation_token",
+		"the private key never leaves the process",
+	);
+
+	// A second report reuses the cached installation token.
+	await createBugReportIssue({ title: "[Discord] t2", body: "b" });
+	assert.equal(
+		calls.filter((call) => call.url.includes("/access_tokens")).length,
+		1,
+		"the installation token is minted once and reused",
+	);
+
+	globalThis.fetch = realFetch;
+	clearAppEnv();
+}
+
+// Failures are never cached, so fixing the app and retrying works immediately.
+{
+	process.env.GITHUB_APP_ID = "1";
+	process.env.GITHUB_APP_INSTALLATION_ID = "2";
+	process.env.GITHUB_APP_PRIVATE_KEY = "not-a-key";
+	__resetInstallationTokenCache();
+	const calls = stubGitHub(() => new Response("{}"));
+	await createBugReportIssue({ title: "[Discord] t", body: "b" });
+	await createBugReportIssue({ title: "[Discord] t", body: "b" });
+	assert.equal(calls.length, 0, "a bad key is retried rather than cached as a failure");
+	globalThis.fetch = realFetch;
+	clearAppEnv();
+}
+
+process.env = originalEnv;
