@@ -4,3 +4,8 @@ node_modules
 .DS_Store
 .vercel
 .env*.local
+
+# Private keys. The GitHub App key for /report-bug is pasted here during setup;
+# it must never reach the repository or a deployment build.
+*.pem
+*.key
