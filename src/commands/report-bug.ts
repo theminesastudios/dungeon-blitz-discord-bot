@@ -329,7 +329,7 @@ export const reportBugCommand = {
 		.setIntegrationTypes([IntegrationType.GuildInstall])
 		.setName("report-bug")
 		.setDescription("Report a bug to the team")
-		.setDMPermission(false),
+		.setDMPermission(true),
 	handler: (interaction: CommandInteraction) => handleReportBug(interaction),
 };
 
