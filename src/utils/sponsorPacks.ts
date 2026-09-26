@@ -14,7 +14,7 @@ import {
 	listGameSaveCharacters,
 	type GameSaveCharacterRef,
 } from "./gameRewards.js";
-import { getSponsorDonationInfo } from "./githubSponsors.js";
+import { getSponsorDonationInfo, type SponsorDonationInfo } from "./githubSponsors.js";
 
 export type { GameCharacterOption } from "./gameRewards.js";
 
@@ -274,9 +274,34 @@ export function formatUsd(cents: number): string {
 	return `$${(cents / 100).toFixed(2)}`;
 }
 
+/**
+ * What a GitHub sponsorship record is worth as spendable credit: the current tier
+ * price while the sponsorship is active, nothing once it is cancelled, and `null`
+ * when GitHub would not say (no sponsorship record, or a tier whose price is not
+ * visible) so the balance reads as unknown rather than as a misleading zero.
+ *
+ * Deliberately not `estimatedTotalInCents`. That figure multiplies the monthly price
+ * by the months elapsed since the sponsorship started, so a $3/month tier reported
+ * $3, then $6, then $9 as the calendar advanced without anyone paying more — and it
+ * never shrank on cancel, because `estimateSponsorTotal` ignores `isActive`. It is a
+ * display-only projection for `/admin sponsor`, not money received.
+ */
+export function sponsorCreditCentsFromDonation(
+	donation: Pick<SponsorDonationInfo, "isActive" | "amountInCents"> | null,
+): number | null {
+	if (!donation) return null;
+	if (!donation.isActive) return 0;
+	return donation.amountInCents;
+}
+
 export type SponsorCredit = {
 	githubUsername: string;
 	isSponsor: boolean;
+	/**
+	 * What the linked GitHub sponsorship is worth right now, or `null` when GitHub
+	 * would not say. Zero means a sponsorship exists but is cancelled, or that the
+	 * active tier costs nothing.
+	 */
 	sponsoredCents: number | null;
 	/** Admin-granted bonus credit that is added on top of the donation total. */
 	bonusCents: number;
@@ -286,9 +311,10 @@ export type SponsorCredit = {
 };
 
 /**
- * A player's spendable credit is the donation total GitHub reports for their linked
- * account plus any admin-granted bonus credit, minus whatever they have already
- * spent on packs.
+ * A player's spendable credit is what their currently active GitHub sponsorship tier
+ * is worth, plus any admin-granted bonus credit, minus whatever they have already
+ * spent on packs. A cancelled sponsorship contributes no GitHub credit, so a
+ * sponsor who stops paying sees their balance drop to whatever bonus credit remains.
  */
 export async function getSponsorCredit(
 	discordId: string,
@@ -301,7 +327,7 @@ export async function getSponsorCredit(
 	if (profile.isSponsor) {
 		try {
 			const donation = await getSponsorDonationInfo(profile.githubUsername);
-			sponsoredCents = donation?.estimatedTotalInCents ?? donation?.amountInCents ?? null;
+			sponsoredCents = sponsorCreditCentsFromDonation(donation);
 		} catch (error) {
 			console.warn(
 				`[sponsorPacks] Donation total unavailable for "${profile.githubUsername}": ${
@@ -321,7 +347,9 @@ export async function getSponsorCredit(
 		// always spendable, so the balance stays computable when bonus > 0.
 		balanceCents:
 			sponsoredCents === null
-				? (ledger.bonusCents > 0 ? ledger.bonusCents - ledger.usedCents : null)
+				? (ledger.bonusCents > 0
+					? Math.max(0, ledger.bonusCents - ledger.usedCents)
+					: null)
 				: Math.max(0, sponsoredCents + ledger.bonusCents - ledger.usedCents),
 		purchases: ledger.purchases,
 	};
