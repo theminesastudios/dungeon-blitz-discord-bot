@@ -61,12 +61,14 @@ Reports are labelled `from-discord` so Discord filings are filterable. The title
 
 The modal offers an optional upload of up to 3 files, which render inline in the issue body. Images become `![name](url)` and anything else (a log, a save) a plain bullet link.
 
-**GitHub's issues API cannot accept an uploaded file.** `POST /repos/{owner}/{repo}/issues` takes only `title`, `body`, `labels`, `assignees` and `milestone`; the attachment upload in GitHub's own issue editor is a separate web-only endpoint. So the file stays on Discord's CDN and the body links it there instead. Two consequences worth knowing:
+**GitHub's issues API cannot accept an uploaded file.** `POST /repos/{owner}/{repo}/issues` takes only `title`, `body`, `labels`, `assignees` and `milestone`; the attachment upload in GitHub's own issue editor is a separate web-only endpoint. So the file stays on Discord's CDN and the body links it there instead.
+
+The link is Discord's own signed CDN URL — `...?ex=…&is=…&hm=…` — used exactly as the interaction supplies it. Since December 2023 the bare `/attachments/<channel>/<id>/<file>` path answers `404 This content is no longer available`; only the signed form resolves. Rebuilding the URL from its parts, which strips the signature, is what used to leave every screenshot broken in the ticket. Two consequences worth knowing:
 
 - The link is **unguessable, not private**. Anyone who obtains the URL can fetch the image, so a player screenshotting something sensitive should not upload it here.
-- Discord may in principle expire the link, which would leave a broken image in an old ticket. The text of the report is unaffected.
+- The signature has a preset expiry. In practice GitHub's image proxy downloads and caches the bytes the first time it renders the issue, which usually outlives the link; a ticket nobody opens before the signature lapses will show a broken image. The text of the report is unaffected.
 
-Each submitted attachment id is resolved against the interaction's resolved attachments before it is used, so an id the bot cannot vouch for is dropped rather than linked blindly. The destination is wrapped in `<>` because `encodeURIComponent` leaves parentheses alone, and a file named `a)b.png` would otherwise close the Markdown link early. Non-HTTPS URLs are dropped outright, so a crafted value cannot smuggle a `javascript:` or `data:` link into a ticket staff read.
+Each submitted attachment id is resolved against the interaction's resolved attachments before it is used, so an id the bot cannot vouch for — or one whose URL is missing or not HTTPS — is dropped rather than linked blindly. The destination is wrapped in `<>`, so a file named `a)b.png` cannot close the Markdown link early. Non-HTTPS URLs are dropped outright, so a crafted value cannot smuggle a `javascript:` or `data:` link into a ticket staff read.
 
 `FileUpload` is component type 19, new enough that a Discord client which does not understand it rejects the whole modal — taking the working text-only flow down with it. It is therefore behind `BUG_REPORT_ALLOW_UPLOADS`, which **defaults to on**. If `/report-bug` ever stops opening its modal, set the flag to `false` and redeploy: reporting goes back to text-only with no code change.
 

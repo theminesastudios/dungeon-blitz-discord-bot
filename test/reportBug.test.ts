@@ -184,54 +184,59 @@ const CHANNEL = "555000111222";
 const A_ID = "1000000000000000001";
 const B_ID = "1000000000000000002";
 
+// Real signed URLs carry the expiry (`ex`), issue time (`is`) and signature (`hm`)
+// the CDN verifies. Without them the same path answers 404, which is exactly the
+// "screenshot does not load" bug this section guards against.
+const SIGNED_A = `https://cdn.discordapp.com/attachments/${CHANNEL}/${A_ID}/shot.png?ex=68d9f000&is=68d89e80&hm=abc123`;
+const SIGNED_B = `https://cdn.discordapp.com/attachments/${CHANNEL}/${B_ID}/crash.log?ex=68d9f000&is=68d89e80&hm=def456`;
+const BARE_A = `https://cdn.discordapp.com/attachments/${CHANNEL}/${A_ID}/shot.png`;
+
 const resolved = {
 	[A_ID]: {
 		id: A_ID,
 		filename: "shot.png",
 		content_type: "image/png",
-		url: "https://media.discordapp.net/attachments/1/2/shot.png",
+		url: SIGNED_A,
 	},
 	[B_ID]: {
 		id: B_ID,
 		filename: "crash.log",
 		content_type: "text/plain",
-		url: "https://media.discordapp.net/attachments/1/3/crash.log",
+		url: SIGNED_B,
 	},
 } as unknown as Record<string, APIAttachment>;
 
-const resolvedOut = resolveUploadedAttachments({
-	attachmentIds: [A_ID, B_ID],
-	resolved,
-	channelId: CHANNEL,
-});
+const resolvedOut = resolveUploadedAttachments({ attachmentIds: [A_ID, B_ID], resolved });
 assert.equal(resolvedOut.length, 2);
 assert.equal(resolvedOut[0].isImage, true, "png is an image");
 assert.equal(resolvedOut[1].isImage, false, "a log is not an image");
-assert.equal(
-	resolvedOut[0].url,
-	`https://media.discordapp.net/attachments/${CHANNEL}/${A_ID}/shot.png`,
-	"the URL is rebuilt from channel, id and filename",
-);
-// The supplied url names a different channel and id, so reusing it verbatim would
-// point the ticket at the wrong file.
+
+// The signed URL Discord supplied is used verbatim: stripping the query would drop
+// the signature and the CDN would answer 404, leaving a broken image in the ticket.
+assert.equal(resolvedOut[0].url, SIGNED_A, "the signed CDN URL is kept verbatim");
 assert.ok(
-	!resolvedOut[0].url.includes("/attachments/1/2/"),
-	"the url supplied in the payload is not reused",
+	resolvedOut[0].url.includes("?ex=") && resolvedOut[0].url.includes("&hm="),
+	"the signature parameters survive into the issue body",
+);
+assert.notEqual(
+	resolvedOut[0].url,
+	BARE_A,
+	"the bare unsigned path — which 404s — is never what gets linked",
 );
 
 // An id Discord did not resolve is dropped, not linked blindly.
 assert.deepEqual(
-	resolveUploadedAttachments({ attachmentIds: ["999"], resolved, channelId: CHANNEL }),
+	resolveUploadedAttachments({ attachmentIds: ["999"], resolved }),
 	[],
 	"an unresolved id yields no attachment",
 );
 assert.deepEqual(
-	resolveUploadedAttachments({ attachmentIds: [A_ID], resolved: undefined, channelId: CHANNEL }),
+	resolveUploadedAttachments({ attachmentIds: [A_ID], resolved: undefined }),
 	[],
 	"a missing resolved map yields no attachment",
 );
 assert.deepEqual(
-	resolveUploadedAttachments({ attachmentIds: [], resolved, channelId: CHANNEL }),
+	resolveUploadedAttachments({ attachmentIds: [], resolved }),
 	[],
 	"no upload yields no attachment",
 );
@@ -240,32 +245,46 @@ assert.deepEqual(
 const overflow = resolveUploadedAttachments({
 	attachmentIds: [A_ID, B_ID, A_ID, B_ID, A_ID, B_ID, A_ID],
 	resolved,
-	channelId: CHANNEL,
 });
 assert.equal(overflow.length, 3, "the count is capped regardless of what was submitted");
 
-// With no channel to build the CDN path from, the URL Discord supplied is used.
-const noChannel = resolveUploadedAttachments({ attachmentIds: [A_ID], resolved, channelId: null });
-assert.equal(noChannel[0].url, "https://media.discordapp.net/attachments/1/2/shot.png");
+// A resolved attachment whose url is unusable is dropped rather than linked: only
+// HTTPS reaches the body, so an insecure or blank url contributes nothing.
+assert.deepEqual(
+	resolveUploadedAttachments({
+		attachmentIds: [A_ID],
+		resolved: { [A_ID]: { id: A_ID, filename: "x.png", url: "http://insecure/x.png" } } as unknown as Record<string, APIAttachment>,
+	}),
+	[],
+	"a non-HTTPS url is dropped",
+);
+assert.deepEqual(
+	resolveUploadedAttachments({
+		attachmentIds: [A_ID],
+		resolved: { [A_ID]: { id: A_ID, filename: "x.png", url: "   " } } as unknown as Record<string, APIAttachment>,
+	}),
+	[],
+	"a blank url is dropped",
+);
 
-// A filename containing ")" survives into the URL, and the renderer brackets the
-// destination so it cannot close the Markdown link early.
-const nasty = resolveUploadedAttachments({
-	attachmentIds: [A_ID],
-	resolved: { [A_ID]: { id: A_ID, filename: "a)b.png", content_type: "image/png", url: "https://x/y" } } as unknown as Record<string, APIAttachment>,
-	channelId: CHANNEL,
-});
-assert.ok(nasty[0].url.endsWith("/a)b.png"), `expected the paren preserved, got ${nasty[0].url}`);
+// A paren in the destination cannot close the Markdown link early, because the
+// renderer wraps the destination in angle brackets.
 const nastyBody = buildIssueBody({
 	reporterId: "1",
 	reporterUsername: null,
 	description: "d",
 	steps: "",
-	attachments: nasty,
+	attachments: [
+		{
+			url: "https://cdn.discordapp.com/attachments/1/2/a)b.png?ex=1&is=2&hm=3",
+			filename: "a)b.png",
+			isImage: true,
+		},
+	],
 });
 assert.ok(
-	nastyBody.includes(`![a)b.png](<${nasty[0].url}>)`),
-	"a paren in the filename is protected by the bracketed destination",
+	nastyBody.includes("![a)b.png](<https://cdn.discordapp.com/attachments/1/2/a)b.png?ex=1&is=2&hm=3>)"),
+	"a paren in the destination is protected by the bracketed form",
 );
 
 // A filename with brackets cannot open a link inside the caption.
@@ -281,8 +300,7 @@ assert.ok(bracketBody.includes("![a\\[b\\]c.png]"), `brackets must be escaped, g
 // An attachment with no filename still produces a usable, non-empty caption.
 const unnamed = resolveUploadedAttachments({
 	attachmentIds: [A_ID],
-	resolved: { [A_ID]: { id: A_ID, filename: "  ", content_type: "image/png", url: "https://x/y" } } as unknown as Record<string, APIAttachment>,
-	channelId: CHANNEL,
+	resolved: { [A_ID]: { id: A_ID, filename: "  ", content_type: "image/png", url: SIGNED_A } } as unknown as Record<string, APIAttachment>,
 });
 assert.equal(unnamed[0].filename, `attachment-${A_ID}`);
 

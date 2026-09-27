@@ -8,7 +8,6 @@ import {
 	ModalBuilder,
 	TextInputBuilder,
 	TextInputStyle,
-	attachmentURL,
 } from "@minesa-org/mini-interaction";
 import type { CommandInteraction, ModalSubmitInteraction } from "@minesa-org/mini-interaction";
 import type { APIAttachment } from "discord-api-types/v10";
@@ -117,17 +116,21 @@ export function uploadsAllowed(): boolean {
  * than trusted on its own: the id alone carries no filename, and an unrecognised
  * id is dropped rather than turned into a link we cannot vouch for.
  *
- * The URL is rebuilt from the channel, id and filename rather than taken from
- * `attachment.url`, so the pieces come from the interaction itself instead of a
- * field inside the submitted payload. Note that `attachmentURL` leaves
- * parentheses unencoded, so a file named `a)b.png` reaches the body with its
- * paren intact — `buildIssueBody` brackets the destination to keep that from
- * closing the Markdown link early.
+ * The URL is Discord's own `url`, signature and all, and never a path rebuilt
+ * from the channel, id and filename. Since December 2023 an attachment CDN URL is
+ * signed (`?ex=&is=&hm=`): fetching the same `/attachments/<channel>/<id>/<file>`
+ * without those parameters answers `404 This content is no longer available`, so
+ * rebuilding it — as this once did — put a permanently broken image in the ticket.
+ *
+ * The signature is what makes the screenshot fetchable at all, and it expires. In
+ * practice GitHub's image proxy downloads and re-caches the bytes the first time
+ * it renders the issue, which is what keeps the image alive past the link's own
+ * expiry; there is no way to upload the file to the tracker itself (the issues API
+ * has no attachment field), so a link is the whole mechanism.
  */
 export function resolveUploadedAttachments(input: {
 	attachmentIds: string[];
 	resolved: Record<string, APIAttachment> | undefined;
-	channelId: string | null;
 }): ReportAttachment[] {
 	const attachments: ReportAttachment[] = [];
 
@@ -136,12 +139,12 @@ export function resolveUploadedAttachments(input: {
 		const resolved = input.resolved?.[id];
 		if (!resolved) continue;
 
-		const filename = resolved.filename?.trim() || `attachment-${id}`;
-		const url = input.channelId
-			? attachmentURL(input.channelId, id, filename)
-			: resolved.url;
-		if (!url) continue;
+		const url = resolved.url?.trim();
+		// Only HTTPS reaches the body, so a url that is missing or not HTTPS is dropped
+		// here rather than rendered into a ticket staff read.
+		if (!url || !url.startsWith("https://")) continue;
 
+		const filename = resolved.filename?.trim() || `attachment-${id}`;
 		attachments.push({
 			url,
 			filename,
@@ -267,11 +270,10 @@ async function handleReportBugSubmit(interaction: ModalSubmitInteraction) {
 	const username = interactionUsername(interaction);
 
 	// The CDN copies are already hosted by Discord, so attaching an upload costs no
-	// extra round trip — the issue simply links them.
+	// extra round trip — the issue simply links the signed URLs Discord resolved.
 	const attachments = resolveUploadedAttachments({
 		attachmentIds: interaction.getFileUploadValues(UPLOAD_INPUT_ID),
 		resolved: interaction.data.resolved?.attachments,
-		channelId: interaction.channel?.id ?? null,
 	});
 
 	try {
