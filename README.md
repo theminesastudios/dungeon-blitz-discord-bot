@@ -14,6 +14,7 @@ This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord 
 - `/packs` opens the sponsor pack shop. It writes each pack's rewards straight into the chosen character's save: credit is deducted (or the one-time Sponsor Pack claim recorded) before the rewards roll, and a purchase whose rewards cannot be written is refunded automatically. Every write is addressed by the `_id` of the save document the shop read the character from, and each reward is **confirmed by reading the character back out of the save** — a write MongoDB accepted but the save does not show is reported as failed (and refunded) instead of confirmed, so the shop can never charge for rewards nobody can find.
 - `/report-bug` opens a modal and files the report as a GitHub issue in the private tracker, recording the reporter as their Discord username and user ID and optionally linking screenshots they upload. Any member can use it, in a guild or in DMs, one report per 10 minutes; the confirmation is ephemeral and quotes the issue number rather than a link, because the tracker is private.
 - `/admin maintenance seconds` (administrator) starts the in-game maintenance warning.
+- `/admin lobby-chat [channel]` (administrator) chooses the Discord channel the game's Social SDK lobby chat is linked to, so lobby conversation does not land in the server's general chat. Give a channel as `#channel-name`, `<#id>` or a raw id; `none` unlinks it, and running it with no channel shows what the game holds right now. The setting is pushed to the game server with the same shared secret as `/admin maintenance`, and the reply shows the state the game server actually stored. See [Linked lobby chat](#linked-lobby-chat).
 - `/admin credits player dollars [note]` (administrator) adds shop credit to a linked player, converting donated dollars 1:1 into spendable credit. It stacks on top of the player's GitHub-reported donation total, is audited on the player's profile, and can be spent in `/packs` like sponsor credit.
 - `/admin idols player operation amount` (administrator) atomically adds or subtracts Mammoth Idols. Player autocomplete displays the character's current Idols, Gold, and Dragon Keys.
 - `/admin rewards player [character] [reset-credit]` (administrator) removes the mounts and legendary dyes the shop wrote into a player's save, and with `reset-credit` also clears their pack purchase history so a pack can be bought again. Rewards are written to the stored save, so run it while the target character is out of game — the game server owns the save of a character that is online.
@@ -48,6 +49,30 @@ The game server enforces bans — only the process holding the player connection
 The `/admin maintenance` and `/admin idols` subcommands require matching `DISCORD_MAINTENANCE_API_SECRET` values in the bot and game-server environments. The game server defaults to `http://35.185.71.109`; override it with `GAME_SERVER_BASE_URL` in the bot deployment when the game moves.
 
 If `/admin maintenance` or `/admin idols` replies with `503 "Discord admin API is not configured"`, the **game server** has no admin secret configured: add `ADMIN_API_SECRET` (or `DISCORD_MAINTENANCE_API_SECRET`) to the game server's `src/server/.env` with the same value as the bot's `DISCORD_MAINTENANCE_API_SECRET`, then restart it (`pm2 restart dungeon-mp`). Conversely, if the bot is missing `DISCORD_MAINTENANCE_API_SECRET`, the commands fail before any request is sent; set it in the bot deployment environment and redeploy.
+
+### Linked lobby chat
+
+Discord's Social SDK bridges in-game lobby chat into one Discord channel, and that channel has to
+match the room people actually want to read. The setting is read by the game process, so the bot
+never keeps a copy of it: `/admin lobby-chat #lobby-chat` pushes it straight to the game server
+with the same shared secret as `/admin maintenance`, and `/admin lobby-chat` on its own reads back
+what the game holds. `/admin lobby-chat none` clears it, putting the game back on its own default
+channel.
+
+| Route | What it takes / answers |
+| --- | --- |
+| `POST /api/admin/lobby-chat` | `{ guildId, channelId, channelName, requestedBy }`, where `channelId: null` unlinks. Answers with the stored `{ guildId, channelId, channelName, updatedAt, updatedBy }` |
+| `GET /api/admin/lobby-chat` | the same state document |
+
+The write answers with the state the server stored rather than a bare acknowledgement, so the panel
+shows what the game actually holds instead of what was asked for — the bot pushes the setting, it
+does not own it.
+
+The channel is checked with Discord before the game is told about it: it has to exist, be a guild
+text or announcement channel, and belong to the guild the command was run in. A snowflake the bot
+cannot see answers `404`, which the command reports as such rather than storing a link no lobby
+chat would ever appear in, and a channel from another server is refused outright. Players already in
+a lobby keep the channel they joined with until they re-join.
 
 ## Bug reports (`/report-bug`)
 

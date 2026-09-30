@@ -22,6 +22,7 @@ import {
   handleWidgetStatusAutocomplete,
 } from "./widget-status.js";
 import { handleSponsorInfo } from "./sponsor-info.js";
+import { handleLobbyChat } from "./lobby-chat.js";
 import { handleGrant } from "./grant.js";
 
 /**
@@ -29,6 +30,7 @@ import { handleGrant } from "./grant.js";
  * tools that act on a player's save or the live server sit together:
  *
  *   /admin maintenance   — start the in-game maintenance countdown
+ *   /admin lobby-chat    — choose the Discord channel lobby chat is linked to
  *   /admin credits        — add shop credit for a donation
  *   /admin idols          — add or subtract Mammoth Idols
  *   /admin rewards        — strip sponsor pack rewards from a save
@@ -55,6 +57,19 @@ export const adminCommand = {
             .setMinValue(1)
             .setMaxValue(86_400)
             .setRequired(true),
+        ),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("lobby-chat")
+        .setDescription("Choose the Discord channel the game's lobby chat is linked to")
+        .addStringOption((option) =>
+          option
+            .setName("channel")
+            .setDescription(
+              "Channel to link (#channel, <#id> or an id), `none` to unlink, or empty to show the current one",
+            )
+            .setRequired(false),
         ),
     )
     .addSubcommand((subcommand) =>
@@ -173,6 +188,8 @@ export const adminCommand = {
     switch (interaction.options.getSubcommand(true)) {
       case "maintenance":
         return handleMaintenance(interaction);
+      case "lobby-chat":
+        return handleLobbyChat(interaction);
       case "credits":
         return handleAddCredits(interaction);
       case "idols":

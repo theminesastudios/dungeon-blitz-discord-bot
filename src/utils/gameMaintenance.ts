@@ -54,10 +54,18 @@ function rejectionMessage(action: string, status: number, payload: unknown): str
  * content tool authorizes with the same shared secret, so the header/error handling lives
  * here instead of being copied per command.
  */
-export async function requestGameServerAdmin<T extends { ok: true }>(
+/**
+ * `requireOk: false` is for the routes that answer with the state they stored
+ * rather than an acknowledgement — the lobby chat channel route replies with the
+ * channel it is now linked to, which is data the operator is about to read back.
+ * Only an explicit `ok: false` (or an HTTP error) is then treated as a refusal,
+ * exactly as the GET helper treats it.
+ */
+export async function requestGameServerAdmin<T>(
 	path: string,
 	body: Record<string, unknown>,
 	action: string,
+	options: { requireOk?: boolean } = {},
 ): Promise<T> {
 	const response = await fetch(`${getGameServerBaseUrl()}${path}`, {
 		method: "POST",
@@ -69,10 +77,15 @@ export async function requestGameServerAdmin<T extends { ok: true }>(
 		signal: AbortSignal.timeout(10_000),
 	});
 	const payload = (await response.json().catch(() => null)) as T | { error?: string } | null;
-	if (!response.ok || !payload || !("ok" in payload) || payload.ok !== true) {
+	const answer = payload as Record<string, unknown> | null;
+	const refused =
+		options.requireOk === false
+			? !response.ok || !answer || answer.ok === false
+			: !response.ok || !answer || answer.ok !== true;
+	if (refused) {
 		throw new Error(rejectionMessage(action, response.status, payload));
 	}
-	return payload;
+	return payload as T;
 }
 
 /**
