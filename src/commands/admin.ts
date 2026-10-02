@@ -24,6 +24,7 @@ import {
 import { handleSponsorInfo } from "./sponsor-info.js";
 import { handleLobbyChat } from "./lobby-chat.js";
 import { handleGrant } from "./grant.js";
+import { handleSponsorRole } from "./sponsor-role.js";
 
 /**
  * The staff toolbox, grouped under one command so the command list stays short and the
@@ -37,6 +38,7 @@ import { handleGrant } from "./grant.js";
  *   /admin grant          — give or remove a specific item (interactive panel)
  *   /admin widget         — diagnose a player's Game Stats widget
  *   /admin sponsor        — inspect a GitHub sponsor's visible tier
+ *   /admin sponsor-role   — grant or remove the Discord sponsor role by hand
  */
 export const adminCommand = {
   data: new CommandBuilder()
@@ -183,6 +185,35 @@ export const adminCommand = {
             .setDescription("The sponsor's GitHub username")
             .setRequired(true),
         ),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("sponsor-role")
+        .setDescription("Grant or remove the sponsor role from a member by hand")
+        .addUserOption((option) =>
+          option
+            .setName("user")
+            .setDescription("The member to grant or remove the sponsor role")
+            .setRequired(false),
+        )
+        .addStringOption((option) =>
+          option
+            .setName("github_username")
+            .setDescription(
+              "Or resolve the member from their linked GitHub username instead",
+            )
+            .setRequired(false),
+        )
+        .addStringOption((option) =>
+          option
+            .setName("mode")
+            .setDescription("Grant (default) or remove")
+            .addChoices(
+              { name: "Grant", value: "grant" },
+              { name: "Remove", value: "remove" },
+            )
+            .setRequired(false),
+        ),
     ),
   handler: async (interaction: CommandInteraction) => {
     switch (interaction.options.getSubcommand(true)) {
@@ -202,6 +233,8 @@ export const adminCommand = {
         return handleWidgetStatus(interaction);
       case "sponsor":
         return handleSponsorInfo(interaction);
+      case "sponsor-role":
+        return handleSponsorRole(interaction);
       default:
         return interaction.reply({
           content: "That admin action does not exist.",

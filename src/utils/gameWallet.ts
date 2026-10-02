@@ -527,6 +527,27 @@ export async function searchPlayers(query: string): Promise<PlayerSearchResult[]
 	return Array.from(results.values()).slice(0, 25);
 }
 
+/**
+ * Resolves the Discord user linked to a GitHub username, for admin tools that
+ * act on a sponsor from their GitHub side (e.g. granting the sponsor role).
+ * The match is exact-but-case-insensitive, like the sponsor lists themselves.
+ * Returns null when no linked profile carries that GitHub username.
+ */
+export async function discordIdForGithubUser(
+	githubUsername: string
+): Promise<string | null> {
+	const login = githubUsername.trim();
+	if (!login) return null;
+	const profiles = await getLinkedProfileCollection();
+	const profile = await profiles.findOne(
+		{ githubUsername: new RegExp(`^${escapeRegex(login)}$`, "i") } as Filter<RawLinkedProfile>,
+		{ projection: { _id: 1, userId: 1 } },
+	);
+	if (!profile) return null;
+	const discordId = String(profile.userId ?? profile._id).trim();
+	return discordId || null;
+}
+
 export async function getPlayerProfile(selector: string): Promise<PlayerProfile | null> {
 	const profiles = await getLinkedProfileCollection();
 	let linkedProfile: RawLinkedProfile | null = null;

@@ -226,7 +226,7 @@ const sponsorResultCache = new Map<
 let sponsorRateLimitCooldownUntil = 0;
 let sponsorSnapshotDb: MiniDatabase | null | undefined;
 
-function getSponsorTargets(): string[] {
+export function getSponsorTargets(): string[] {
 	const raw = process.env.GITHUB_SPONSOR_TARGETS?.trim();
 	if (!raw) return DEFAULT_TARGETS;
 
