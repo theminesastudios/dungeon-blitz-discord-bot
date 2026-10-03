@@ -12,7 +12,15 @@
  * read back with the matching `GET`. A channel that never reaches the game
  * process is worse than no channel at all, so the bot checks the snowflake
  * against Discord before sending it: the channel has to exist, be a guild text
- * channel, and belong to the guild the command was run in.
+ * channel, belong to the guild the command was run in, and be linkable at all.
+ *
+ * Two Discord rules are checked here rather than left to fail in the game:
+ * an age-restricted channel cannot be linked to a lobby, and a channel with
+ * role or member overrides is *not* private to the lobby — Discord only
+ * enforces those permissions in the Discord client, so every lobby member can
+ * read and write a linked channel in game whatever the channel's permissions
+ * say. The second is not a reason to refuse, but it is reported, because it is
+ * the answer to "can I hide this channel from people who are not players".
  */
 
 import {
@@ -121,11 +129,56 @@ type DiscordChannel = {
 	name?: unknown;
 	type?: unknown;
 	guild_id?: unknown;
+	nsfw?: unknown;
+	permission_overwrites?: unknown;
 };
 
 export type LobbyChatChannelCheck =
-	| { ok: true; channelId: string; channelName: string; guildId: string | null }
+	| {
+			ok: true;
+			channelId: string;
+			channelName: string;
+			guildId: string | null;
+			/**
+			 * The channel has role or member permission overrides, so Discord treats
+			 * it as private in the Discord client. It is *not* private to a lobby:
+			 * Discord does not apply channel permissions to in-game access.
+			 */
+			restrictedInDiscord: boolean;
+	  }
 	| { ok: false; reason: string };
+
+/** Discord permission bits a lobby chat cares about. */
+const VIEW_CHANNEL = 1024n; // 1 << 10
+const SEND_MESSAGES = 2048n; // 1 << 11
+
+function permissionBits(value: unknown): bigint {
+	const numeric = Number(value ?? 0);
+	return Number.isFinite(numeric) && numeric > 0 ? BigInt(Math.floor(numeric)) : 0n;
+}
+
+/**
+ * Whether the channel carries Discord-side read/write restrictions.
+ *
+ * Discord's own `isViewableAndWriteableByAllMembers` is not exposed by the REST
+ * channel object, so this reads the permission overwrites instead: any override
+ * that denies viewing or sending marks the channel restricted. That deliberately
+ * over-reports — an override that is later re-granted still counts — because the
+ * consequence of under-reporting is quietly exposing a channel, while the
+ * consequence of over-reporting is one extra warning line. A channel with no
+ * overrides at all is reported as unrestricted; the guild's own `@everyone`
+ * permissions are not read, so this stays "no per-role restrictions" rather than
+ * a claim that every member can see it.
+ */
+export function hasDiscordSideRestrictions(overwrites: unknown): boolean {
+	if (!Array.isArray(overwrites)) return false;
+	return overwrites.some((entry) => {
+		const deny = permissionBits(
+			(entry && typeof entry === "object" ? (entry as { deny?: unknown }).deny : null),
+		);
+		return (deny & (VIEW_CHANNEL | SEND_MESSAGES)) !== 0n;
+	});
+}
 
 /**
  * Confirms the channel is one the lobby chat can actually be linked to. Discord
@@ -203,11 +256,20 @@ export async function checkLobbyChatChannel(
 		};
 	}
 
+	if (channel.nsfw === true) {
+		return {
+			ok: false,
+			reason:
+				"That channel is marked age-restricted, and Discord does not allow an age-restricted channel to be linked to a lobby. Link a channel that is not age-restricted.",
+		};
+	}
+
 	return {
 		ok: true,
 		channelId: optionalString(channel.id) ?? channelId,
 		channelName: optionalString(channel.name) ?? channelId,
 		guildId: channelGuildId,
+		restrictedInDiscord: hasDiscordSideRestrictions(channel.permission_overwrites),
 	};
 }
 

@@ -47,33 +47,96 @@ To pin or override a name by hand — or to name an id the game server reports d
 
 The game server enforces bans — only the process holding the player connections can refuse a login and drop a session. `/account ban` and `/account unban` call `POST /api/admin/ban` and `POST /api/admin/unban` with the same shared secret as the other admin endpoints, so the game server needs those routes; a deployment that can run `/admin maintenance` can ban too.
 
-The `/admin maintenance` and `/admin idols` subcommands require matching `DISCORD_MAINTENANCE_API_SECRET` values in the bot and game-server environments. The game server defaults to `http://35.185.71.109`; override it with `GAME_SERVER_BASE_URL` in the bot deployment when the game moves.
+The `/admin maintenance` and `/admin idols` subcommands require matching `DISCORD_MAINTENANCE_API_SECRET` values in the bot and game-server environments. The bot defaults to `http://dungeonblitzr.theminesa.studio`; override it with `GAME_SERVER_BASE_URL` in the bot deployment when the game moves. (It used to default to the raw VM address `35.185.71.109`, which is a **reserved but idle** address in the same GCP project — the same finding `gameHealthCheck.ts` records against that IP. Nothing game-related listens there, so every admin call went to an address that cannot answer.)
 
 If `/admin maintenance` or `/admin idols` replies with `503 "Discord admin API is not configured"`, the **game server** has no admin secret configured: add `ADMIN_API_SECRET` (or `DISCORD_MAINTENANCE_API_SECRET`) to the game server's `src/server/.env` with the same value as the bot's `DISCORD_MAINTENANCE_API_SECRET`, then restart it (`pm2 restart dungeon-mp`). Conversely, if the bot is missing `DISCORD_MAINTENANCE_API_SECRET`, the commands fail before any request is sent; set it in the bot deployment environment and redeploy.
 
 ### Linked lobby chat
 
-Discord's Social SDK bridges in-game lobby chat into one Discord channel, and that channel has to
-match the room people actually want to read. The setting is read by the game process, so the bot
-never keeps a copy of it: `/admin lobby-chat #lobby-chat` pushes it straight to the game server
-with the same shared secret as `/admin maintenance`, and `/admin lobby-chat` on its own reads back
-what the game holds. `/admin lobby-chat none` clears it, putting the game back on its own default
-channel.
+Discord's Social SDK feature for this is **Linked Channels**: a lobby is linked to one Discord text
+channel, and messages then flow both ways between the lobby and the channel. Two consequences shape
+what the bot can do.
+
+**The link is per lobby, and only the game process can make it.** Discord has no "point the app at a
+channel" switch — the game calls `LinkChannelToLobby(lobbyId, channelId)` itself. So the setting
+`/admin lobby-chat` pushes is *the channel the game links its lobbies to*, not a link the bot
+creates. The bot never keeps a copy of it: it is pushed straight to the game server with the same
+shared secret as `/admin maintenance`, and `/admin lobby-chat` on its own reads back what the game
+holds. `/admin lobby-chat none` clears it, putting the game back on its own default channel.
 
 | Route | What it takes / answers |
 | --- | --- |
 | `POST /api/admin/lobby-chat` | `{ guildId, channelId, channelName, requestedBy }`, where `channelId: null` unlinks. Answers with the stored `{ guildId, channelId, channelName, updatedAt, updatedBy }` |
 | `GET /api/admin/lobby-chat` | the same state document |
 
+> **These two routes do not exist on the game server yet.** Verified against
+> `dungeonblitzr.theminesa.studio`: `/api/admin/maintenance`, `/api/admin/idols` and `/api/admin/ban`
+> all answer `OPTIONS 200 Allow: POST`, while `/api/admin/lobby-chat` answers `404` exactly like a
+> path that was never registered. So `/admin lobby-chat` currently answers with a dedicated "the game
+> server has no lobby-chat route" panel rather than a raw rejection.
+>
+> The lobby chat the game is running **right now** is therefore not coming from this setting — the
+> game holds that channel in its own configuration. Changing it means editing the game server and
+> restarting it (`pm2 restart dungeon-mp`) until the route above is implemented. Do not read a
+> successful-looking panel as proof the channel moved: without the route, nothing can move it.
+
 The write answers with the state the server stored rather than a bare acknowledgement, so the panel
 shows what the game actually holds instead of what was asked for — the bot pushes the setting, it
 does not own it.
 
-The channel is checked with Discord before the game is told about it: it has to exist, be a guild
-text or announcement channel, and belong to the guild the command was run in. A snowflake the bot
-cannot see answers `404`, which the command reports as such rather than storing a link no lobby
-chat would ever appear in, and a channel from another server is refused outright. Players already in
-a lobby keep the channel they joined with until they re-join.
+#### Can a channel be restricted to lobby players?
+
+**No — not in game.** Discord states this directly: *"It's not possible for the game to know which
+users should have access to that channel. Every lobby member can view and reply to all messages
+sent in the linked channel."* Channel permissions are enforced **in the Discord client only**. A
+player who cannot see the channel in Discord can still read and write it in game as long as they are
+in the lobby, and the game has no way to narrow that further.
+
+What *is* achievable is the two halves separately:
+
+- **In game**, access is lobby membership and nothing else. The game's own lobby membership rules
+  are the only gate. Discord's `CanLinkLobby` member flag (off by default, `1 << 0`) governs who may
+  *change* the link, not who may read it.
+- **In Discord**, a restricted channel does keep non-players out — but only of the Discord client.
+  Anyone the channel is visible to in Discord reads every lobby message there.
+
+So a "players only" channel is only half a lock. Do not link a staff or private channel on the
+assumption that its permissions carry into the game. Discord's SDK exposes
+`isViewableAndWriteableByAllMembers` on each channel precisely so a game can warn about this;
+`/admin lobby-chat` reports the same thing from the channel's permission overwrites, and adds a
+footer to the confirmation when the chosen channel carries role or member restrictions.
+
+#### What the game side has to do
+
+The setting only takes effect once the game process applies it. Per Discord's Linked Channels
+guide, that means:
+
+1. `Client::GetDefaultCommunicationScopes` enabled in the OAuth scopes — without it the chat scope
+   is missing and linking fails.
+2. Linking a channel to a lobby, with a lobby member holding the `CanLinkLobby` flag — normally the
+   lobby's admin-equivalent, which is also how you keep players from re-pointing their own lobby.
+3. Only **persistent** lobbies. Ephemeral match-chat lobbies and lobbies created client-side with a
+   secret are not eligible for linking.
+4. A channel that is a guild text channel, not age-restricted, and not already linked to another
+   lobby.
+
+Rate limits matter for how often this is called. On the default tier the budget is **20 lobby
+linking operations per 2 hours**, per application, plus 100 lobby create/join and 100 send-message
+operations per 2 hours. Linking on every lobby creation will exhaust that quickly, so link once and
+let the link persist rather than re-linking per lobby. Production communication access is applied for
+through the Developer Portal ("Comms Access" under Discord Social SDK).
+
+#### What the bot checks
+
+Before the game is told about it, the channel is confirmed with Discord: it has to exist, be a
+guild text or announcement channel, belong to the guild the command was run in, and not be
+age-restricted. A snowflake the bot cannot see answers `404`, which the command reports as such
+rather than storing a link no lobby chat would ever appear in, and a channel from another server is
+refused outright. Players already in a lobby keep the channel they joined with until they re-join.
+
+One limit is worth stating: Discord does not expose whether a channel is already linked to another
+lobby over REST, so the bot cannot detect that. The game's `LinkChannelToLobby` call is where it
+surfaces.
 
 ### Sponsor role and the badge
 
