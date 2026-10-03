@@ -34,6 +34,16 @@ const ERROR_COLOR = 0xe74c3c;
 /** Discord's embed field limit; the state never comes close, this only guards a long name. */
 const FIELD_VALUE_LIMIT = 1_024;
 
+/**
+ * Shown when the chosen channel carries role or member permission overrides.
+ * Discord enforces those permissions only in the Discord client: everyone in a
+ * linked lobby reads and writes the channel in game whatever the channel is set
+ * to, so an operator linking a restricted channel is told that plainly rather
+ * than discovering it in the first lobby chat.
+ */
+const IN_GAME_ACCESS_WARNING =
+	"That channel has role or member restrictions in Discord. Those apply in the Discord client only — every player in a linked lobby can read and write it in game, whatever the channel is set to.";
+
 function oneLine(value: string | null, limit = FIELD_VALUE_LIMIT): string {
 	const text = String(value ?? "").replace(/\s+/g, " ").trim();
 	if (!text) return "—";
@@ -55,7 +65,12 @@ export function formatLinkedChannelTimestamp(value: string | null): string {
  */
 export function buildLobbyChatStateEmbed(
 	state: GameLobbyChatState,
-	options: { title: string; color?: number; description?: string } = {
+	options: {
+		title: string;
+		color?: number;
+		description?: string;
+		footer?: { text: string };
+	} = {
 		title: "💬 Lobby chat channel",
 	},
 ) {
@@ -65,6 +80,7 @@ export function buildLobbyChatStateEmbed(
 		color: options.color ?? (linked ? LINKED_COLOR : UNLINKED_COLOR),
 		title: options.title,
 		...(options.description ? { description: options.description } : {}),
+		...(options.footer ? { footer: options.footer } : {}),
 		fields: [
 			{
 				name: "Linked channel",
@@ -141,6 +157,7 @@ export async function handleLobbyChat(interaction: CommandInteraction) {
 	}
 
 	let channelName: string | null = null;
+	let restrictedInDiscord = false;
 	if (argument.kind === "channel") {
 		const check = await checkLobbyChatChannel(argument.channelId, { guildId });
 		if (!check.ok) {
@@ -155,6 +172,7 @@ export async function handleLobbyChat(interaction: CommandInteraction) {
 			});
 		}
 		channelName = check.channelName;
+		restrictedInDiscord = check.restrictedInDiscord;
 	}
 
 	const requestedBy = interactionActorLabel(interaction);
@@ -177,6 +195,9 @@ export async function handleLobbyChat(interaction: CommandInteraction) {
 						argument.kind === "channel"
 							? "Lobby chat from the game now appears in the channel above. Players already in a lobby keep the channel they joined with until they re-join."
 							: "The game is no longer linked to a channel and falls back to its own default.",
+					...(argument.kind === "channel" && restrictedInDiscord
+						? { footer: { text: IN_GAME_ACCESS_WARNING } }
+						: {}),
 				}),
 			],
 		});
