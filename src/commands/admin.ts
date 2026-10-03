@@ -38,7 +38,7 @@ import { handleSponsorRole } from "./sponsor-role.js";
  *   /admin grant          — give or remove a specific item (interactive panel)
  *   /admin widget         — diagnose a player's Game Stats widget
  *   /admin sponsor        — inspect a GitHub sponsor's visible tier
- *   /admin sponsor-role   — grant or remove the Discord sponsor role by hand
+ *   /admin sponsor-role   — mark a player a sponsor, unlocking their linked Sponsor role
  */
 export const adminCommand = {
   data: new CommandBuilder()
@@ -189,11 +189,13 @@ export const adminCommand = {
     .addSubcommand((subcommand) =>
       subcommand
         .setName("sponsor-role")
-        .setDescription("Grant or remove the sponsor role from a member by hand")
+        .setDescription(
+          "Mark a member a sponsor, unlocking their linked Sponsor role",
+        )
         .addUserOption((option) =>
           option
             .setName("user")
-            .setDescription("The member to grant or remove the sponsor role")
+            .setDescription("The member to mark as a sponsor")
             .setRequired(false),
         )
         .addStringOption((option) =>
@@ -207,7 +209,7 @@ export const adminCommand = {
         .addStringOption((option) =>
           option
             .setName("mode")
-            .setDescription("Grant (default) or remove")
+            .setDescription("Sponsor (default) or unsponsor")
             .addChoices(
               { name: "Grant", value: "grant" },
               { name: "Remove", value: "remove" },

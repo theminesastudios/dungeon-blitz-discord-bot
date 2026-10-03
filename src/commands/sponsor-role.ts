@@ -1,32 +1,59 @@
 import type { CommandInteraction } from "@minesa-org/mini-interaction";
 import { isAdministrator } from "../utils/discordInteractions.js";
-import { db } from "../utils/database.js";
 import {
-	getGuildMemberRoleIds,
-	setGuildMemberRole,
-} from "../utils/discordRoleGrant.js";
+	db,
+	pushSponsorRoleConnection,
+	type RoleConnectionPushResult,
+} from "../utils/database.js";
+import { getGuildMemberRoleIds } from "../utils/discordRoleGrant.js";
 import { SPONSOR_ROLE_ID } from "../utils/sponsorPacks.js";
 import { getSponsorTargets } from "../utils/githubSponsors.js";
 import { discordIdForGithubUser } from "../utils/gameWallet.js";
 
 /**
- * `/admin sponsor-role` — grant (or remove) the Discord sponsor role by hand.
+ * `/admin sponsor-role` — mark a player as a sponsor (or take it back).
  *
- * The linked-roles flow only refreshes when a player re-runs the verification
- * page, so a sponsor added to the manual lists stays roleless until they do.
- * This command closes that gap: it marks the player's stored profile as a
- * sponsor (`isSponsor` is what `/packs` and the profile read) and grants the
- * role directly through the bot REST API, so the sponsor is done in one step.
+ * The Sponsor role is a **linked role**: Discord owns it. The player grants the
+ * application access once, the bot writes `is_sponsor` on their role-connection
+ * metadata, and Discord grants or removes the role from that metadata on its own
+ * — on the next authorize, on a metadata refresh, or when the player claims it
+ * themselves from their profile. There is deliberately **no**
+ * `PUT /guilds/{g}/members/{u}/roles/{r}` here: that endpoint grants a *plain*
+ * role, it is not how a linked role is awarded, and on a linked role it answers
+ * `403 Missing Access` (code 50001) because the bot does not hold Manage Roles
+ * for it. Attempting it also produced a scary error while the real work — the
+ * metadata — never happened.
  *
- *   /admin sponsor-role @user            — grant the sponsor role
+ * So this command does the two writes that actually decide the outcome:
+ *
+ *   1. the stored `isSponsor` flag, which is what `/packs` sponsor-only packs and
+ *      the profile panel read;
+ *   2. the player's role-connection metadata, which is what Discord reads to award
+ *      the linked role.
+ *
+ *   /admin sponsor-role @user            — mark them a sponsor
  *   /admin sponsor-role @user remove     — take it back
  *   /admin sponsor-role github:churrascooo__ — resolve the linked Discord user from GitHub
  */
 
-type RoleGrantResult =
-	| { status: "granted" | "removed" | "already-had" | "did-not-have" }
-	| { status: "not-in-guild" }
-	| { status: "failed"; detail: string };
+/**
+ * How the badge push ended, in operator terms. Each outcome says plainly whether
+ * the player has to do anything for the role to appear.
+ */
+function describeBadgePush(result: RoleConnectionPushResult): string {
+	switch (result.status) {
+		case "pushed":
+			return `-# Their linked-role metadata now says **is_sponsor = ${result.isSponsor ? 1 : 0}**, so Discord awards the <@&${SPONSOR_ROLE_ID}> role itself.`;
+		case "not-linked":
+			return `-# Discord holds no linked-role connection for them yet — they have never authorized the application, so there is no token to write their badge with. Their stored sponsor flag is still set, so sponsor packs and credit work; the role itself appears once they authorize once.`;
+		case "reauth-required":
+			return `-# Their metadata could not be written: ${result.detail}. They need to authorize the application again; until then Discord is still reading their old metadata. Their stored sponsor flag is set, so sponsor packs and credit work.`;
+		case "not-configured":
+			return `-# Their metadata could not be written: ${result.detail} Their stored sponsor flag is set, so sponsor packs and credit work.`;
+		case "failed":
+			return `-# Their metadata could not be written: ${result.detail} Their stored sponsor flag is set, so sponsor packs and credit work.`;
+	}
+}
 
 export async function handleSponsorRole(interaction: CommandInteraction) {
 	if (!isAdministrator(interaction)) {
@@ -79,79 +106,75 @@ export async function handleSponsorRole(interaction: CommandInteraction) {
 	const targets = getSponsorTargets();
 	const matchedTarget = targets[0] ?? null;
 
-	// The role itself comes first: if Discord refuses it, the stored flag should
-	// not claim a sponsor status the member does not visibly have.
+	// Read-only, and only so the reply can say what the operator can see right now.
+	// Reading a member never needs Manage Roles, unlike granting a plain role.
 	const memberRoleIds = await getGuildMemberRoleIds(targetId).catch(() => null);
-	const alreadyHas = memberRoleIds?.includes(roleId) ?? false;
+	const alreadyHasRole = memberRoleIds?.includes(roleId) ?? false;
 
-	let roleResult: RoleGrantResult;
-	if (remove) {
-		roleResult = alreadyHas
-			? await setGuildMemberRole(targetId, roleId, "remove")
-			: { status: "did-not-have" as const };
-	} else {
-		roleResult = alreadyHas
-			? ({ status: "already-had" } as RoleGrantResult)
-			: await setGuildMemberRole(targetId, roleId, "add");
+	// The stored flag is what `/packs` sponsor-only packs and the profile panel read.
+	let profileWriteFailed = false;
+	try {
+		const existing = (await db.get(targetId).catch(() => null)) as Record<string, unknown> | null;
+		const base = existing ?? {};
+		await db.set(targetId, {
+			...base,
+			userId: targetId,
+			isSponsor: !remove,
+			sponsorTarget: remove ? null : matchedTarget,
+			lastUpdated: Date.now(),
+		});
+	} catch (error) {
+		profileWriteFailed = true;
+		console.error("[sponsor-role] Could not update the stored profile:", error);
 	}
 
-	// Keep the stored profile in step so `/packs` sponsor-only packs and the
-	// profile panel agree with the role. The role grant is the source of truth;
-	// a failed grant leaves the flag untouched.
-	if (roleResult.status === "granted" || roleResult.status === "removed") {
-		try {
-			const existing = (await db.get(targetId).catch(() => null)) as Record<string, unknown> | null;
-			const base = existing ?? {};
-			await db.set(targetId, {
-				...base,
-				userId: targetId,
-				isSponsor: !remove,
-				sponsorTarget: remove ? null : matchedTarget,
-				lastUpdated: Date.now(),
-			});
-		} catch (error) {
-			console.error("[sponsor-role] Could not update the stored profile:", error);
-		}
-	}
+	// The linked role is awarded from this metadata, written with the player's own
+	// token. It reuses the token they granted when they last verified, renewing it
+	// when it has expired, so no re-verification is needed.
+	const badgePush = await pushSponsorRoleConnection(targetId, !remove).catch(
+		(error: unknown) => ({
+			status: "failed" as const,
+			detail: error instanceof Error ? error.message : String(error),
+		})
+	);
 
 	const mention = `<@${targetId}>`;
 	const lines: string[] = [];
 	if (resolvedFromGithub) {
 		lines.push(`Resolved GitHub **${resolvedFromGithub}** to ${mention}.`);
 	}
-	switch (roleResult.status) {
-		case "granted":
-			lines.push(`✅ Granted the <@&${roleId}> role to ${mention}.`);
-			break;
-		case "already-had":
-			lines.push(`ℹ️ ${mention} already has the <@&${roleId}> role.`);
-			break;
-		case "removed":
-			lines.push(`✅ Removed the <@&${roleId}> role from ${mention}.`);
-			break;
-		case "did-not-have":
-			lines.push(`ℹ️ ${mention} did not have the <@&${roleId}> role.`);
-			break;
-		case "not-in-guild":
-			lines.push(
-				`❌ ${mention} is not in this server (or the bot cannot see them), so the role could not be changed.`
-			);
-			break;
-		case "failed":
-			lines.push(`❌ Role change failed: ${roleResult.detail}`);
-			break;
-	}
 
-	if (roleResult.status === "granted") {
+	if (profileWriteFailed) {
+		lines.push(
+			"❌ Their stored profile could not be updated, so sponsor packs and credit are still locked for them."
+		);
+	} else if (remove) {
+		lines.push("ℹ️ Their profile is no longer marked as a sponsor.");
+	} else {
 		lines.push(
 			`Their profile is marked as a sponsor of **${matchedTarget ?? "the studio"}**, so sponsor packs and credit are unlocked.`
 		);
 	}
-	if (roleResult.status === "granted" || roleResult.status === "removed") {
+
+	// The Sponsor role is linked, so there is nothing to grant by hand — say what
+	// the player still has to do, or that there is nothing to do at all.
+	if (remove) {
 		lines.push(
-			"-# The role-connection badge on their Discord profile updates the next time they run the verification page; the role itself is already correct."
+			alreadyHasRole
+				? `They currently have the <@&${roleId}> role; Discord drops it once it next reads their metadata.`
+				: `They do not have the <@&${roleId}> role, so there is nothing for Discord to drop.`
+		);
+	} else if (alreadyHasRole) {
+		lines.push(
+			`✅ ${mention} already has the <@&${roleId}> role, so nothing else is needed — Discord keeps it as long as their metadata keeps claiming it.`
+		);
+	} else {
+		lines.push(
+			`ℹ️ ${mention} does not have the <@&${roleId}> role yet. It is a **linked role**, so Discord grants it from the metadata below — they get it as soon as they authorize their account, and they can also claim it themselves from their profile.`
 		);
 	}
+
+	lines.push(describeBadgePush(badgePush));
 
 	return interaction.editReply({ content: lines.join("\n") });
 }

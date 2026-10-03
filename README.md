@@ -21,6 +21,7 @@ This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord 
 - `/admin grant` (administrator) opens an interactive panel for handing out one specific thing: pick the player, the character, the item type (gold, Mammoth Idols, Dragon Keys, Dragon Ore, Silver Sigils, Royal Sigils, mount, legendary dye, trove chest or potion), the exact item where one is needed, then **Add** or **Remove**. Balances and counted items ask for an amount in a modal; mounts and dyes are one-of-a-kind, so their add/remove applies on the click. Each write is confirmed by reading the character back out of the save, and the result is posted to the operator log.
 - `/admin widget [player]` (administrator) reports what is standing between a player and a working Game Stats profile widget: the application's game-stats access, the game server's scope switch, the connections the player authorized, the record Discord actually stores, and the payload the sync would send (built in dry-run mode, so it writes nothing).
 - `/admin sponsor github_username` (administrator) inspects the visible GitHub sponsorship tier, status, and estimated total.
+- `/admin sponsor-role [user] [github_username] [mode]` (administrator) marks a player as a sponsor by hand: it writes the player's linked-role metadata, which is how the **linked** Sponsor role is awarded, and marks their stored profile so sponsor packs and credit unlock. The player receives the role by authorizing their account (or claiming it from their own profile) — no role is granted by hand. `mode: remove` takes it all back. See [Sponsor role and the badge](#sponsor-role-and-the-badge).
 - `/server` (administrator) shows the live game server and restarts it onto another branch: the running branch, commit, uptime and player count, every branch the VM can pull, and a restart onto the selected one (with the one-minute player warning, or immediately). A scheduled restart can be cancelled from the same panel.
 
 `/admin` is administrator-gated as a whole. The moderation and balance-inspection actions (`/account ban`, `/account unban` and `/profile`'s player lookup) require **Manage Server**, which an Administrator also holds.
@@ -73,6 +74,52 @@ text or announcement channel, and belong to the guild the command was run in. A 
 cannot see answers `404`, which the command reports as such rather than storing a link no lobby
 chat would ever appear in, and a channel from another server is refused outright. Players already in
 a lobby keep the channel they joined with until they re-join.
+
+### Sponsor role and the badge
+
+The linked roles (`is_sponsor`, `contributor`) are normally written when a player runs the
+verification page, which resolves their GitHub account and stores their OAuth tokens on their
+profile. Someone added to the sponsor list by hand has no such visit, so `/admin sponsor-role`
+writes the metadata for them.
+
+**The Sponsor role is a linked role, so nothing is granted by hand.** Discord awards a linked role
+from the user's role-connection metadata once they authorize: the role follows the metadata, and the
+player can also claim it themselves from their own profile. `PUT
+/guilds/{guild}/members/{user}/roles/{role}` grants a *plain* role and is not how a linked role is
+awarded — against this one it answers `403 {"message":"Missing Access","code":50001}`, because the bot
+does not hold Manage Roles for it. The command therefore makes **no role-endpoint call at all**; the
+role-grant helper that used to live in `src/utils/discordRoleGrant.ts` is gone, leaving only a
+read-only member lookup used to report what the player currently has. The command does the two
+writes that actually decide the outcome:
+
+1. the stored `isSponsor` flag, which is what `/packs` sponsor-only packs and the profile panel read;
+2. the player's role-connection metadata, which is what Discord reads to award the linked role.
+
+**The metadata cannot be written with the bot token.** Discord's
+`PUT /users/@me/applications/{application.id}/role-connection`
+[requires an OAuth access token with `role_connections.write` for that application](https://docs.discord.com/developers/resources/user),
+and there is no bot-token equivalent. So the push reuses the access token the player granted at
+verification, which is stored on their profile by the callback. An expired access token is renewed
+through the refresh-token grant with `DISCORD_CLIENT_SECRET`, and the rotated pair is written back, so
+no player interaction is needed at any point. **A player who has never authorized still cannot be
+badged** — there is no stored token to act as them — and the reply says so instead of claiming a
+badge moved; their stored sponsor flag is still written, so packs and credit work.
+
+What the player does next is stated in the reply: if they already hold the role, nothing is needed;
+if not, the role appears the moment they authorize their account, and they can claim it themselves
+from their profile.
+
+Two details keep the staff path from damaging what verification owns:
+
+- The write **replaces** the whole connection, so the current one is read first and merged. The
+  `contributor` badge belongs to the verification flow and is left as it stands; only `is_sponsor`
+  is rewritten. A metadata key this deployment does not know about survives too.
+- The stored `isSponsor` flag is **not** re-derived from GitHub. It was just set from the
+  operator's decision, and re-checking GitHub would immediately undo a grant to someone who
+  sponsors nothing there — the badge would then claim the opposite of the role next to it.
+
+Both payload shapes come from one builder in `src/utils/database.ts`, so metadata written by hand
+is byte-for-byte what a verification would write.
 
 ## Bug reports (`/report-bug`)
 
