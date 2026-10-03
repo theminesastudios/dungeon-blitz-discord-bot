@@ -47,7 +47,7 @@ To pin or override a name by hand — or to name an id the game server reports d
 
 The game server enforces bans — only the process holding the player connections can refuse a login and drop a session. `/account ban` and `/account unban` call `POST /api/admin/ban` and `POST /api/admin/unban` with the same shared secret as the other admin endpoints, so the game server needs those routes; a deployment that can run `/admin maintenance` can ban too.
 
-The `/admin maintenance` and `/admin idols` subcommands require matching `DISCORD_MAINTENANCE_API_SECRET` values in the bot and game-server environments. The game server defaults to `http://35.185.71.109`; override it with `GAME_SERVER_BASE_URL` in the bot deployment when the game moves.
+The `/admin maintenance` and `/admin idols` subcommands require matching `DISCORD_MAINTENANCE_API_SECRET` values in the bot and game-server environments. The bot defaults to `http://dungeonblitzr.theminesa.studio`; override it with `GAME_SERVER_BASE_URL` in the bot deployment when the game moves. (It used to default to the raw VM address `35.185.71.109`, which is a **reserved but idle** address in the same GCP project — the same finding `gameHealthCheck.ts` records against that IP. Nothing game-related listens there, so every admin call went to an address that cannot answer.)
 
 If `/admin maintenance` or `/admin idols` replies with `503 "Discord admin API is not configured"`, the **game server** has no admin secret configured: add `ADMIN_API_SECRET` (or `DISCORD_MAINTENANCE_API_SECRET`) to the game server's `src/server/.env` with the same value as the bot's `DISCORD_MAINTENANCE_API_SECRET`, then restart it (`pm2 restart dungeon-mp`). Conversely, if the bot is missing `DISCORD_MAINTENANCE_API_SECRET`, the commands fail before any request is sent; set it in the bot deployment environment and redeploy.
 
@@ -68,6 +68,17 @@ holds. `/admin lobby-chat none` clears it, putting the game back on its own defa
 | --- | --- |
 | `POST /api/admin/lobby-chat` | `{ guildId, channelId, channelName, requestedBy }`, where `channelId: null` unlinks. Answers with the stored `{ guildId, channelId, channelName, updatedAt, updatedBy }` |
 | `GET /api/admin/lobby-chat` | the same state document |
+
+> **These two routes do not exist on the game server yet.** Verified against
+> `dungeonblitzr.theminesa.studio`: `/api/admin/maintenance`, `/api/admin/idols` and `/api/admin/ban`
+> all answer `OPTIONS 200 Allow: POST`, while `/api/admin/lobby-chat` answers `404` exactly like a
+> path that was never registered. So `/admin lobby-chat` currently answers with a dedicated "the game
+> server has no lobby-chat route" panel rather than a raw rejection.
+>
+> The lobby chat the game is running **right now** is therefore not coming from this setting — the
+> game holds that channel in its own configuration. Changing it means editing the game server and
+> restarting it (`pm2 restart dungeon-mp`) until the route above is implemented. Do not read a
+> successful-looking panel as proof the channel moved: without the route, nothing can move it.
 
 The write answers with the state the server stored rather than a bare acknowledgement, so the panel
 shows what the game actually holds instead of what was asked for — the bot pushes the setting, it

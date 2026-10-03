@@ -1,5 +1,6 @@
 import type { CommandInteraction } from "@minesa-org/mini-interaction";
 import { interactionActorLabel, isAdministrator } from "../utils/discordInteractions.js";
+import { GameServerAdminError } from "../utils/gameMaintenance.js";
 import {
 	checkLobbyChatChannel,
 	fetchGameLobbyChat,
@@ -144,13 +145,20 @@ export async function handleLobbyChat(interaction: CommandInteraction) {
 		} catch (error) {
 			return interaction.editReply({
 				embeds: [
-					{
-						color: ERROR_COLOR,
-						title: "💬 Lobby chat channel",
-						description: `The game server could not be read: ${
-							error instanceof Error ? error.message : String(error)
-						}`,
-					},
+					error instanceof GameServerAdminError && error.status === 404
+						? {
+								color: ERROR_COLOR,
+								title: "💬 The game server has no lobby-chat route",
+								description:
+									"The game server answered 404 for `GET /api/admin/lobby-chat`, so there is no stored setting to read back: that route has to be added to the game server first. The channel the game is linked to right now comes from the game server's own configuration.",
+							}
+						: {
+								color: ERROR_COLOR,
+								title: "💬 Lobby chat channel",
+								description: `The game server could not be read: ${
+									error instanceof Error ? error.message : String(error)
+								}`,
+							},
 				],
 			});
 		}
@@ -204,13 +212,28 @@ export async function handleLobbyChat(interaction: CommandInteraction) {
 	} catch (error) {
 		return interaction.editReply({
 			embeds: [
-				{
-					color: ERROR_COLOR,
-					title: "💬 Lobby chat channel not changed",
-					description: `The game server rejected the change: ${
-						error instanceof Error ? error.message : String(error)
-					}`,
-				},
+				error instanceof GameServerAdminError && error.status === 404
+					? {
+							color: ERROR_COLOR,
+							title: "💬 The game server has no lobby-chat route",
+							description:
+								"The game server answered 404 for `POST /api/admin/lobby-chat`, so the linked lobby chat channel cannot be changed from here yet: that route has to be added to the game server first. `/admin maintenance`, `/admin idols` and `/account ban` use the same secret and are unaffected — they are separate routes that do exist.",
+							fields: [
+								{
+									name: "Where the channel lives right now",
+									value:
+										"The channel the game is already linked to comes from the game server's own configuration, not from this route. Until the route exists, change it there and restart the game process (`pm2 restart dungeon-mp`).",
+									inline: false,
+								},
+							],
+						}
+					: {
+							color: ERROR_COLOR,
+							title: "💬 Lobby chat channel not changed",
+							description: `The game server rejected the change: ${
+								error instanceof Error ? error.message : String(error)
+							}`,
+						},
 			],
 		});
 	}
