@@ -89,24 +89,25 @@ function rejectionMessage(action: string, status: number, payload: unknown, rawB
 	return `Game server rejected ${action} (${status}): ${detail}`;
 }
 
+/** What the game server answered, before any decision about whether it was a refusal. */
+export type GameServerAdminResponse = {
+	status: number;
+	payload: unknown;
+	rawBody: string;
+};
+
 /**
- * Shared transport for the game server's `/api/admin/*` endpoints. Every moderation and
- * content tool authorizes with the same shared secret, so the header/error handling lives
- * here instead of being copied per command.
+ * The bare POST behind every `/api/admin/*` write: the shared secret, the JSON body
+ * and the timeout, and nothing else. It answers with whatever status the game server
+ * sent, so a caller that has to tell one refusal from another (the lobby chat route's
+ * `409`/`502` carry the state that did *not* change) can read it. A timeout or a
+ * network failure is thrown as it came from `fetch`.
  */
-/**
- * `requireOk: false` is for the routes that answer with the state they stored
- * rather than an acknowledgement — the lobby chat channel route replies with the
- * channel it is now linked to, which is data the operator is about to read back.
- * Only an explicit `ok: false` (or an HTTP error) is then treated as a refusal,
- * exactly as the GET helper treats it.
- */
-export async function requestGameServerAdmin<T>(
+export async function postGameServerAdmin(
 	path: string,
 	body: Record<string, unknown>,
-	action: string,
-	options: { requireOk?: boolean } = {},
-): Promise<T> {
+	timeoutMs = 10_000,
+): Promise<GameServerAdminResponse> {
 	const response = await fetch(`${getGameServerBaseUrl()}${path}`, {
 		method: "POST",
 		headers: {
@@ -114,20 +115,26 @@ export async function requestGameServerAdmin<T>(
 			"Content-Type": "application/json",
 		},
 		body: JSON.stringify(body),
-		signal: AbortSignal.timeout(10_000),
+		signal: AbortSignal.timeout(timeoutMs),
 	});
 	const rawBody = await response.text().catch(() => "");
-	const payload = parseResponseBody(rawBody) as T | { error?: string } | null;
+	return { status: response.status, payload: parseResponseBody(rawBody), rawBody };
+}
+
+/**
+ * Shared transport for the game server's `/api/admin/*` endpoints. Every moderation and
+ * content tool authorizes with the same shared secret, so the header/error handling lives
+ * here instead of being copied per command.
+ */
+export async function requestGameServerAdmin<T>(
+	path: string,
+	body: Record<string, unknown>,
+	action: string,
+): Promise<T> {
+	const { status, payload, rawBody } = await postGameServerAdmin(path, body);
 	const answer = payload as Record<string, unknown> | null;
-	const refused =
-		options.requireOk === false
-			? !response.ok || !answer || answer.ok === false
-			: !response.ok || !answer || answer.ok !== true;
-	if (refused) {
-		throw new GameServerAdminError(
-			rejectionMessage(action, response.status, payload, rawBody),
-			response.status,
-		);
+	if (status < 200 || status >= 300 || !answer || answer.ok !== true) {
+		throw new GameServerAdminError(rejectionMessage(action, status, payload, rawBody), status);
 	}
 	return payload as T;
 }

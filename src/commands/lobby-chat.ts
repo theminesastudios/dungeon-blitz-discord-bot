@@ -7,30 +7,40 @@ import {
 	parseLobbyChatArgument,
 	setGameLobbyChat,
 	type GameLobbyChatState,
+	type LobbyChatMoveResult,
 } from "../utils/gameLobbyChat.js";
 
 /**
- * `/admin lobby-chat` — chooses the Discord channel the game's lobby chat is
- * bridged into.
+ * `/admin lobby-chat` — moves the game's lobby chat to a Discord channel.
  *
- * The Social SDK links in-game lobby chat to one Discord channel, and leaving it
- * on the server's general chat buries lobby conversation under everything else.
- * The game process owns the setting, so the command pushes it straight to the
- * game server over the shared admin secret (`POST /api/admin/lobby-chat`) rather
- * than keeping a copy the game would never read.
+ * The game server links its Discord lobby to the channel (Discord "Linked
+ * Channels"), so players speak there as themselves through the game. The server
+ * owns the lobby and the relay; the bot only asks for the move over the shared
+ * admin secret (`POST /api/admin/lobby-chat`) and never posts lobby chat into the
+ * channel itself.
  *
- *   /admin lobby-chat              — show what is linked right now
- *   /admin lobby-chat #lobby-chat  — link the lobby chat to that channel
- *   /admin lobby-chat none         — unlink, so the game falls back to its own default
+ *   /admin lobby-chat              — show the channel in use right now
+ *   /admin lobby-chat #lobby-chat  — link the lobby to that channel
+ *   /admin lobby-chat none         — return to the server's default channel
  *
- * A channel is checked against Discord before the game is told about it, because
- * a typo would otherwise be stored as a live setting that no lobby chat ever
- * appears in.
+ * A channel is checked against Discord before the server is asked, because
+ * Discord cannot link one that is not a plain text channel or is age-restricted.
+ * The reply only says the channel moved when the server answered `200`, which it
+ * does after Discord accepted the link.
  */
 
 const LINKED_COLOR = 0x2ecc71;
 const UNLINKED_COLOR = 0x95a5a6;
 const ERROR_COLOR = 0xe74c3c;
+const UNKNOWN_COLOR = 0xf1c40f;
+
+/** `409`: the server has no lobby, or no saved sign-in from its `CanLinkLobby` admin. */
+export const LOBBY_SETUP_HINT =
+	"A server admin must run `node --env-file=.env tools/linkedDiscordLobby.js link --lobby <lobbyId>` on the game server once.";
+
+/** `502`: Discord itself refused the link. */
+export const DISCORD_REFUSED_HINT =
+	"Discord refused the link. Check that the channel is a normal (not age-restricted) text channel, isn't linked to another lobby, and that the lobby admin has View Channel, Send Messages and Manage Channels there.";
 
 /** Discord's embed field limit; the state never comes close, this only guards a long name. */
 const FIELD_VALUE_LIMIT = 1_024;
@@ -111,6 +121,61 @@ export function buildLobbyChatStateEmbed(
 	};
 }
 
+/** The server's error text as sent, cut only if it would overflow the embed. */
+function verbatim(text: string, limit = 3_500): string {
+	return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
+}
+
+function stillInChannel(current: GameLobbyChatState | null): string {
+	if (!current) return "Unchanged. Run `/admin lobby-chat` with no channel to see which channel is in use.";
+	if (!current.channelId) return "The server's default channel";
+	return `<#${current.channelId}>${current.channelName ? ` (${oneLine(current.channelName, 200)})` : ""}`;
+}
+
+/**
+ * The reply to a move. Only `moved` — the server's `200` — says the channel
+ * changed; a failure names the channel lobby chat is still in, and an unknown
+ * outcome claims neither.
+ */
+export function buildLobbyChatMoveEmbed(
+	result: LobbyChatMoveResult,
+	options: { restrictedInDiscord?: boolean } = {},
+) {
+	if (result.outcome === "moved") {
+		const { state } = result;
+		return buildLobbyChatStateEmbed(state, {
+			title: "✅ Lobby chat moved",
+			color: state.channelId ? LINKED_COLOR : UNLINKED_COLOR,
+			description: state.channelId
+				? `Lobby linked to <#${state.channelId}>. Players now speak there as themselves through the game.`
+				: "Lobby chat is back on the game server's default channel.",
+			...(state.channelId && options.restrictedInDiscord
+				? { footer: { text: IN_GAME_ACCESS_WARNING } }
+				: {}),
+		});
+	}
+
+	if (result.outcome === "unknown") {
+		return {
+			color: UNKNOWN_COLOR,
+			title: "⚠️ Lobby chat move: outcome unknown",
+			description: `${result.reason} The server may or may not have moved lobby chat. Run \`/admin lobby-chat\` with no channel to see which channel is in use before trying again.`,
+		};
+	}
+
+	const hint =
+		result.status === 409 ? LOBBY_SETUP_HINT : result.status === 502 ? DISCORD_REFUSED_HINT : null;
+	return {
+		color: ERROR_COLOR,
+		title: "❌ Lobby chat not moved",
+		description: `The move failed${result.status ? ` (${result.status})` : ""}: ${verbatim(result.error)}`,
+		fields: [
+			{ name: "Lobby chat is still in", value: stillInChannel(result.current), inline: false },
+			...(hint ? [{ name: "How to fix it", value: hint, inline: false }] : []),
+		],
+	};
+}
+
 export async function handleLobbyChat(interaction: CommandInteraction) {
 	if (!isAdministrator(interaction)) {
 		return interaction.reply({
@@ -124,7 +189,7 @@ export async function handleLobbyChat(interaction: CommandInteraction) {
 	if (argument.kind === "invalid") {
 		return interaction.reply({
 			content:
-				"Give a channel as `#channel-name`, `<#123456789012345678>` or its id, or `none` to unlink the lobby chat. Leave the option empty to see what is linked.",
+				"Give a channel as `#channel-name`, `<#123456789012345678>` or its id, or `none` to return to the server's default channel. Leave the option empty to see the channel in use now.",
 			flags: 64,
 		});
 	}
@@ -173,8 +238,8 @@ export async function handleLobbyChat(interaction: CommandInteraction) {
 				embeds: [
 					{
 						color: ERROR_COLOR,
-						title: "💬 Lobby chat channel not changed",
-						description: check.reason,
+						title: "❌ Lobby chat not moved",
+						description: `${check.reason} Nothing was sent to the game server.`,
 					},
 				],
 			});
@@ -183,58 +248,13 @@ export async function handleLobbyChat(interaction: CommandInteraction) {
 		restrictedInDiscord = check.restrictedInDiscord;
 	}
 
-	const requestedBy = interactionActorLabel(interaction);
-	try {
-		const state = await setGameLobbyChat({
-			guildId: guildId || null,
-			channelId: argument.kind === "channel" ? argument.channelId : null,
-			channelName,
-			requestedBy,
-		});
-		return interaction.editReply({
-			embeds: [
-				buildLobbyChatStateEmbed(state, {
-					title:
-						argument.kind === "channel"
-							? "✅ Lobby chat channel linked"
-							: "✅ Lobby chat channel unlinked",
-					color: argument.kind === "channel" ? LINKED_COLOR : UNLINKED_COLOR,
-					description:
-						argument.kind === "channel"
-							? "Lobby chat from the game now appears in the channel above. Players already in a lobby keep the channel they joined with until they re-join."
-							: "The game is no longer linked to a channel and falls back to its own default.",
-					...(argument.kind === "channel" && restrictedInDiscord
-						? { footer: { text: IN_GAME_ACCESS_WARNING } }
-						: {}),
-				}),
-			],
-		});
-	} catch (error) {
-		return interaction.editReply({
-			embeds: [
-				error instanceof GameServerAdminError && error.status === 404
-					? {
-							color: ERROR_COLOR,
-							title: "💬 The game server has no lobby-chat route",
-							description:
-								"The game server answered 404 for `POST /api/admin/lobby-chat`, so the linked lobby chat channel cannot be changed from here yet: that route has to be added to the game server first. `/admin maintenance`, `/admin idols` and `/account ban` use the same secret and are unaffected — they are separate routes that do exist.",
-							fields: [
-								{
-									name: "Where the channel lives right now",
-									value:
-										"The channel the game is already linked to comes from the game server's own configuration, not from this route. Until the route exists, change it there and restart the game process (`pm2 restart dungeon-mp`).",
-									inline: false,
-								},
-							],
-						}
-					: {
-							color: ERROR_COLOR,
-							title: "💬 Lobby chat channel not changed",
-							description: `The game server rejected the change: ${
-								error instanceof Error ? error.message : String(error)
-							}`,
-						},
-			],
-		});
-	}
+	const result = await setGameLobbyChat({
+		guildId: guildId || null,
+		channelId: argument.kind === "channel" ? argument.channelId : null,
+		channelName,
+		requestedBy: interactionActorLabel(interaction),
+	});
+	return interaction.editReply({
+		embeds: [buildLobbyChatMoveEmbed(result, { restrictedInDiscord })],
+	});
 }

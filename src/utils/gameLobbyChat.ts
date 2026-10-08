@@ -1,18 +1,20 @@
 /**
  * The Discord channel the game's lobby chat is linked to.
  *
- * Discord's Social SDK bridges in-game lobby chat into one Discord channel, and
- * which one it is has to match the channel people actually want to read — the
- * game's own lobby room rather than the server's general chat. The Social SDK
- * reads that setting from the game process, so the game server owns it; the bot
- * is the operator's way of changing it, exactly like `/admin maintenance`.
+ * The game server links its Discord lobby to one channel (Discord "Linked
+ * Channels"), and players' lobby messages then appear there as themselves. Only
+ * the game server can make that link — it holds the lobby and the `CanLinkLobby`
+ * admin's sign-in — so the bot is the operator's way of asking for it, exactly
+ * like `/admin maintenance`. The bot never posts lobby chat into the channel
+ * itself and creates nothing there.
  *
- * The setting is therefore pushed, not cached: `POST /api/admin/lobby-chat`
- * with the shared admin secret, answered with the state the server stored, and
- * read back with the matching `GET`. A channel that never reaches the game
- * process is worse than no channel at all, so the bot checks the snowflake
- * against Discord before sending it: the channel has to exist, be a guild text
- * channel, belong to the guild the command was run in, and be linkable at all.
+ * The move is therefore pushed, not cached: `POST /api/admin/lobby-chat` with
+ * the shared admin secret, read back with the matching `GET`. The server links
+ * the lobby with Discord before it answers, so only its `200` means the channel
+ * moved; a `409`/`502` carries the channel lobby chat is still in. A channel
+ * Discord cannot link is caught here first: the channel has to exist, be a guild
+ * text channel, belong to the guild the command was run in, and not be
+ * age-restricted.
  *
  * Two Discord rules are checked here rather than left to fail in the game:
  * an age-restricted channel cannot be linked to a lobby, and a channel with
@@ -25,7 +27,7 @@
 
 import {
 	fetchGameServerAdmin,
-	requestGameServerAdmin,
+	postGameServerAdmin,
 } from "./gameMaintenance.js";
 
 const LOBBY_CHAT_PATH = "/api/admin/lobby-chat";
@@ -35,8 +37,14 @@ const DISCORD_API_BASE = "https://discord.com/api/v10";
 /** A channel read must not hold an interaction open while Discord stalls. */
 const DISCORD_READ_TIMEOUT_MS = 6_000;
 
-/** Discord channel types a lobby chat can be bridged into. */
-const LINKABLE_CHANNEL_TYPES = new Set([0, 5]); // 0 = guild text, 5 = announcement
+/** The only channel type Discord links to a lobby: `ChannelType.GuildText`. */
+const GUILD_TEXT_CHANNEL_TYPE = 0;
+
+/**
+ * The server refreshes its lobby admin's token and calls Discord before it
+ * answers, so a move takes longer than the other admin routes.
+ */
+const LOBBY_CHAT_MOVE_TIMEOUT_MS = 20_000;
 
 /** What the game server reports about the linked lobby chat channel. */
 export type GameLobbyChatState = {
@@ -231,12 +239,11 @@ export async function checkLobbyChatChannel(
 		};
 	}
 
-	const type = Number(channel.type);
-	if (!LINKABLE_CHANNEL_TYPES.has(type)) {
+	if (Number(channel.type) !== GUILD_TEXT_CHANNEL_TYPE) {
 		return {
 			ok: false,
 			reason:
-				"That is not a text channel. Lobby chat can only be linked to a guild text or announcement channel.",
+				"That is not a text channel. Discord can only link a lobby to a normal server text channel (not announcement, voice, forum or thread).",
 		};
 	}
 
@@ -284,31 +291,108 @@ export function fetchGameLobbyChat(): Promise<GameLobbyChatState> {
 	).then(parseLobbyChatState);
 }
 
+/** What came of asking the game server to move lobby chat. */
+export type LobbyChatMoveResult =
+	| { outcome: "moved"; state: GameLobbyChatState }
+	| {
+			outcome: "failed";
+			/** `null` when nothing was sent (the bot is missing its secret). */
+			status: number | null;
+			/** The game server's `error` text, verbatim when it sent one. */
+			error: string;
+			/**
+			 * The state the server says is still in use, when its answer carried one
+			 * (`409`/`502` do). `null` when the answer had no state at all.
+			 */
+			current: GameLobbyChatState | null;
+	  }
+	| { outcome: "unknown"; reason: string };
+
+function hasStateFields(payload: unknown): boolean {
+	return (
+		Boolean(payload) &&
+		typeof payload === "object" &&
+		("channelId" in (payload as object) || "channel_id" in (payload as object))
+	);
+}
+
+function failureText(status: number, payload: unknown, rawBody: string): string {
+	const error =
+		payload && typeof payload === "object" ? (payload as { error?: unknown }).error : undefined;
+	const text = typeof error === "string" ? error.trim() : "";
+	if (text) return text;
+	if (status === 404) {
+		return "The game server has no POST /api/admin/lobby-chat route (it answered 404 with no error text).";
+	}
+	if (rawBody.trim().startsWith("<")) {
+		return `The game server answered ${status} with an HTML page instead of JSON, so the request did not reach the lobby-chat route.`;
+	}
+	return `The game server answered ${status} with no error text.`;
+}
+
 /**
- * Pushes the new link to the game process. `channelId: null` clears it, which is
- * how the game returns to whatever channel it links by default.
+ * Asks the game server to link its lobby to a channel. `channelId: null` returns
+ * it to the server's default channel.
  *
- * The route answers with the state it stored rather than a bare acknowledgement,
- * so the panel shows what the game actually holds instead of what was asked for.
+ * Only `200` is a move: the server answers it after Discord accepted the link,
+ * with the channel now in use. Every other status is a failure that leaves the
+ * channel where it was, and `409`/`502` say which one that is. No answer at all
+ * (a timeout, a dropped connection) is reported as unknown, because the server
+ * may have linked the lobby after the bot stopped waiting.
+ *
+ * Nothing is retried: a `409`/`502` needs a person to fix the server or the
+ * channel, and the server rate-limits this route.
  */
-export function setGameLobbyChat(options: {
+export async function setGameLobbyChat(options: {
 	guildId: string | null;
 	channelId: string | null;
 	channelName?: string | null;
 	requestedBy?: string | null;
-}): Promise<GameLobbyChatState> {
-	const action = options.channelId
-		? "the linked lobby chat channel"
-		: "clearing the linked lobby chat channel";
-	return requestGameServerAdmin<unknown>(
-		LOBBY_CHAT_PATH,
-		{
-			guildId: options.guildId,
-			channelId: options.channelId,
-			channelName: options.channelName ?? null,
-			requestedBy: options.requestedBy ?? null,
-		},
-		action,
-		{ requireOk: false },
-	).then(parseLobbyChatState);
+}): Promise<LobbyChatMoveResult> {
+	const body = {
+		guildId: options.guildId,
+		channelId: options.channelId,
+		channelName: options.channelName ?? null,
+		requestedBy: options.requestedBy ?? null,
+	};
+
+	let answer: Awaited<ReturnType<typeof postGameServerAdmin>>;
+	try {
+		answer = await postGameServerAdmin(LOBBY_CHAT_PATH, body, LOBBY_CHAT_MOVE_TIMEOUT_MS);
+	} catch (error) {
+		const name = error instanceof Error ? error.name : "";
+		if (name === "TimeoutError" || name === "AbortError") {
+			return {
+				outcome: "unknown",
+				reason: `The game server did not answer within ${LOBBY_CHAT_MOVE_TIMEOUT_MS / 1000} s.`,
+			};
+		}
+		const message = error instanceof Error ? error.message : String(error);
+		// The secret is checked before anything is sent, so this one is a plain failure.
+		if (/DISCORD_MAINTENANCE_API_SECRET/.test(message)) {
+			return { outcome: "failed", status: null, error: message, current: null };
+		}
+		return {
+			outcome: "unknown",
+			reason: `The request to the game server failed before an answer arrived: ${message}`,
+		};
+	}
+
+	const { status, payload, rawBody } = answer;
+	if (status === 200) {
+		if (!payload || typeof payload !== "object") {
+			return {
+				outcome: "unknown",
+				reason: "The game server answered 200, but its reply could not be read.",
+			};
+		}
+		return { outcome: "moved", state: parseLobbyChatState(payload) };
+	}
+
+	return {
+		outcome: "failed",
+		status,
+		error: failureText(status, payload, rawBody),
+		current: hasStateFields(payload) ? parseLobbyChatState(payload) : null,
+	};
 }

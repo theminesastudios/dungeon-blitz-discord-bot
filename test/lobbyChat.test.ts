@@ -9,15 +9,15 @@ import {
 import {
 	buildLobbyChatStateEmbed,
 	formatLinkedChannelTimestamp,
+	handleLobbyChat,
 } from "../src/commands/lobby-chat.js";
 
 /*
- * Two things are worth pinning here, because both fail silently from Discord's
- * side: the option has to be read the way an administrator actually types it
- * (a `#channel` mention, a pasted id, or `none`), and a channel id has to be
- * checked with Discord before the game is told to bridge lobby chat into it.
- * The game-server call itself is asserted so the setting really is pushed, not
- * just remembered by the bot.
+ * What is worth pinning here: the option has to be read the way an administrator
+ * actually types it (a `#channel` mention, a pasted id, or `none`); a channel
+ * Discord cannot link is refused before the game server is asked; and the reply
+ * only says lobby chat moved when the game server answered 200. A 409/502 names
+ * the channel lobby chat is still in, and a timeout claims neither outcome.
  */
 
 // The option: mentions, raw ids, the clearing words, and the empty read.
@@ -81,137 +81,276 @@ assert.equal(
 );
 assert.equal(formatLinkedChannelTimestamp(null), "Never");
 
+const GUILD_ID = "880000000000000001";
+const NEW_CHANNEL = "1551118889503432765";
+const OLD_CHANNEL = "1440000000000000009";
+
 const originalFetch = globalThis.fetch;
+const originalTimeout = AbortSignal.timeout;
 const originalBaseUrl = process.env.GAME_SERVER_BASE_URL;
 const originalSecret = process.env.DISCORD_MAINTENANCE_API_SECRET;
 const originalBotToken = process.env.DISCORD_BOT_TOKEN;
+
+type Embed = {
+	title?: string;
+	description?: string;
+	fields?: { name: string; value: string }[];
+	footer?: { text: string };
+};
+
+type GameAnswer = { status: number; body?: unknown } | "timeout";
+
+/**
+ * Runs the real handler with a fake interaction. Discord's channel read answers
+ * with `channel`; the game server answers with `game`. Every request is recorded
+ * in order, alongside the defer, so the test can see what reached which service.
+ */
+async function runLobbyChat(
+	option: string | null,
+	channel: Record<string, unknown> | null,
+	game: GameAnswer,
+) {
+	const events: string[] = [];
+	const gameRequests: { authorization: string; body: string }[] = [];
+	const timeouts: number[] = [];
+	let edited: { embeds?: Embed[] } | null = null;
+
+	AbortSignal.timeout = (ms: number) => {
+		timeouts.push(ms);
+		return originalTimeout.call(AbortSignal, ms);
+	};
+	globalThis.fetch = async (input, init) => {
+		const url = String(input);
+		if (url.startsWith("https://discord.com/api/v10/channels/")) {
+			events.push("discord:channel");
+			return new Response(JSON.stringify(channel), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		}
+		assert.equal(url, "https://game.example.com/api/admin/lobby-chat");
+		events.push(`game:${init?.method ?? "GET"}`);
+		gameRequests.push({
+			authorization: String((init?.headers as Record<string, string>)?.Authorization ?? ""),
+			body: String(init?.body ?? ""),
+		});
+		if (game === "timeout") {
+			throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+		}
+		return new Response(game.body === undefined ? "" : JSON.stringify(game.body), {
+			status: game.status,
+			headers: { "content-type": "application/json" },
+		});
+	};
+
+	const interaction = {
+		guild_id: GUILD_ID,
+		member: { permissions: "8", nick: null, user: { id: "1", username: "admin" } },
+		options: { getString: () => option },
+		reply: async () => {
+			events.push("reply");
+		},
+		deferReply: async (payload: { flags?: number }) => {
+			assert.equal(payload.flags, 64, "the deferred reply is ephemeral");
+			events.push("defer");
+		},
+		editReply: async (payload: { embeds?: Embed[] }) => {
+			edited = payload;
+		},
+	};
+	try {
+		await handleLobbyChat(interaction as never);
+	} finally {
+		AbortSignal.timeout = originalTimeout;
+	}
+	const embed = (edited as { embeds?: Embed[] } | null)?.embeds?.[0] ?? {};
+	const text = [
+		embed.title,
+		embed.description,
+		...(embed.fields ?? []).flatMap((field) => [field.name, field.value]),
+	].join("\n");
+	return { events, gameRequests, timeouts, embed, text };
+}
+
+const textChannel = { id: NEW_CHANNEL, name: "lobby-chat", type: 0, guild_id: GUILD_ID };
 
 try {
 	process.env.GAME_SERVER_BASE_URL = "https://game.example.com/";
 	process.env.DISCORD_MAINTENANCE_API_SECRET = "test-secret";
 	process.env.DISCORD_BOT_TOKEN = "bot-token";
 
-	let gameUrl = "";
-	let gameAuthorization = "";
-	let gameBody = "";
-	globalThis.fetch = async (input, init) => {
-		gameUrl = String(input);
-		gameAuthorization = String((init?.headers as Record<string, string>)?.Authorization ?? "");
-		gameBody = String(init?.body ?? "");
-		return new Response(
-			JSON.stringify({
-				ok: true,
-				guildId: "880000000000000001",
-				channelId: JSON.parse(gameBody || "{}").channelId ?? null,
-				channelName: "lobby-chat",
-				updatedAt: "2026-09-30T10:00:00.000Z",
+	// 200: the server linked the lobby. The reply shows the channel the server
+	// returned, and the request is the same shape as before, with a string id.
+	{
+		const run = await runLobbyChat(`<#${NEW_CHANNEL}>`, textChannel, {
+			status: 200,
+			body: {
+				guildId: GUILD_ID,
+				channelId: NEW_CHANNEL,
+				channelName: "lobby-chat-from-server",
+				updatedAt: "2026-10-08T10:00:00.000Z",
 				updatedBy: "admin (<@1>)",
-			}),
-			{ status: 200, headers: { "content-type": "application/json" } },
+			},
+		});
+		assert.deepEqual(run.events, ["defer", "discord:channel", "game:POST"]);
+		assert.equal(run.gameRequests.length, 1);
+		assert.equal(run.gameRequests[0].authorization, "Bearer test-secret");
+		const body = JSON.parse(run.gameRequests[0].body);
+		assert.deepEqual(body, {
+			guildId: GUILD_ID,
+			channelId: NEW_CHANNEL,
+			channelName: "lobby-chat",
+			requestedBy: "<@1>",
+		});
+		assert.equal(typeof body.channelId, "string");
+		assert.ok(
+			run.timeouts.some((ms) => ms >= 20_000),
+			`the POST waits at least 20 s (timeouts: ${run.timeouts.join(", ")})`,
 		);
-	};
+		assert.match(run.embed.title ?? "", /moved/);
+		assert.equal(
+			run.embed.description,
+			`Lobby linked to <#${NEW_CHANNEL}>. Players now speak there as themselves through the game.`,
+		);
+		assert.match(run.text, /lobby-chat-from-server/);
+	}
 
-	const set = await setGameLobbyChat({
-		guildId: "880000000000000001",
-		channelId: "1551118889503432765",
-		channelName: "lobby-chat",
-		requestedBy: "admin (<@1>)",
-	});
-	assert.equal(gameUrl, "https://game.example.com/api/admin/lobby-chat");
-	assert.equal(gameAuthorization, "Bearer test-secret");
-	assert.deepEqual(JSON.parse(gameBody), {
-		guildId: "880000000000000001",
-		channelId: "1551118889503432765",
-		channelName: "lobby-chat",
-		requestedBy: "admin (<@1>)",
-	});
-	assert.equal(set.channelId, "1551118889503432765");
+	// `none` sends channelId: null and reports the server's answer as the move.
+	{
+		const run = await runLobbyChat("none", null, {
+			status: 200,
+			body: { guildId: GUILD_ID, channelId: OLD_CHANNEL, channelName: "general" },
+		});
+		assert.deepEqual(run.events, ["defer", "game:POST"]);
+		assert.equal(JSON.parse(run.gameRequests[0].body).channelId, null);
+		assert.match(run.text, new RegExp(`Lobby linked to <#${OLD_CHANNEL}>`));
+	}
 
-	const read = await fetchGameLobbyChat();
-	assert.equal(gameUrl, "https://game.example.com/api/admin/lobby-chat");
-	assert.equal(read.channelName, "lobby-chat");
+	// 409: nothing moved. The server's error is shown as sent, the old channel is
+	// named, the setup hint is given, and the request is not retried.
+	{
+		const error = "No Discord lobby is set up on the server (no saved CanLinkLobby sign-in).";
+		const run = await runLobbyChat(NEW_CHANNEL, textChannel, {
+			status: 409,
+			body: { guildId: GUILD_ID, channelId: OLD_CHANNEL, channelName: "general", error },
+		});
+		assert.equal(run.gameRequests.length, 1);
+		assert.match(run.embed.title ?? "", /not moved/);
+		assert.ok(run.text.includes(error), "the server's error text is shown verbatim");
+		const stillIn = run.embed.fields?.find((field) => /still in/.test(field.name));
+		assert.match(stillIn?.value ?? "", new RegExp(`<#${OLD_CHANNEL}>`));
+		assert.ok(
+			run.text.includes(
+				"A server admin must run `node --env-file=.env tools/linkedDiscordLobby.js link --lobby <lobbyId>` on the game server once.",
+			),
+		);
+		assert.doesNotMatch(run.text, /Lobby linked to/);
+		assert.doesNotMatch(run.text, new RegExp(`<#${NEW_CHANNEL}>`));
+	}
 
-	const cleared = await setGameLobbyChat({ guildId: null, channelId: null });
-	assert.deepEqual(JSON.parse(gameBody), {
-		guildId: null,
-		channelId: null,
-		channelName: null,
-		requestedBy: null,
-	});
-	// Whatever the game server stores is what the panel then shows.
-	assert.equal(cleared.channelId, null);
-	assert.equal(cleared.channelName, "lobby-chat");
+	// 502: Discord refused the link; the error and the Discord hint are shown.
+	{
+		const error = "Discord refused to link the lobby: 403 Missing Permissions";
+		const run = await runLobbyChat(NEW_CHANNEL, textChannel, {
+			status: 502,
+			body: { guildId: GUILD_ID, channelId: OLD_CHANNEL, channelName: "general", error },
+		});
+		assert.equal(run.gameRequests.length, 1);
+		assert.match(run.embed.title ?? "", /not moved/);
+		assert.ok(run.text.includes(error));
+		assert.match(run.text, new RegExp(`<#${OLD_CHANNEL}>`));
+		assert.match(run.text, /Discord refused the link\. Check that the channel is a normal/);
+		assert.match(run.text, /View Channel, Send Messages and Manage Channels/);
+		assert.doesNotMatch(run.text, /Lobby linked to/);
+	}
 
-	// Discord is asked about the channel before the game is, and a text channel in the
-	// right guild is the only one that can be linked.
+	// A failure without state (429 here) still says it failed, and does not
+	// invent a channel: it points at the read instead.
+	{
+		const run = await runLobbyChat(NEW_CHANNEL, textChannel, {
+			status: 429,
+			body: { error: "Too many lobby-chat changes; try again later." },
+		});
+		assert.match(run.embed.title ?? "", /not moved/);
+		assert.ok(run.text.includes("Too many lobby-chat changes; try again later."));
+		assert.match(run.text, /Unchanged/);
+		assert.doesNotMatch(run.text, /Lobby linked to|linkedDiscordLobby/);
+	}
+
+	// Timeout: the outcome is unknown, and the reply says so without claiming either.
+	{
+		const run = await runLobbyChat(NEW_CHANNEL, textChannel, "timeout");
+		assert.equal(run.gameRequests.length, 1);
+		assert.match(run.embed.title ?? "", /unknown/);
+		assert.match(run.text, /`\/admin lobby-chat` with no channel/);
+		assert.doesNotMatch(run.text, /Lobby linked to|not moved/);
+	}
+
+	// Discord cannot link these, so the game server is never asked.
+	for (const [label, channel, reason] of [
+		["announcement", { ...textChannel, type: 5 }, /not a text channel/],
+		["voice", { ...textChannel, type: 2 }, /not a text channel/],
+		["age-restricted", { ...textChannel, nsfw: true }, /age-restricted/],
+	] as const) {
+		const run = await runLobbyChat(NEW_CHANNEL, channel, { status: 200, body: {} });
+		assert.deepEqual(run.events, ["defer", "discord:channel"], `${label} channel never reaches the game server`);
+		assert.match(run.embed.title ?? "", /not moved/);
+		assert.match(run.text, reason);
+	}
+
+	// The channel check on its own: a text channel in the right guild passes.
 	let discordRequest = "";
 	globalThis.fetch = async (input, init) => {
 		discordRequest = String(input);
 		assert.equal((init?.headers as Record<string, string>).Authorization, "Bot bot-token");
-		return new Response(
-			JSON.stringify({
-				id: "1551118889503432765",
-				name: "lobby-chat",
-				type: 0,
-				guild_id: "880000000000000001",
-			}),
-			{ status: 200, headers: { "content-type": "application/json" } },
-		);
+		return new Response(JSON.stringify(textChannel), {
+			status: 200,
+			headers: { "content-type": "application/json" },
+		});
 	};
-	const checked = await checkLobbyChatChannel("1551118889503432765", {
-		guildId: "880000000000000001",
-	});
-	assert.equal(discordRequest, "https://discord.com/api/v10/channels/1551118889503432765");
+	const checked = await checkLobbyChatChannel(NEW_CHANNEL, { guildId: GUILD_ID });
+	assert.equal(discordRequest, `https://discord.com/api/v10/channels/${NEW_CHANNEL}`);
 	assert.deepEqual(checked, {
 		ok: true,
-		channelId: "1551118889503432765",
+		channelId: NEW_CHANNEL,
 		channelName: "lobby-chat",
-		guildId: "880000000000000001",
+		guildId: GUILD_ID,
+		restrictedInDiscord: false,
 	});
 
-	// A channel in another server is refused: the game is linked to one guild's lobby chat.
-	const wrongGuild = await checkLobbyChatChannel("1551118889503432765", {
-		guildId: "990000000000000002",
-	});
+	// A channel in another server is refused: the lobby is linked in one guild.
+	const wrongGuild = await checkLobbyChatChannel(NEW_CHANNEL, { guildId: "990000000000000002" });
 	assert.equal(wrongGuild.ok, false);
 	assert.match(wrongGuild.ok ? "" : wrongGuild.reason, /different server/);
 
-	// A voice channel cannot carry lobby chat.
-	globalThis.fetch = async () =>
-		new Response(
-			JSON.stringify({ id: "1551118889503432765", name: "Lounge", type: 2, guild_id: "880000000000000001" }),
-			{ status: 200, headers: { "content-type": "application/json" } },
-		);
-	const voice = await checkLobbyChatChannel("1551118889503432765", {
-		guildId: "880000000000000001",
-	});
-	assert.equal(voice.ok, false);
-	assert.match(voice.ok ? "" : voice.reason, /not a text channel/);
-
 	// A channel the bot cannot see answers 404, which is reported as such rather than as a typo.
 	globalThis.fetch = async () => new Response("{}", { status: 404 });
-	const hidden = await checkLobbyChatChannel("1551118889503432765", {
-		guildId: "880000000000000001",
-	});
+	const hidden = await checkLobbyChatChannel(NEW_CHANNEL, { guildId: GUILD_ID });
 	assert.equal(hidden.ok, false);
 	assert.match(hidden.ok ? "" : hidden.reason, /did not return that channel/);
 
-	// A game server that refuses the change is surfaced with its own wording.
-	globalThis.fetch = async () =>
-		new Response(JSON.stringify({ error: "unknown route" }), {
-			status: 404,
+	// The read is unchanged: GET, same secret, same state document.
+	let readUrl = "";
+	globalThis.fetch = async (input) => {
+		readUrl = String(input);
+		return new Response(JSON.stringify({ channelId: OLD_CHANNEL, channelName: "general" }), {
+			status: 200,
 			headers: { "content-type": "application/json" },
 		});
-	let refusal = "";
-	try {
-		await setGameLobbyChat({ guildId: null, channelId: "1551118889503432765" });
-	} catch (error) {
-		refusal = error instanceof Error ? error.message : String(error);
-	}
-	assert.match(refusal, /Game server rejected the linked lobby chat channel \(404\)/);
-	assert.match(refusal, /unknown route/);
+	};
+	const read = await fetchGameLobbyChat();
+	assert.equal(readUrl, "https://game.example.com/api/admin/lobby-chat");
+	assert.equal(read.channelId, OLD_CHANNEL);
+
+	// A route the game server does not have is a failure, never a move.
+	globalThis.fetch = async () =>
+		new Response("<html>Cannot POST</html>", { status: 404, headers: { "content-type": "text/html" } });
+	const missing = await setGameLobbyChat({ guildId: null, channelId: NEW_CHANNEL });
+	assert.equal(missing.outcome, "failed");
+	assert.match(missing.outcome === "failed" ? missing.error : "", /no POST \/api\/admin\/lobby-chat route/);
 } finally {
 	globalThis.fetch = originalFetch;
+	AbortSignal.timeout = originalTimeout;
 	if (originalBaseUrl === undefined) delete process.env.GAME_SERVER_BASE_URL;
 	else process.env.GAME_SERVER_BASE_URL = originalBaseUrl;
 	if (originalSecret === undefined) delete process.env.DISCORD_MAINTENANCE_API_SECRET;
