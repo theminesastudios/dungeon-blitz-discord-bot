@@ -27,6 +27,8 @@ import {
   interactionDiscordId,
 } from "../utils/discordInteractions.js";
 import { findGameUserIdForDiscord } from "../utils/gameRewards.js";
+import { listSaveCharacters } from "../utils/gameWallet.js";
+import { formatCharacterPlaytimeLines, formatPlaytime } from "../utils/playtime.js";
 import {
   BAN_DURATION_CHOICES,
   banDurationSeconds,
@@ -454,6 +456,7 @@ export const accountCommand = {
             "No Dungeon Blitz account is linked to your Discord account. Create one with `/account create`.",
         });
       }
+      const characters = await listSaveCharacters(account.userId);
       return interaction.editReply({
         embeds: [
           {
@@ -475,6 +478,11 @@ export const accountCommand = {
                   account.connections.length > 0
                     ? account.connections.join(", ")
                     : "None authorized yet — see `/authorize`",
+              },
+              { name: "Total playtime", value: formatPlaytime(account.playtimeMs) },
+              {
+                name: "Characters",
+                value: formatCharacterPlaytimeLines(characters, account.characterPlaytimeMs),
               },
             ],
           },
