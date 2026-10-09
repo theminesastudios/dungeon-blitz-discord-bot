@@ -2,14 +2,14 @@ import { formatDuration } from "./logger.js";
 
 /**
  * A character's key in the account's `gameStats.characterPlaytimeMs`, as the game server writes
- * it (`characterPlaytimeKey` in src/server/database/Database.ts): the lowercased name, with '%',
+ * it (`characterPlaytimeKey` in src/server/database/Database.ts): the lowercased name, with '%', '_',
  * '.' and '$' escaped as %XX so it is a safe Mongo field name.
  */
 export function characterPlaytimeKey(name: unknown): string {
 	return String(name ?? "")
 		.trim()
 		.toLowerCase()
-		.replace(/[%.$]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
+		.replace(/[%.$_]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
 /** Playtime for a Discord field: "3d 4h", "2h 15m", "12m 5s", or "—" when none is recorded. */

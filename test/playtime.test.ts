@@ -8,6 +8,7 @@ import {
 // The same key the game server writes (characterPlaytimeKey in its Database.ts).
 assert.equal(characterPlaytimeKey(" Tela.Hair$ "), "tela%2Ehair%24");
 assert.equal(characterPlaytimeKey("100%"), "100%25");
+assert.equal(characterPlaytimeKey("__proto__"), "%5F%5Fproto%5F%5F");
 
 assert.equal(formatPlaytime(undefined), "—");
 assert.equal(formatPlaytime(0), "—");
