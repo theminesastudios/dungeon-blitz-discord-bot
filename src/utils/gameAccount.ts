@@ -25,6 +25,10 @@ type AccountDocument = Document & {
 	passwordParams?: typeof PASSWORD_PARAMS;
 	/** Connection ids from `/authorize`, keyed by id. */
 	discordConnections?: Record<string, DiscordConnectionGrant>;
+	/** Discord DMs the player wants; the game server reads this before sending one. */
+	discordNotifications?: {
+		homeUpgrades?: boolean;
+	};
 	gameStats?: {
 		state?: string;
 		error?: string | null;
@@ -250,6 +254,40 @@ export async function getGameAccountByDiscordId(
 	const { accounts } = await getCollections();
 	const account = await accounts.findOne({ discordId });
 	return account ? publicAccount(account) : null;
+}
+
+/**
+ * Whether the player gets a DM when a charm, pet, skill or building upgrade finishes in game.
+ * `null` when no game account is linked. A missing flag is on, because the game server DMed
+ * every linked player before this setting existed.
+ */
+export async function getHomeUpgradeNotices(discordIdInput: string): Promise<boolean | null> {
+	const discordId = String(discordIdInput ?? "").trim();
+	if (!discordId) return null;
+	await ensureIndexes();
+	const { accounts } = await getCollections();
+	const account = await accounts.findOne(
+		{ discordId },
+		{ projection: { discordNotifications: 1 } }
+	);
+	if (!account) return null;
+	return account.discordNotifications?.homeUpgrades !== false;
+}
+
+/** Stores the upgrade-DM setting; false when no game account is linked to this Discord id. */
+export async function setHomeUpgradeNotices(
+	discordIdInput: string,
+	enabled: boolean
+): Promise<boolean> {
+	const discordId = String(discordIdInput ?? "").trim();
+	if (!discordId) return false;
+	await ensureIndexes();
+	const { accounts } = await getCollections();
+	const result = await accounts.updateOne(
+		{ discordId },
+		{ $set: { "discordNotifications.homeUpgrades": enabled, updatedAt: new Date() } }
+	);
+	return result.matchedCount > 0;
 }
 
 /**
