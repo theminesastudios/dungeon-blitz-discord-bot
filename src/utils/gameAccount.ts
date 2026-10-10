@@ -26,6 +26,10 @@ type AccountDocument = Document & {
 	/** Connection ids from `/authorize`, keyed by id. */
 	discordConnections?: Record<string, DiscordConnectionGrant>;
 	gameStats?: {
+		/** Lifetime playtime, written by the game server. */
+		playtimeMs?: number;
+		/** Playtime per character, keyed by `characterPlaytimeKey` (#443). */
+		characterPlaytimeMs?: Record<string, number>;
 		state?: string;
 		error?: string | null;
 		syncedAt?: Date;
@@ -63,6 +67,10 @@ export type PublicGameAccount = {
 	connections: string[];
 	/** Last recorded Game Stats Widget sync state, `null` until one has run. */
 	widgetState: string | null;
+	/** Lifetime playtime the game server recorded, `null` until it has recorded any. */
+	playtimeMs: number | null;
+	/** Playtime per character, keyed by `characterPlaytimeKey`. Empty before #443 shipped. */
+	characterPlaytimeMs: Record<string, number>;
 };
 
 export type CreateGameAccountResult = {
@@ -218,6 +226,10 @@ function publicAccount(account: AccountDocument): PublicGameAccount {
 		passwordConfigured: typeof account.passwordHash === "string" && account.passwordHash.length > 0,
 		connections: Object.keys(account.discordConnections ?? {}).sort(),
 		widgetState: typeof account.gameStats?.state === "string" ? account.gameStats.state : null,
+		playtimeMs: Number.isFinite(Number(account.gameStats?.playtimeMs))
+			? Number(account.gameStats?.playtimeMs)
+			: null,
+		characterPlaytimeMs: { ...(account.gameStats?.characterPlaytimeMs ?? {}) },
 	};
 }
 
