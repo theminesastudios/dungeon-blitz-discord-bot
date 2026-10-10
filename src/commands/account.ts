@@ -1,106 +1,328 @@
 import {
-  ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
   CommandBuilder,
   CommandContext,
+  ContainerBuilder,
   IntegrationType,
   LabelBuilder,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
 } from "@minesa-org/mini-interaction";
-import type { APIButtonComponent } from "discord-api-types/v10";
-import type { MessageComponentInteraction } from "@minesa-org/mini-interaction";
-import type { CommandInteraction } from "@minesa-org/mini-interaction";
-import type { ModalSubmitInteraction } from "@minesa-org/mini-interaction";
-import { waitUntil } from "@vercel/functions";
+import type {
+  CommandInteraction,
+  MessageComponentInteraction,
+  ModalSubmitInteraction,
+} from "@minesa-org/mini-interaction";
 import {
   getGameAccountByDiscordId,
   getHomeUpgradeNotices,
   GameAccountConflictError,
   setHomeUpgradeNotices,
   updateGameAccountPassword,
+  type PublicGameAccount,
 } from "../utils/gameAccount.js";
 import { createAccountOAuthUrl } from "../utils/accountOAuth.js";
+import { interactionDiscordId } from "../utils/discordInteractions.js";
 import {
-  canManageGuild,
-  interactionActorLabel,
-  interactionDiscordId,
-} from "../utils/discordInteractions.js";
-import { findGameUserIdForDiscord } from "../utils/gameRewards.js";
-import { listSaveCharacters } from "../utils/gameWallet.js";
-import { formatCharacterPlaytimeLines, formatPlaytime } from "../utils/playtime.js";
+  buildPortraitUrl,
+  listSaveCharacters,
+  type GameWalletSummary,
+} from "../utils/gameWallet.js";
+import { characterPlaytimeKey, formatPlaytime } from "../utils/playtime.js";
 import {
-  BAN_DURATION_CHOICES,
-  banDurationSeconds,
-  banGamePlayer,
-  formatBanDuration,
-  unbanGamePlayer,
-  type BanDurationChoice,
-} from "../utils/gameModeration.js";
-import { publishGameLog, type GameLogField } from "../utils/gameLogChannel.js";
+  characterSubtitle,
+  currentQuest,
+  formatQuest,
+} from "../utils/characterDisplay.js";
+import {
+  deleteGameCharacter,
+  renameGameCharacter,
+  RENAME_COST_IDOLS,
+  validateCharacterName,
+} from "../utils/gameCharacterAdmin.js";
+import {
+  COLORS,
+  buttonRow,
+  divider,
+  errorNotice,
+  formatNumber,
+  notice,
+  section,
+  text,
+  thumbnail,
+  v2,
+  v2Update,
+} from "../ui/containers.js";
+import { classEmoji, componentEmoji, emoji } from "../ui/emojis.js";
 
-export const INITIAL_PASSWORD_BUTTON_ID = "account:set-initial-password";
-export const INITIAL_PASSWORD_MODAL_ID = "account:initial-password-modal";
-export const RESET_PASSWORD_MODAL_ID = "account:reset-password-modal";
-export const NOTIFICATIONS_TOGGLE_ID = "account:notifications:toggle";
+/*
+ * `/account view` is the player's one-stop panel: their current character up top, every
+ * character with a View button, and the account settings (password, upgrade DMs) as buttons.
+ * Every follow-up happens on that ephemeral message, so the player never needs another
+ * command. Rename and Delete each ask "are you sure?" in a separate ephemeral message, and
+ * every action re-reads the account when it runs — a stale panel can never act on a character
+ * that was already renamed, deleted, or moved off the account.
+ */
+
+const ID = {
+  home: "account:home",
+  view: "account:view:",
+  rename: "account:rename:",
+  renameModal: "account:rename-modal:",
+  renameConfirm: "account:rename-yes:",
+  delete: "account:delete:",
+  deleteConfirm: "account:delete-yes:",
+  dismiss: "account:dismiss",
+  password: "account:password:",
+  notifications: "account:notifications",
+} as const;
+export const ACCOUNT_IDS = ID;
+
+const INITIAL_PASSWORD_MODAL_ID = "account:initial-password-modal";
+const RESET_PASSWORD_MODAL_ID = "account:reset-password-modal";
 const PASSWORD_INPUT_ID = "account:password";
 const PASSWORD_CONFIRM_INPUT_ID = "account:password-confirm";
+const NEW_NAME_INPUT_ID = "account:new-name";
 
-const ACCOUNT_COLOR = 0x5865f2;
-const BAN_COLOR = 0xe74c3c;
-const UNBAN_COLOR = 0x2ecc71;
-const NOTICES_OFF_COLOR = 0x99aab5;
+/** Discord allows 40 components per message; the roster stops well before that. */
+const MAX_LISTED_CHARACTERS = 10;
 
 const NO_ACCOUNT_TEXT =
-  "No Dungeon Blitz account is linked to your Discord account. Create one with `/account create`.";
+  "No Dungeon Blitz account is linked to your Discord account yet. Create one with `/account create`.";
+const UNVERIFIED_TEXT = "Your Discord account could not be verified.";
 
-/** The `/account notifications` panel: the current setting and one button that flips it. */
-export function buildNotificationsPanel(enabled: boolean) {
-  const row = new ActionRowBuilder<APIButtonComponent>().addComponents(
-    new ButtonBuilder()
-      .setStyle(enabled ? ButtonStyle.Secondary : ButtonStyle.Success)
-      .setLabel(enabled ? "Turn off" : "Turn on")
-      .setCustomId(NOTIFICATIONS_TOGGLE_ID),
-  );
-  return {
-    embeds: [
-      {
-        color: enabled ? UNBAN_COLOR : NOTICES_OFF_COLOR,
-        title: "Upgrade notifications",
-        description: [
-          "The bot sends you a DM when a charm, pet, skill or building upgrade finishes in Dungeon Blitz.",
-          "",
-          `Status: **${enabled ? "On" : "Off"}**`,
-        ].join("\n"),
-        footer: {
-          text: "DMs only arrive if your Discord privacy settings allow messages from this server's members.",
-        },
-      },
-    ],
-    components: [row],
-  };
+/** Character names travel in custom ids; encoding keeps a stray `:` from splitting them. */
+function encodeName(name: string): string {
+  return encodeURIComponent(name);
 }
 
-async function handleNotifications(
-  interaction: CommandInteraction,
-  discordId: string,
-) {
-  interaction.deferReply({ flags: 64 });
+function decodeName(value: string): string {
   try {
-    const enabled = await getHomeUpgradeNotices(discordId);
-    if (enabled === null) {
-      return interaction.editReply({ content: NO_ACCOUNT_TEXT });
-    }
-    return interaction.editReply(buildNotificationsPanel(enabled));
-  } catch (error) {
-    console.error("[account] Notification settings lookup failed:", error);
-    return interaction.editReply({
-      content:
-        "Your notification settings could not be loaded right now. Please try again later.",
-    });
+    return decodeURIComponent(value);
+  } catch {
+    return value;
   }
+}
+
+/** The `<name>` (or `<old>:<new>`) tail of a custom id after its prefix. */
+export function customIdNames(customId: string, prefix: string): string[] {
+  return customId.slice(prefix.length).split(":").map(decodeName).filter(Boolean);
+}
+
+type AccountState = {
+  account: PublicGameAccount;
+  characters: GameWalletSummary[];
+  notices: boolean;
+};
+
+async function loadAccountState(discordId: string): Promise<AccountState | null> {
+  const account = await getGameAccountByDiscordId(discordId);
+  if (!account) return null;
+  const [characters, notices] = await Promise.all([
+    listSaveCharacters(account.userId),
+    getHomeUpgradeNotices(discordId),
+  ]);
+  return { account, characters, notices: notices !== false };
+}
+
+/** The character played most recently; highest level when the save never recorded play. */
+export function pickCurrentCharacter(characters: GameWalletSummary[]): GameWalletSummary | null {
+  let current: GameWalletSummary | null = null;
+  for (const character of characters) {
+    if (
+      !current ||
+      character.lastPlayedMs > current.lastPlayedMs ||
+      (character.lastPlayedMs === current.lastPlayedMs &&
+        character.characterLevel > current.characterLevel)
+    ) {
+      current = character;
+    }
+  }
+  return current;
+}
+
+function findCharacter(state: AccountState, name: string): GameWalletSummary | null {
+  const wanted = name.trim().toLowerCase();
+  return state.characters.find((c) => c.characterName.toLowerCase() === wanted) ?? null;
+}
+
+/** Idols are account-wide, so any character's balance is the account's. */
+function accountIdols(characters: GameWalletSummary[]): number {
+  return characters.reduce((max, c) => Math.max(max, c.mammothIdols), 0);
+}
+
+function characterPlaytime(state: AccountState, character: GameWalletSummary): string {
+  return formatPlaytime(state.account.characterPlaytimeMs[characterPlaytimeKey(character.characterName)]);
+}
+
+/* ------------------------------------------------------------------ panels */
+
+export function buildDashboard(state: AccountState, displayName: string): ContainerBuilder {
+  const { account, characters } = state;
+  const current = pickCurrentCharacter(characters);
+  const container = new ContainerBuilder()
+    .setAccentColor(COLORS.brand)
+    .addComponent(text(`## ${emoji("ui_character")} ${displayName}`))
+    .addComponent(
+      text(
+        `-# Game user ${account.userId} · ${emoji("cur_idol")} ${formatNumber(accountIdols(characters))} Mammoth Idols · Playtime ${formatPlaytime(account.playtimeMs)}`,
+      ),
+    )
+    .addComponent(divider());
+
+  if (current) {
+    const heading = `**Current character**\n### ${classEmoji(current.characterClass)} ${current.characterName}\n${characterSubtitle(current)}`;
+    const portrait = buildPortraitUrl(current);
+    container.addComponent(
+      portrait
+        ? section(heading, thumbnail(portrait, current.characterName))
+        : text(heading),
+    );
+  } else {
+    container.addComponent(
+      text("**No characters yet**\n-# Sign in to Dungeon Blitz and create your first hero."),
+    );
+  }
+
+  if (characters.length > 0) {
+    container.addComponent(divider()).addComponent(text(`**Characters** · ${characters.length}`));
+    for (const character of characters.slice(0, MAX_LISTED_CHARACTERS)) {
+      container.addComponent(
+        section(
+          `${classEmoji(character.characterClass)} **${character.characterName}**\n${characterSubtitle(character)}`,
+          new ButtonBuilder()
+            .setStyle(ButtonStyle.Secondary)
+            .setLabel("View")
+            .setCustomId(`${ID.view}${encodeName(character.characterName)}`),
+        ),
+      );
+    }
+    if (characters.length > MAX_LISTED_CHARACTERS) {
+      container.addComponent(
+        text(`-# …and ${characters.length - MAX_LISTED_CHARACTERS} more`),
+      );
+    }
+  }
+
+  container.addComponent(divider()).addComponent(
+    buttonRow(
+      new ButtonBuilder()
+        .setStyle(ButtonStyle.Secondary)
+        .setLabel(account.passwordConfigured ? "Reset password" : "Set password")
+        .setCustomId(`${ID.password}${account.passwordConfigured ? "reset" : "initial"}`),
+      new ButtonBuilder()
+        .setStyle(state.notices ? ButtonStyle.Success : ButtonStyle.Secondary)
+        .setLabel(state.notices ? "Upgrade DMs: On" : "Upgrade DMs: Off")
+        .setCustomId(ID.notifications),
+    ),
+  );
+  if (!account.passwordConfigured) {
+    container.addComponent(
+      text("-# Set a password to sign in to the game with your Discord email."),
+    );
+  }
+  return container;
+}
+
+export function buildCharacterDetail(state: AccountState, character: GameWalletSummary): ContainerBuilder {
+  const heading = `## ${classEmoji(character.characterClass)} ${character.characterName}\n${characterSubtitle(character)}`;
+  const portrait = buildPortraitUrl(character);
+  const balances = [
+    `${emoji("cur_gold")} Gold **${formatNumber(character.gold)}** · ${emoji("cur_idol")} Mammoth Idols **${formatNumber(character.mammothIdols)}**`,
+    `${emoji("cur_dragon_key")} Dragon Keys **${formatNumber(character.dragonKeys)}** · ${emoji("cur_dragon_ore")} Dragon Ore **${formatNumber(character.dragonOre)}**`,
+    `${emoji("cur_silver_sigil")} Silver Sigils **${formatNumber(character.silverSigils)}** · ${emoji("cur_royal_sigil")} Royal Sigils **${formatNumber(character.royalSigils)}**`,
+  ];
+  return new ContainerBuilder()
+    .setAccentColor(COLORS.brand)
+    .addComponent(portrait ? section(heading, thumbnail(portrait, character.characterName)) : text(heading))
+    .addComponent(divider())
+    .addComponent(text(balances.join("\n")))
+    .addComponent(
+      text(
+        `${emoji("ui_quest")} ${formatQuest(currentQuest(character.missions))}\n-# Playtime ${characterPlaytime(state, character)}`,
+      ),
+    )
+    .addComponent(divider())
+    .addComponent(
+      buttonRow(
+        new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel("Back").setCustomId(ID.home),
+        new ButtonBuilder()
+          .setStyle(ButtonStyle.Primary)
+          .setLabel(`Rename · ${RENAME_COST_IDOLS} idols`)
+          .setEmoji(componentEmoji("ui_rename"))
+          .setCustomId(`${ID.rename}${encodeName(character.characterName)}`),
+        new ButtonBuilder()
+          .setStyle(ButtonStyle.Danger)
+          .setLabel("Delete")
+          .setEmoji(componentEmoji("ui_delete"))
+          .setCustomId(`${ID.delete}${encodeName(character.characterName)}`),
+      ),
+    );
+}
+
+function dismissButton(label = "Cancel") {
+  return new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel(label).setCustomId(ID.dismiss);
+}
+
+export function buildRenameConfirm(character: GameWalletSummary, newName: string, idols: number): ContainerBuilder {
+  const affordable = idols >= RENAME_COST_IDOLS;
+  return notice(
+    affordable ? COLORS.warning : COLORS.danger,
+    "Rename this character?",
+    [
+      `**${character.characterName}** → **${newName}**`,
+      `${emoji("cur_idol")} Costs **${RENAME_COST_IDOLS}** Mammoth Idols · you have **${formatNumber(idols)}**`,
+      "-# Log out of the game first — a character cannot be renamed while you are signed in.",
+    ],
+    [
+      buttonRow(
+        new ButtonBuilder()
+          .setStyle(ButtonStyle.Primary)
+          .setLabel(`Rename for ${RENAME_COST_IDOLS} idols`)
+          .setDisabled(!affordable)
+          .setCustomId(`${ID.renameConfirm}${encodeName(character.characterName)}:${encodeName(newName)}`),
+        dismissButton(),
+      ),
+    ],
+  );
+}
+
+export function buildDeleteConfirm(character: GameWalletSummary): ContainerBuilder {
+  return notice(
+    COLORS.danger,
+    "Delete this character?",
+    [
+      `${classEmoji(character.characterClass)} **${character.characterName}**`,
+      characterSubtitle(character),
+      "",
+      "This removes the character, its gear and its progress from your account. **It cannot be undone from Discord.**",
+      "-# Log out of the game first — a character cannot be deleted while you are signed in.",
+    ],
+    [
+      buttonRow(
+        new ButtonBuilder()
+          .setStyle(ButtonStyle.Danger)
+          .setLabel(`Delete ${character.characterName}`)
+          .setCustomId(`${ID.deleteConfirm}${encodeName(character.characterName)}`),
+        dismissButton("Keep it"),
+      ),
+    ],
+  );
+}
+
+/* ------------------------------------------------------------------ helpers */
+
+function interactionDisplayName(
+  interaction: CommandInteraction | MessageComponentInteraction | ModalSubmitInteraction,
+): string {
+  const raw = interaction as unknown as {
+    member?: { nick?: string | null; user?: { global_name?: string | null; username?: string } };
+    user?: { global_name?: string | null; username?: string };
+  };
+  const user = raw.member?.user ?? raw.user;
+  return raw.member?.nick || user?.global_name || user?.username || "Your account";
 }
 
 function passwordModal(customId: string, title: string) {
@@ -110,9 +332,7 @@ function passwordModal(customId: string, title: string) {
     .addComponents(
       new LabelBuilder()
         .setLabel("New password")
-        .setDescription(
-          "A 6-128 character password for signing in to Dungeon Blitz.",
-        )
+        .setDescription("A 6-128 character password for signing in to Dungeon Blitz.")
         .setComponent(
           new TextInputBuilder()
             .setCustomId(PASSWORD_INPUT_ID)
@@ -134,260 +354,66 @@ function passwordModal(customId: string, title: string) {
     );
 }
 
-async function handlePasswordModal(
-  interaction: ModalSubmitInteraction,
-  initialOnly: boolean,
-) {
-  const discordId = interactionDiscordId(interaction);
-  if (!discordId) {
-    return interaction.reply({
-      content: "Your Discord account could not be verified.",
-      flags: 64,
-    });
-  }
-  const password = interaction.getTextFieldValue(PASSWORD_INPUT_ID) ?? "";
-  const confirmation =
-    interaction.getTextFieldValue(PASSWORD_CONFIRM_INPUT_ID) ?? "";
-  if (password !== confirmation) {
-    return interaction.reply({
-      content: "The passwords do not match.",
-      flags: 64,
-    });
-  }
+function renameModal(character: string) {
+  return new ModalBuilder()
+    .setCustomId(`${ID.renameModal}${encodeName(character)}`)
+    .setTitle(`Rename ${character}`.slice(0, 45))
+    .addComponents(
+      new LabelBuilder()
+        .setLabel("New name")
+        .setDescription(`3-16 letters or digits. Costs ${RENAME_COST_IDOLS} Mammoth Idols.`)
+        .setComponent(
+          new TextInputBuilder()
+            .setCustomId(NEW_NAME_INPUT_ID)
+            .setStyle(TextInputStyle.Short)
+            .setMinLength(3)
+            .setMaxLength(16)
+            .setRequired(true),
+        ),
+    );
+}
 
+/* ------------------------------------------------------------------ command */
+
+async function handleCreate(interaction: CommandInteraction, discordId: string) {
+  const oauthUrl = await createAccountOAuthUrl(discordId);
+  return interaction.reply(
+    v2(
+      notice(
+        COLORS.brand,
+        "Create your Dungeon Blitz account",
+        [
+          "1. **Verify with Discord** — the account uses your verified Discord email address.",
+          "2. Come back here and **Set password**.",
+          "-# Already verified? Open `/account view` to see your characters.",
+        ],
+        [
+          buttonRow(
+            new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Verify with Discord").setURL(oauthUrl),
+            new ButtonBuilder()
+              .setStyle(ButtonStyle.Primary)
+              .setLabel("Set password")
+              .setCustomId(`${ID.password}initial`),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+async function handleView(interaction: CommandInteraction, discordId: string) {
   interaction.deferReply({ flags: 64 });
   try {
-    const result = await updateGameAccountPassword(discordId, password, {
-      initialOnly,
-    });
-    if (result.status === "not-found") {
-      return interaction.editReply({
-        content:
-          "Complete the Discord OAuth link from `/account create` first.",
-      });
+    const state = await loadAccountState(discordId);
+    if (!state) {
+      return interaction.editReply(v2(notice(COLORS.muted, "No account yet", NO_ACCOUNT_TEXT)));
     }
-    if (result.status === "already-configured") {
-      return interaction.editReply({
-        content:
-          "Your initial password is already set. Use `/account reset-password` to change it.",
-      });
-    }
-    return interaction.editReply({
-      content: initialOnly
-        ? `Your initial password has been set. You can sign in to the game with **${result.account.email}**.`
-        : `Your password has been reset. You can sign in to the game with **${result.account.email}**.`,
-    });
+    return interaction.editReply(v2(buildDashboard(state, interactionDisplayName(interaction))));
   } catch (error) {
-    if (error instanceof GameAccountConflictError) {
-      return interaction.editReply({ content: error.message });
-    }
-    console.error("[account] Password update failed:", error);
-    return interaction.editReply({
-      content:
-        "Your password could not be updated right now. Please try again later.",
-    });
-  }
-}
-
-/** Reports a moderation action to the operator log without holding up the reply. */
-function reportModeration(event: string, title: string, fields: GameLogField[]) {
-  const promise = publishGameLog({ event, title, fields });
-  try {
-    waitUntil(promise);
-  } catch {
-    void promise.catch(() => {});
-  }
-}
-
-async function resolveGameUser(discordId: string): Promise<number | null> {
-  try {
-    return await findGameUserIdForDiscord(discordId);
-  } catch (error) {
-    console.error("[account] Game account lookup failed:", error);
-    return null;
-  }
-}
-
-/**
- * `/account ban` and `/account unban` are the moderation half of the command. The bot
- * resolves the Discord member to their linked game user and asks the game server to
- * enforce or lift the ban — the game server is the only process that can refuse a login
- * and drop a live session.
- */
-async function handleBan(interaction: CommandInteraction) {
-  if (!canManageGuild(interaction)) {
-    return interaction.reply({
-      content:
-        "You need the **Manage Server** permission to ban a player from the game.",
-      flags: 64,
-    });
-  }
-
-  const target = interaction.options.getUser("target", true);
-  const durationChoice = interaction.options.getString(
-    "duration",
-    true,
-  ) as BanDurationChoice;
-  const reason = interaction.options.getString("reason", false)?.trim() || undefined;
-  const actorId = interactionDiscordId(interaction);
-  const targetId = String(target?.user?.id ?? "").trim();
-  if (!targetId) {
-    return interaction.reply({
-      content: "Pick a valid Discord member to ban.",
-      flags: 64,
-    });
-  }
-  if (actorId && targetId === actorId) {
-    return interaction.reply({
-      content: "You cannot ban yourself.",
-      flags: 64,
-    });
-  }
-
-  const durationSeconds = banDurationSeconds(durationChoice);
-  const durationLabel = formatBanDuration(durationSeconds);
-
-  interaction.deferReply({ flags: 64 });
-  try {
-    const userId = await resolveGameUser(targetId);
-    if (userId === null) {
-      return interaction.editReply({
-        content: `<@${targetId}> has no linked Dungeon Blitz account, so there is nothing to ban.`,
-      });
-    }
-
-    const result = await banGamePlayer({
-      userId,
-      durationSeconds,
-      reason,
-      bannedByDiscordId: actorId,
-    });
-
-    reportModeration("game-ban", `🔨 Game ban applied — ${durationLabel}`, [
-      { name: "Player", value: `<@${targetId}>`, inline: true },
-      { name: "Game user", value: String(result.userId), inline: true },
-      { name: "Duration", value: durationLabel, inline: true },
-      ...(reason ? [{ name: "Reason", value: reason }] : []),
-      { name: "By", value: interactionActorLabel(interaction) },
-      ...(result.sessionsClosed !== undefined
-        ? [
-            {
-              name: "Sessions closed",
-              value: String(result.sessionsClosed),
-              inline: true,
-            },
-          ]
-        : []),
-    ]);
-
-    const endsAt = result.expiresAt ? Date.parse(result.expiresAt) : NaN;
-    return interaction.editReply({
-      embeds: [
-        {
-          color: BAN_COLOR,
-          title: "🔨 Player banned from Dungeon Blitz",
-          description: `<@${targetId}> cannot sign in${
-            durationSeconds === null
-              ? " until the ban is lifted."
-              : ` until the ban expires.`
-          }`,
-          fields: [
-            { name: "Game user", value: String(result.userId), inline: true },
-            { name: "Duration", value: durationLabel, inline: true },
-            ...(Number.isFinite(endsAt)
-              ? [
-                  {
-                    name: "Expires",
-                    value: `<t:${Math.floor(endsAt / 1000)}:R>`,
-                    inline: true,
-                  },
-                ]
-              : []),
-            ...(reason ? [{ name: "Reason", value: reason }] : []),
-          ],
-          footer: { text: `Banned by ${interactionActorLabel(interaction)}` },
-        },
-      ],
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error("[account] Ban failed:", error);
-    reportModeration("game-ban-error", "⚠️ Game ban failed", [
-      { name: "Player", value: `<@${targetId}>`, inline: true },
-      { name: "Duration", value: durationLabel, inline: true },
-      { name: "Error", value: message.slice(0, 1000) },
-    ]);
-    return interaction.editReply({
-      content: `The ban could not be applied: ${message}`,
-    });
-  }
-}
-
-async function handleUnban(interaction: CommandInteraction) {
-  if (!canManageGuild(interaction)) {
-    return interaction.reply({
-      content:
-        "You need the **Manage Server** permission to lift a game ban.",
-      flags: 64,
-    });
-  }
-
-  const target = interaction.options.getUser("target", true);
-  const reason = interaction.options.getString("reason", false)?.trim() || undefined;
-  const actorId = interactionDiscordId(interaction);
-  const targetId = String(target?.user?.id ?? "").trim();
-  if (!targetId) {
-    return interaction.reply({
-      content: "Pick a valid Discord member to unban.",
-      flags: 64,
-    });
-  }
-
-  interaction.deferReply({ flags: 64 });
-  try {
-    const userId = await resolveGameUser(targetId);
-    if (userId === null) {
-      return interaction.editReply({
-        content: `<@${targetId}> has no linked Dungeon Blitz account.`,
-      });
-    }
-
-    const result = await unbanGamePlayer({
-      userId,
-      unbannedByDiscordId: actorId,
-    });
-
-    reportModeration("game-unban", "✅ Game ban lifted", [
-      { name: "Player", value: `<@${targetId}>`, inline: true },
-      { name: "Game user", value: String(result.userId), inline: true },
-      ...(reason ? [{ name: "Reason", value: reason }] : []),
-      { name: "By", value: interactionActorLabel(interaction) },
-    ]);
-
-    return interaction.editReply({
-      embeds: [
-        {
-          color: UNBAN_COLOR,
-          title: "✅ Game ban lifted",
-          description: `<@${targetId}> can sign in to Dungeon Blitz again.`,
-          fields: [
-            { name: "Game user", value: String(result.userId), inline: true },
-            ...(reason ? [{ name: "Reason", value: reason }] : []),
-          ],
-          footer: { text: `Lifted by ${interactionActorLabel(interaction)}` },
-        },
-      ],
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error("[account] Unban failed:", error);
-    reportModeration("game-unban-error", "⚠️ Game unban failed", [
-      { name: "Player", value: `<@${targetId}>`, inline: true },
-      { name: "Error", value: message.slice(0, 1000) },
-    ]);
-    return interaction.editReply({
-      content: `The ban could not be lifted: ${message}`,
-    });
+    console.error("[account] Account view failed:", error);
+    return interaction.editReply(
+      errorNotice("Account information could not be loaded right now. Please try again later."),
+    );
   }
 }
 
@@ -396,220 +422,296 @@ export const accountCommand = {
     .setContexts([CommandContext.Guild])
     .setIntegrationTypes([IntegrationType.GuildInstall])
     .setName("account")
-    .setDescription("Manage your Dungeon Blitz account")
+    .setDescription("Your Dungeon Blitz account")
     .setDMPermission(false)
     .addSubcommand((subcommand) =>
       subcommand
-        .setName("create")
-        .setDescription(
-          "Create a game account with your verified Discord email",
-        ),
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
         .setName("view")
-        .setDescription("View your linked Dungeon Blitz account"),
+        .setDescription("Your characters, password and notification settings"),
     )
     .addSubcommand((subcommand) =>
       subcommand
-        .setName("reset-password")
-        .setDescription("Reset your Dungeon Blitz password"),
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("notifications")
-        .setDescription("Turn upgrade-finished DMs on or off"),
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("ban")
-        .setDescription("Ban a player from the game for a limited time (staff)")
-        .addUserOption((option) =>
-          option
-            .setName("target")
-            .setDescription("The Discord member to ban")
-            .setRequired(true),
-        )
-        .addStringOption((option) =>
-          option
-            .setName("duration")
-            .setDescription("How long the ban lasts")
-            .addChoices(...BAN_DURATION_CHOICES)
-            .setRequired(true),
-        )
-        .addStringOption((option) =>
-          option
-            .setName("reason")
-            .setDescription("Shown to the player and stored in the operator log")
-            .setMaxLength(200)
-            .setRequired(false),
-        ),
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("unban")
-        .setDescription("Lift a player's game ban (staff)")
-        .addUserOption((option) =>
-          option
-            .setName("target")
-            .setDescription("The Discord member to unban")
-            .setRequired(true),
-        )
-        .addStringOption((option) =>
-          option
-            .setName("reason")
-            .setDescription("Optional note stored in the operator log")
-            .setMaxLength(200)
-            .setRequired(false),
-        ),
+        .setName("create")
+        .setDescription("Create a game account with your verified Discord email"),
     ),
   handler: async (interaction: CommandInteraction) => {
-    const subcommand = interaction.options.getSubcommand(true);
-
-    if (subcommand === "ban") return handleBan(interaction);
-    if (subcommand === "unban") return handleUnban(interaction);
-
     const discordId = interactionDiscordId(interaction);
-    if (!discordId) {
-      return interaction.reply({
-        content: "Your Discord account could not be verified.",
-        flags: 64,
-      });
-    }
+    if (!discordId) return interaction.reply(errorNotice(UNVERIFIED_TEXT));
+    const subcommand = interaction.options.getSubcommand(true);
+    if (subcommand === "create") return handleCreate(interaction, discordId);
+    return handleView(interaction, discordId);
+  },
+};
 
-    if (subcommand === "create") {
-      const oauthUrl = await createAccountOAuthUrl(discordId);
-      const row = new ActionRowBuilder<APIButtonComponent>().addComponents(
-        new ButtonBuilder()
-          .setStyle(ButtonStyle.Link)
-          .setLabel("Verify with Discord")
-          .setURL(oauthUrl),
-        new ButtonBuilder()
-          .setStyle(ButtonStyle.Primary)
-          .setLabel("Set initial password")
-          .setCustomId(INITIAL_PASSWORD_BUTTON_ID),
+/* ------------------------------------------------------------------ components */
+
+/**
+ * Runs a panel action against the account as it is right now. The panel the button sits on
+ * may be minutes old, so nothing it showed is trusted.
+ */
+async function withAccount(
+  interaction: MessageComponentInteraction,
+  run: (state: AccountState, discordId: string) => Promise<unknown>,
+) {
+  const discordId = interactionDiscordId(interaction);
+  if (!discordId) return interaction.reply(errorNotice(UNVERIFIED_TEXT));
+  interaction.deferUpdate();
+  try {
+    const state = await loadAccountState(discordId);
+    if (!state) {
+      return interaction.editReply(v2Update(notice(COLORS.muted, "No account yet", NO_ACCOUNT_TEXT)));
+    }
+    return await run(state, discordId);
+  } catch (error) {
+    console.error("[account] Panel action failed:", error);
+    return interaction.editReply(
+      v2Update(notice(COLORS.danger, "Something went wrong", "Your account could not be loaded right now. Please try again later.")),
+    );
+  }
+}
+
+const characterGone = (name: string) =>
+  v2Update(
+    notice(COLORS.muted, "Character not found", `**${name}** is no longer on your account.`, [
+      buttonRow(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel("Back").setCustomId(ID.home)),
+    ]),
+  );
+
+export const accountHomeButton = {
+  customId: ID.home,
+  handler: (interaction: MessageComponentInteraction) =>
+    withAccount(interaction, (state) =>
+      interaction.editReply(v2Update(buildDashboard(state, interactionDisplayName(interaction)))),
+    ),
+};
+
+export const accountViewButton = {
+  customId: `${ID.view}*`,
+  handler: (interaction: MessageComponentInteraction) => {
+    const [name = ""] = customIdNames(interaction.data.custom_id, ID.view);
+    return withAccount(interaction, (state) => {
+      const character = findCharacter(state, name);
+      if (!character) return interaction.editReply(characterGone(name));
+      return interaction.editReply(v2Update(buildCharacterDetail(state, character)));
+    });
+  },
+};
+
+export const accountNotificationsButton = {
+  customId: ID.notifications,
+  handler: (interaction: MessageComponentInteraction) =>
+    withAccount(interaction, async (state, discordId) => {
+      // Flip what is stored now, not what the panel showed: the panel may be stale.
+      const next = !state.notices;
+      await setHomeUpgradeNotices(discordId, next);
+      return interaction.editReply(
+        v2Update(buildDashboard({ ...state, notices: next }, interactionDisplayName(interaction))),
       );
-      return interaction.reply({
-        content: [
-          "Complete Discord OAuth verification to create your Dungeon Blitz account.",
-          "The account will use your **verified Discord email address**.",
-          "After OAuth is complete, return to this message and select **Set initial password**.",
-        ].join("\n"),
-        components: [row],
-        flags: 64,
-      });
-    }
+    }),
+};
 
-    if (subcommand === "notifications") {
-      return handleNotifications(interaction, discordId);
-    }
+export const accountRenameButton = {
+  customId: `${ID.rename}*`,
+  handler: async (interaction: MessageComponentInteraction) => {
+    // A modal has to be the first response, so ownership is checked when it is submitted.
+    const [name = ""] = customIdNames(interaction.data.custom_id, ID.rename);
+    return interaction.showModal(renameModal(name));
+  },
+};
 
-    if (subcommand === "reset-password") {
-      return interaction.showModal(
-        passwordModal(RESET_PASSWORD_MODAL_ID, "Reset Dungeon Blitz password"),
-      );
+export const accountRenameModal = {
+  customId: `${ID.renameModal}*`,
+  handler: async (interaction: ModalSubmitInteraction) => {
+    const discordId = interactionDiscordId(interaction);
+    if (!discordId) return interaction.reply(errorNotice(UNVERIFIED_TEXT));
+    const [oldName = ""] = customIdNames(interaction.data.custom_id, ID.renameModal);
+    const validated = validateCharacterName(interaction.getTextFieldValue(NEW_NAME_INPUT_ID) ?? "");
+    if (!validated.ok) {
+      return interaction.reply(v2(notice(COLORS.danger, "That name will not work", validated.reason)));
+    }
+    if (validated.name.toLowerCase() === oldName.toLowerCase()) {
+      return interaction.reply(v2(notice(COLORS.muted, "Same name", "Pick a name that is different from the current one.")));
     }
 
     interaction.deferReply({ flags: 64 });
     try {
-      const account = await getGameAccountByDiscordId(discordId);
-      if (!account) {
-        return interaction.editReply({
-          content: NO_ACCOUNT_TEXT,
-        });
+      const state = await loadAccountState(discordId);
+      const character = state ? findCharacter(state, oldName) : null;
+      if (!state || !character) {
+        return interaction.editReply(v2(notice(COLORS.muted, "Character not found", `**${oldName}** is no longer on your account.`)));
       }
-      const characters = await listSaveCharacters(account.userId);
-      return interaction.editReply({
-        embeds: [
-          {
-            color: ACCOUNT_COLOR,
-            title: "Your Dungeon Blitz account",
-            fields: [
-              { name: "Email", value: account.email },
-              { name: "Game user", value: String(account.userId), inline: true },
-              {
-                name: "Password",
-                value: account.passwordConfigured
-                  ? "Set ✅"
-                  : "Waiting for initial password ⏳",
-                inline: true,
-              },
-              {
-                name: "Connections",
-                value:
-                  account.connections.length > 0
-                    ? account.connections.join(", ")
-                    : "None authorized yet — see `/authorize`",
-              },
-              { name: "Total playtime", value: formatPlaytime(account.playtimeMs) },
-              {
-                name: "Characters",
-                value: formatCharacterPlaytimeLines(characters, account.characterPlaytimeMs),
-              },
-            ],
-          },
-        ],
-      });
+      return interaction.editReply(
+        v2(buildRenameConfirm(character, validated.name, accountIdols(state.characters))),
+      );
     } catch (error) {
-      console.error("[account] Account view failed:", error);
-      return interaction.editReply({
-        content:
-          "Account information could not be loaded right now. Please try again later.",
-      });
+      console.error("[account] Rename preview failed:", error);
+      return interaction.editReply(errorNotice("Your account could not be loaded right now. Please try again later."));
     }
   },
 };
 
-export const initialPasswordButton = {
-  customId: INITIAL_PASSWORD_BUTTON_ID,
+export const accountRenameConfirmButton = {
+  customId: `${ID.renameConfirm}*`,
+  handler: (interaction: MessageComponentInteraction) => {
+    const [oldName = "", newName = ""] = customIdNames(interaction.data.custom_id, ID.renameConfirm);
+    return withAccount(interaction, async (state, discordId) => {
+      const character = findCharacter(state, oldName);
+      if (!character) return interaction.editReply(characterGone(oldName));
+      const validated = validateCharacterName(newName);
+      if (!validated.ok) {
+        return interaction.editReply(v2Update(notice(COLORS.danger, "That name will not work", validated.reason)));
+      }
+      const result = await renameGameCharacter({
+        userId: state.account.userId,
+        characterName: character.characterName,
+        newName: validated.name,
+        requestedByDiscordId: discordId,
+      });
+      if (!result.ok) {
+        return interaction.editReply(v2Update(notice(COLORS.danger, "Rename failed", result.message)));
+      }
+      return interaction.editReply(
+        v2Update(
+          notice(COLORS.success, "Character renamed", [
+            `**${result.oldName}** is now **${result.newName}**.`,
+            `${emoji("cur_idol")} ${formatNumber(result.idolsBefore)} → **${formatNumber(result.idolsAfter)}** Mammoth Idols`,
+            "-# Open `/account view` again to see the updated roster.",
+          ]),
+        ),
+      );
+    });
+  },
+};
+
+export const accountDeleteButton = {
+  customId: `${ID.delete}*`,
   handler: async (interaction: MessageComponentInteraction) => {
-    interaction.showModal(
-      passwordModal(
-        INITIAL_PASSWORD_MODAL_ID,
-        "Your initial Dungeon Blitz password",
-      ),
+    const discordId = interactionDiscordId(interaction);
+    if (!discordId) return interaction.reply(errorNotice(UNVERIFIED_TEXT));
+    const [name = ""] = customIdNames(interaction.data.custom_id, ID.delete);
+    interaction.deferReply({ flags: 64 });
+    try {
+      const state = await loadAccountState(discordId);
+      const character = state ? findCharacter(state, name) : null;
+      if (!character) {
+        return interaction.editReply(v2(notice(COLORS.muted, "Character not found", `**${name}** is no longer on your account.`)));
+      }
+      return interaction.editReply(v2(buildDeleteConfirm(character)));
+    } catch (error) {
+      console.error("[account] Delete preview failed:", error);
+      return interaction.editReply(errorNotice("Your account could not be loaded right now. Please try again later."));
+    }
+  },
+};
+
+export const accountDeleteConfirmButton = {
+  customId: `${ID.deleteConfirm}*`,
+  handler: (interaction: MessageComponentInteraction) => {
+    const [name = ""] = customIdNames(interaction.data.custom_id, ID.deleteConfirm);
+    return withAccount(interaction, async (state, discordId) => {
+      const character = findCharacter(state, name);
+      if (!character) return interaction.editReply(characterGone(name));
+      const result = await deleteGameCharacter({
+        userId: state.account.userId,
+        characterName: character.characterName,
+        requestedByDiscordId: discordId,
+      });
+      if (!result.ok) {
+        return interaction.editReply(v2Update(notice(COLORS.danger, "Delete failed", result.message)));
+      }
+      return interaction.editReply(
+        v2Update(
+          notice(COLORS.muted, "Character deleted", [
+            `**${result.characterName}** was removed from your account.`,
+            `-# ${result.remaining} character${result.remaining === 1 ? "" : "s"} left · open \`/account view\` again to see the roster.`,
+          ]),
+        ),
+      );
+    });
+  },
+};
+
+export const accountDismissButton = {
+  customId: ID.dismiss,
+  handler: (interaction: MessageComponentInteraction) =>
+    interaction.update(v2Update(notice(COLORS.muted, "Cancelled", "Nothing was changed."))),
+};
+
+export const accountPasswordButton = {
+  customId: `${ID.password}*`,
+  handler: async (interaction: MessageComponentInteraction) => {
+    const initial = interaction.data.custom_id.endsWith("initial");
+    return interaction.showModal(
+      initial
+        ? passwordModal(INITIAL_PASSWORD_MODAL_ID, "Your initial Dungeon Blitz password")
+        : passwordModal(RESET_PASSWORD_MODAL_ID, "Reset Dungeon Blitz password"),
     );
   },
 };
 
+async function handlePasswordModal(interaction: ModalSubmitInteraction, initialOnly: boolean) {
+  const discordId = interactionDiscordId(interaction);
+  if (!discordId) return interaction.reply(errorNotice(UNVERIFIED_TEXT));
+  const password = interaction.getTextFieldValue(PASSWORD_INPUT_ID) ?? "";
+  const confirmation = interaction.getTextFieldValue(PASSWORD_CONFIRM_INPUT_ID) ?? "";
+  if (password !== confirmation) {
+    return interaction.reply(v2(notice(COLORS.danger, "Passwords do not match", "Type the same password in both boxes.")));
+  }
+
+  interaction.deferReply({ flags: 64 });
+  try {
+    const result = await updateGameAccountPassword(discordId, password, { initialOnly });
+    if (result.status === "not-found") {
+      return interaction.editReply(
+        v2(notice(COLORS.muted, "Verify first", "Complete the Discord verification from `/account create` first.")),
+      );
+    }
+    if (result.status === "already-configured") {
+      return interaction.editReply(
+        v2(notice(COLORS.muted, "Password already set", "Use **Reset password** on `/account view` to change it.")),
+      );
+    }
+    return interaction.editReply(
+      v2(
+        notice(
+          COLORS.success,
+          initialOnly ? "Password set" : "Password reset",
+          `You can sign in to the game with **${result.account.email}**.`,
+        ),
+      ),
+    );
+  } catch (error) {
+    if (error instanceof GameAccountConflictError) {
+      return interaction.editReply(v2(notice(COLORS.danger, "Password not changed", error.message)));
+    }
+    console.error("[account] Password update failed:", error);
+    return interaction.editReply(
+      errorNotice("Your password could not be updated right now. Please try again later."),
+    );
+  }
+}
+
 export const initialPasswordModal = {
   customId: INITIAL_PASSWORD_MODAL_ID,
-  handler: (interaction: ModalSubmitInteraction) =>
-    handlePasswordModal(interaction, true),
+  handler: (interaction: ModalSubmitInteraction) => handlePasswordModal(interaction, true),
 };
 
 export const resetPasswordModal = {
   customId: RESET_PASSWORD_MODAL_ID,
-  handler: (interaction: ModalSubmitInteraction) =>
-    handlePasswordModal(interaction, false),
+  handler: (interaction: ModalSubmitInteraction) => handlePasswordModal(interaction, false),
 };
 
-export const notificationsToggleButton = {
-  customId: NOTIFICATIONS_TOGGLE_ID,
-  handler: async (interaction: MessageComponentInteraction) => {
-    const discordId = interactionDiscordId(interaction);
-    if (!discordId) {
-      return interaction.reply({
-        content: "Your Discord account could not be verified.",
-        flags: 64,
-      });
-    }
-    try {
-      // Flip what is stored now, not what the panel showed: the panel may be stale.
-      const current = await getHomeUpgradeNotices(discordId);
-      if (current === null) {
-        return interaction.update({ content: NO_ACCOUNT_TEXT, embeds: [], components: [] });
-      }
-      const next = !current;
-      await setHomeUpgradeNotices(discordId, next);
-      return interaction.update(buildNotificationsPanel(next));
-    } catch (error) {
-      console.error("[account] Notification settings update failed:", error);
-      return interaction.reply({
-        content:
-          "Your notification settings could not be changed right now. Please try again later.",
-        flags: 64,
-      });
-    }
-  },
-};
+/** Components and modals the dispatcher routes to this command. */
+export const accountComponents = [
+  accountHomeButton,
+  accountViewButton,
+  accountNotificationsButton,
+  accountRenameButton,
+  accountRenameConfirmButton,
+  accountDeleteButton,
+  accountDeleteConfirmButton,
+  accountDismissButton,
+  accountPasswordButton,
+];
+
+export const accountModals = [accountRenameModal, initialPasswordModal, resetPasswordModal];

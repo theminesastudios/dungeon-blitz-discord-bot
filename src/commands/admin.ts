@@ -25,11 +25,16 @@ import { handleSponsorInfo } from "./sponsor-info.js";
 import { handleLobbyChat } from "./lobby-chat.js";
 import { handleGrant } from "./grant.js";
 import { handleSponsorRole } from "./sponsor-role.js";
+import { handleProfile, handleProfileAutocomplete } from "./profile.js";
+import { handleBan, handleUnban } from "./moderation.js";
+import { BAN_DURATION_CHOICES } from "../utils/gameModeration.js";
 
 /**
  * The staff toolbox, grouped under one command so the command list stays short and the
  * tools that act on a player's save or the live server sit together:
  *
+ *   /admin profile       — a player's identity, sponsor state, credit and balances
+ *   /admin ban / unban   — take a player out of the game, or let them back in
  *   /admin maintenance   — start the in-game maintenance countdown
  *   /admin lobby-chat    — choose the Discord channel lobby chat is linked to
  *   /admin credits        — add shop credit for a donation
@@ -48,6 +53,61 @@ export const adminCommand = {
     .setDescription("Staff tools for Dungeon Blitz")
     .setDefaultMemberPermissions(8n)
     .setDMPermission(false)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("profile")
+        .setDescription("Show a player's account, sponsor state and balances")
+        .addStringOption((option) =>
+          option
+            .setName("player")
+            .setDescription("Search by character, Discord username, GitHub, or game user ID")
+            .setAutocomplete(true)
+            .setRequired(true),
+        ),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("ban")
+        .setDescription("Ban a player from the game for a limited time")
+        .addUserOption((option) =>
+          option
+            .setName("target")
+            .setDescription("The Discord member to ban")
+            .setRequired(true),
+        )
+        .addStringOption((option) =>
+          option
+            .setName("duration")
+            .setDescription("How long the ban lasts")
+            .addChoices(...BAN_DURATION_CHOICES)
+            .setRequired(true),
+        )
+        .addStringOption((option) =>
+          option
+            .setName("reason")
+            .setDescription("Shown to the player and stored in the operator log")
+            .setMaxLength(200)
+            .setRequired(false),
+        ),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("unban")
+        .setDescription("Lift a player's game ban")
+        .addUserOption((option) =>
+          option
+            .setName("target")
+            .setDescription("The Discord member to unban")
+            .setRequired(true),
+        )
+        .addStringOption((option) =>
+          option
+            .setName("reason")
+            .setDescription("Optional note stored in the operator log")
+            .setMaxLength(200)
+            .setRequired(false),
+        ),
+    )
     .addSubcommand((subcommand) =>
       subcommand
         .setName("maintenance")
@@ -219,6 +279,12 @@ export const adminCommand = {
     ),
   handler: async (interaction: CommandInteraction) => {
     switch (interaction.options.getSubcommand(true)) {
+      case "profile":
+        return handleProfile(interaction);
+      case "ban":
+        return handleBan(interaction);
+      case "unban":
+        return handleUnban(interaction);
       case "maintenance":
         return handleMaintenance(interaction);
       case "lobby-chat":
@@ -257,6 +323,8 @@ export async function handleAdminAutocomplete(
   }
 
   switch (focused.subcommand) {
+    case "profile":
+      return handleProfileAutocomplete(autocomplete);
     case "credits":
       return handleAddCreditsAutocomplete(autocomplete);
     case "idols":
