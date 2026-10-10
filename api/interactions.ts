@@ -33,6 +33,7 @@ import {
   accountCommand,
   initialPasswordButton,
   initialPasswordModal,
+  notificationsToggleButton,
   resetPasswordModal,
 } from "../src/commands/account.js";
 import { adminCommand, handleAdminAutocomplete } from "../src/commands/admin.js";
@@ -104,6 +105,7 @@ const commandModules: CommandModule[] = [
 
 const componentModules: ComponentModule[] = [
   initialPasswordButton,
+  notificationsToggleButton,
   packsBuyComponent,
   packsSelectComponent,
   packsCharacterSelectComponent,

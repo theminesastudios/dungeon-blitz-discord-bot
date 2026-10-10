@@ -17,7 +17,9 @@ import type { ModalSubmitInteraction } from "@minesa-org/mini-interaction";
 import { waitUntil } from "@vercel/functions";
 import {
   getGameAccountByDiscordId,
+  getHomeUpgradeNotices,
   GameAccountConflictError,
+  setHomeUpgradeNotices,
   updateGameAccountPassword,
 } from "../utils/gameAccount.js";
 import { createAccountOAuthUrl } from "../utils/accountOAuth.js";
@@ -42,12 +44,64 @@ import { publishGameLog, type GameLogField } from "../utils/gameLogChannel.js";
 export const INITIAL_PASSWORD_BUTTON_ID = "account:set-initial-password";
 export const INITIAL_PASSWORD_MODAL_ID = "account:initial-password-modal";
 export const RESET_PASSWORD_MODAL_ID = "account:reset-password-modal";
+export const NOTIFICATIONS_TOGGLE_ID = "account:notifications:toggle";
 const PASSWORD_INPUT_ID = "account:password";
 const PASSWORD_CONFIRM_INPUT_ID = "account:password-confirm";
 
 const ACCOUNT_COLOR = 0x5865f2;
 const BAN_COLOR = 0xe74c3c;
 const UNBAN_COLOR = 0x2ecc71;
+const NOTICES_OFF_COLOR = 0x99aab5;
+
+const NO_ACCOUNT_TEXT =
+  "No Dungeon Blitz account is linked to your Discord account. Create one with `/account create`.";
+
+/** The `/account notifications` panel: the current setting and one button that flips it. */
+export function buildNotificationsPanel(enabled: boolean) {
+  const row = new ActionRowBuilder<APIButtonComponent>().addComponents(
+    new ButtonBuilder()
+      .setStyle(enabled ? ButtonStyle.Secondary : ButtonStyle.Success)
+      .setLabel(enabled ? "Turn off" : "Turn on")
+      .setCustomId(NOTIFICATIONS_TOGGLE_ID),
+  );
+  return {
+    embeds: [
+      {
+        color: enabled ? UNBAN_COLOR : NOTICES_OFF_COLOR,
+        title: "Upgrade notifications",
+        description: [
+          "The bot sends you a DM when a charm, pet, skill or building upgrade finishes in Dungeon Blitz.",
+          "",
+          `Status: **${enabled ? "On" : "Off"}**`,
+        ].join("\n"),
+        footer: {
+          text: "DMs only arrive if your Discord privacy settings allow messages from this server's members.",
+        },
+      },
+    ],
+    components: [row],
+  };
+}
+
+async function handleNotifications(
+  interaction: CommandInteraction,
+  discordId: string,
+) {
+  interaction.deferReply({ flags: 64 });
+  try {
+    const enabled = await getHomeUpgradeNotices(discordId);
+    if (enabled === null) {
+      return interaction.editReply({ content: NO_ACCOUNT_TEXT });
+    }
+    return interaction.editReply(buildNotificationsPanel(enabled));
+  } catch (error) {
+    console.error("[account] Notification settings lookup failed:", error);
+    return interaction.editReply({
+      content:
+        "Your notification settings could not be loaded right now. Please try again later.",
+    });
+  }
+}
 
 function passwordModal(customId: string, title: string) {
   return new ModalBuilder()
@@ -363,6 +417,11 @@ export const accountCommand = {
     )
     .addSubcommand((subcommand) =>
       subcommand
+        .setName("notifications")
+        .setDescription("Turn upgrade-finished DMs on or off"),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
         .setName("ban")
         .setDescription("Ban a player from the game for a limited time (staff)")
         .addUserOption((option) =>
@@ -441,6 +500,10 @@ export const accountCommand = {
       });
     }
 
+    if (subcommand === "notifications") {
+      return handleNotifications(interaction, discordId);
+    }
+
     if (subcommand === "reset-password") {
       return interaction.showModal(
         passwordModal(RESET_PASSWORD_MODAL_ID, "Reset Dungeon Blitz password"),
@@ -452,8 +515,7 @@ export const accountCommand = {
       const account = await getGameAccountByDiscordId(discordId);
       if (!account) {
         return interaction.editReply({
-          content:
-            "No Dungeon Blitz account is linked to your Discord account. Create one with `/account create`.",
+          content: NO_ACCOUNT_TEXT,
         });
       }
       const characters = await listSaveCharacters(account.userId);
@@ -520,4 +582,34 @@ export const resetPasswordModal = {
   customId: RESET_PASSWORD_MODAL_ID,
   handler: (interaction: ModalSubmitInteraction) =>
     handlePasswordModal(interaction, false),
+};
+
+export const notificationsToggleButton = {
+  customId: NOTIFICATIONS_TOGGLE_ID,
+  handler: async (interaction: MessageComponentInteraction) => {
+    const discordId = interactionDiscordId(interaction);
+    if (!discordId) {
+      return interaction.reply({
+        content: "Your Discord account could not be verified.",
+        flags: 64,
+      });
+    }
+    try {
+      // Flip what is stored now, not what the panel showed: the panel may be stale.
+      const current = await getHomeUpgradeNotices(discordId);
+      if (current === null) {
+        return interaction.update({ content: NO_ACCOUNT_TEXT, embeds: [], components: [] });
+      }
+      const next = !current;
+      await setHomeUpgradeNotices(discordId, next);
+      return interaction.update(buildNotificationsPanel(next));
+    } catch (error) {
+      console.error("[account] Notification settings update failed:", error);
+      return interaction.reply({
+        content:
+          "Your notification settings could not be changed right now. Please try again later.",
+        flags: 64,
+      });
+    }
+  },
 };
