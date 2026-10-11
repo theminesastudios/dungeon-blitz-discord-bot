@@ -1,6 +1,7 @@
 type MemberLike = {
   permissions?: string | number | bigint;
   roles?: readonly string[];
+  premium_since?: string | null;
   user?: { id?: string; username?: string } | null;
 } | null;
 
@@ -57,6 +58,11 @@ export function interactionUsername(interaction: InteractionLike): string {
   return String(
     interaction.member?.user?.username ?? interaction.user?.username ?? "",
   ).trim();
+}
+
+/** When the member started boosting the server (ISO timestamp), or null when they are not. */
+export function getMemberPremiumSince(interaction: InteractionLike): string | null {
+  return interaction.member?.premium_since ?? null;
 }
 
 /** Guild members carry their role snowflakes on the interaction payload. */

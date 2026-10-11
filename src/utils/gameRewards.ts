@@ -267,9 +267,11 @@ function characterInventory(character: unknown, field: "OwnedDyes" | "mounts"): 
 }
 
 /**
- * Removes the mounts and legendary dyes the pack shop wrote into a save
- * (`applyPackRewardsToSave`), so a test purchase can be undone. Only the ids the
- * shop grants are pulled — anything else the player owns stays untouched.
+ * Removes the mounts and legendary dyes the pack shop can grant from a save
+ * (`applyPackRewardsToSave`), so a test purchase can be undone. It removes every id
+ * in the pack pools whether the shop wrote it or not: the pools cover every
+ * idol-buyable mount and every legendary dye, so a mount the player bought with
+ * idols goes too. Only mounts that cannot be bought stay.
  *
  * Returns the ids that were actually removed, read back from the save, or null
  * when the Discord account has no game account/save.
@@ -366,6 +368,8 @@ export function formatRewardLine(reward: PackReward): string {
 			return `${reward.amount.toLocaleString()} gold`;
 		case "sigils":
 			return `${reward.amount.toLocaleString()} Silver Sigils`;
+		case "keys":
+			return `${reward.amount.toLocaleString()}× Trove Key`;
 	}
 }
 
@@ -534,6 +538,13 @@ export function verifyRewardDelivery(
 				"SilverSigils",
 				numberField(before, "SilverSigils"),
 				numberField(after, "SilverSigils"),
+				reward.amount,
+			);
+		case "keys":
+			return checkGain(
+				"DragonKeys",
+				numberField(before, "DragonKeys"),
+				numberField(after, "DragonKeys"),
 				reward.amount,
 			);
 		case "lockbox":
@@ -717,6 +728,12 @@ async function applySingleReward(
 		case "sigils": {
 			const outcome = await runCharacterUpdate(saves, saveId, characterName, {
 				$inc: { "characters.$[char].SilverSigils": reward.amount },
+			});
+			return outcome === "written" ? null : CHARACTER_GONE;
+		}
+		case "keys": {
+			const outcome = await runCharacterUpdate(saves, saveId, characterName, {
+				$inc: { "characters.$[char].DragonKeys": reward.amount },
 			});
 			return outcome === "written" ? null : CHARACTER_GONE;
 		}

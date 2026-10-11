@@ -292,6 +292,7 @@ type WalletCollections = {
 	saves: Collection<RawSave>;
 	accounts: Collection<RawAccount>;
 	profiles: Collection<RawLinkedProfile>;
+	packClaims?: Collection<PackClaimDocument>;
 };
 
 let collectionsOverride: WalletCollections | null = null;
@@ -832,4 +833,69 @@ export async function adjustMammothIdols(
 		}
 		throw error;
 	}
+}
+
+/**
+ * One-time claims of packs that need no linked profile (the Booster Pack). A server
+ * booster may have no GitHub link, so the claim cannot live on the profile ledger;
+ * it gets its own document keyed `<packId>:<discordId>`, and the unique `_id` is
+ * what stops a second claim — two racing clicks cannot both insert it.
+ */
+type PackClaimDocument = {
+	_id: string;
+	packId: string;
+	discordId: string;
+	claimedAtMs: number;
+};
+
+async function getPackClaimCollection(): Promise<Collection<PackClaimDocument>> {
+	if (collectionsOverride?.packClaims) return collectionsOverride.packClaims;
+	const client = await getClient();
+	return client
+		.db(process.env.PROFILE_MONGODB_DB_NAME?.trim() || "minidb")
+		.collection<PackClaimDocument>("packClaims");
+}
+
+function packClaimId(packId: string, discordId: string): string {
+	return `${packId}:${discordId.trim()}`;
+}
+
+/**
+ * Records a one-time claim. Returns the claim time, or null when this player has
+ * already claimed the pack.
+ */
+export async function recordPackClaim(
+	discordId: string,
+	packId: string,
+): Promise<number | null> {
+	const normalized = discordId.trim();
+	if (!normalized) return null;
+	const claimedAtMs = Date.now();
+	try {
+		const claims = await getPackClaimCollection();
+		await claims.insertOne({
+			_id: packClaimId(packId, normalized),
+			packId,
+			discordId: normalized,
+			claimedAtMs,
+		});
+		return claimedAtMs;
+	} catch (error) {
+		if ((error as { code?: number }).code === 11000) return null;
+		throw error;
+	}
+}
+
+/**
+ * Releases a claim whose rewards never landed, so the player can try again.
+ * Matching on the claim time means a stale release cannot drop a newer claim.
+ */
+export async function releasePackClaim(
+	discordId: string,
+	packId: string,
+	claimedAtMs: number,
+): Promise<boolean> {
+	const claims = await getPackClaimCollection();
+	const result = await claims.deleteOne({ _id: packClaimId(packId, discordId), claimedAtMs });
+	return result.deletedCount === 1;
 }

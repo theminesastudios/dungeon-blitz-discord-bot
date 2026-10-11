@@ -25,6 +25,7 @@ import {
 	formatUsd,
 	purchaseSponsorPack,
 	findSponsorPack,
+	type PackMember,
 	type PackPurchaseResult,
 	type PackRewardDeliveryResult,
 	type SponsorCredit,
@@ -36,7 +37,11 @@ import {
 	type GameCharacterOption,
 } from "../utils/gameRewards.js";
 import { ensureGameItemNames, primeGameItemNames } from "../utils/gameContent.js";
-import { getMemberRoleIds, interactionDiscordId } from "../utils/discordInteractions.js";
+import {
+	getMemberPremiumSince,
+	getMemberRoleIds,
+	interactionDiscordId,
+} from "../utils/discordInteractions.js";
 import {
 	publishGameLog,
 	type GameLogField,
@@ -76,7 +81,9 @@ function buildPackSelectRow(defaultId?: string) {
 					.setDescription(
 						pack.requiredRoleId
 							? "Sponsor role required"
-							: undefined,
+							: pack.requiredBoostDays !== undefined
+								? `Server boosters (${pack.requiredBoostDays}+ days)`
+								: undefined,
 					)
 					.setDefault(pack.id === defaultId),
 			),
@@ -137,7 +144,13 @@ function buildPackContainer(
 		headerParts.push(`-# 🎟️ Free claim for <@&${pack.requiredRoleId}> role holders only`);
 	}
 
-	if (credit) {
+	if (pack.requiredBoostDays !== undefined) {
+		headerParts.push(
+			`-# 💎 Free, once, for members who have boosted the server for ${pack.requiredBoostDays} days or more`,
+		);
+	}
+
+	if (credit && pack.requiredBoostDays === undefined) {
 		headerParts.push(
 			`-# 💰 Your balance: ${credit.balanceCents === null ? "Unknown" : formatUsd(credit.balanceCents)}`,
 		);
@@ -253,8 +266,11 @@ function buildPurchasedContainer(
 		new TextDisplayBuilder().setContent(
 			[
 				`**Price:** ${packPriceLabel(pack)}`,
+				// Boosters spend no credit and may have none, so their claim shows no balance.
+				...(pack.requiredBoostDays !== undefined ? [] : [
 				`**Remaining balance:** ${credit.balanceCents === null ? "Unknown" : formatUsd(credit.balanceCents)}`,
 				`**Sponsored / Used:** ${credit.sponsoredCents === null ? "Unknown" : formatUsd(credit.sponsoredCents)}${credit.bonusCents > 0 ? ` + ${formatUsd(credit.bonusCents)} bonus` : ""} / ${formatUsd(credit.usedCents)}`,
+				]),
 			].join("\n"),
 		),
 	);
@@ -298,6 +314,7 @@ const PURCHASE_STATUS: Record<string, { emoji: string; label: string }> = {
 	ok: { emoji: "✅", label: "Delivered" },
 	insufficient: { emoji: "💸", label: "Not enough credit" },
 	"missing-role": { emoji: "🎟️", label: "Sponsor role required" },
+	"not-boosting": { emoji: "💎", label: "Not boosting long enough" },
 	"already-claimed": { emoji: "📦", label: "Already claimed" },
 	"no-character": { emoji: "❌", label: "Delivery failed — refunded" },
 	"credit-unknown": { emoji: "⚠️", label: "Credit could not be verified" },
@@ -429,7 +446,9 @@ function buildPurchaseSummary(
 	return [
 		`### ${pack.emoji} ${pack.name} purchased!${pack.priceCents === 0 ? " (free claim)" : ""}`,
 		`**Price:** ${packPriceLabel(pack)}`,
-		`**Remaining balance:** ${credit.balanceCents === null ? "Unknown" : formatUsd(credit.balanceCents)}`,
+		...(pack.requiredBoostDays !== undefined
+			? []
+			: [`**Remaining balance:** ${credit.balanceCents === null ? "Unknown" : formatUsd(credit.balanceCents)}`]),
 		...buildDeliverySummary(deliveries),
 	].join("\n");
 }
@@ -462,18 +481,22 @@ async function editWithFallback(
 async function respondWithPurchase(
 	discordId: string,
 	packId: string,
-	memberRoleIds: string[],
+	member: PackMember,
 	characterName: string | undefined,
 	editReply: (data: Record<string, unknown>) => Promise<unknown>,
 ) {
-	const result = await purchaseSponsorPack(discordId, packId, memberRoleIds, characterName);
+	const result = await purchaseSponsorPack(discordId, packId, member, characterName);
 	// Loaded after the purchase, never before: the reward lines should name what was
 	// delivered ("Skybone Wyrm"), but a slow game server must not delay the write.
 	await ensureGameItemNames();
 	// Every outcome that means something happened to a save or a balance is
 	// logged. A random member clicking a sponsor-only pack is not an event an
 	// operator needs to read.
-	if (result.status !== "no-profile" && result.status !== "not-sponsor") {
+	if (
+		result.status !== "no-profile" &&
+		result.status !== "not-sponsor" &&
+		result.status !== "not-boosting"
+	) {
 		reportPurchase(purchaseLogCard(result, discordId, packId));
 	}
 
@@ -487,6 +510,14 @@ async function respondWithPurchase(
 		case "missing-role":
 			return editReply({
 				content: `The **${result.pack.name}** is a free claim for sponsors only — you need the <@&${result.pack.requiredRoleId}> role to claim it.`,
+				flags: InteractionFlags.Ephemeral,
+			});
+		case "not-boosting":
+			return editReply({
+				content:
+					result.boostedDays === null
+						? `The **${result.pack.name}** is for server boosters. Boost the server and keep it up for ${result.pack.requiredBoostDays} days, then claim it here.`
+						: `You have boosted the server for ${result.boostedDays} of the ${result.pack.requiredBoostDays} days the **${result.pack.name}** needs. Come back in ${result.pack.requiredBoostDays! - result.boostedDays} more ${result.pack.requiredBoostDays! - result.boostedDays === 1 ? "day" : "days"}.`,
 				flags: InteractionFlags.Ephemeral,
 			});
 		case "already-claimed":
@@ -560,7 +591,10 @@ async function handleBuy(
 		return await respondWithPurchase(
 			discordId,
 			packId,
-			getMemberRoleIds(interaction),
+			{
+				roleIds: getMemberRoleIds(interaction),
+				premiumSince: getMemberPremiumSince(interaction),
+			},
 			characterName,
 			(data) => interaction.editReply(data as never),
 		);
