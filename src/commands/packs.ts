@@ -22,6 +22,7 @@ import {
 	purchaseSponsorPack,
 	findSponsorPack,
 	getFreePackStatus,
+	type ConsumableId,
 	type FreePackStatus,
 	type PackMember,
 	type PackPurchaseResult,
@@ -48,7 +49,7 @@ import {
 } from "../utils/gameLogChannel.js";
 import { waitUntil } from "@vercel/functions";
 import { buttonRow, COLORS, divider, text } from "../ui/containers.js";
-import { classComponentEmoji, emoji } from "../ui/emojis.js";
+import { classComponentEmoji, emoji, type EmojiName } from "../ui/emojis.js";
 
 const BUY_BUTTON_PREFIX = "packs:buy:";
 const PACK_SELECT_ID = "packs:view";
@@ -246,36 +247,67 @@ function buildShopContainer(): ContainerBuilder {
 	return container;
 }
 
+const POTION_EMOJI: Record<ConsumableId, EmojiName> = {
+	exp: "item_potion_exp",
+	gear: "item_potion_gear",
+	gold: "item_potion_gold",
+	material: "item_potion_material",
+};
+
 function rewardIcon(reward: PackReward): string {
 	switch (reward.kind) {
 		case "keys":
 			return emoji("cur_dragon_key");
 		case "gold":
-			return emoji("cur_gold");
+			return emoji("item_gold");
 		case "sigils":
-			return emoji("cur_silver_sigil");
+			return emoji("item_silver_sigil");
 		case "mount":
-			return "🐴";
+			return emoji(reward.exclusive ? "item_mount_exclusive" : "item_mount");
 		case "dye":
-			return "🎨";
+			return emoji(reward.legendary ? "item_dye_legendary" : "item_dye_rare");
 		case "lockbox":
-			return "📦";
+			return emoji("item_trove_chest");
 		case "consumable":
-			return "🧪";
+			return emoji(POTION_EMOJI[reward.consumableId]);
 	}
 }
 
+/** How many dye names a grouped dye line spells out before it summarises the rest. */
+const DYE_NAMES_SHOWN = 8;
+
+/**
+ * The buyer's "what you got" list. Dyes arrive as one reward each, so a pack with twenty of
+ * them is folded into a single line rather than twenty. A reward that did not land is marked
+ * without the raw database message: that goes to the operator log, which is where staff read
+ * it and where they can put the reward right.
+ */
 function buildDeliverySummary(deliveries: PackRewardDeliveryResult[]): string[] {
 	if (deliveries.length === 0) return ["-# No rewards to deliver for this pack."];
 
 	const lines: string[] = ["**What you got**"];
+	const dyes = deliveries.filter(
+		(outcome) => outcome.status === "delivered" && outcome.delivery.reward.kind === "dye",
+	);
+	let dyesListed = false;
 	for (const outcome of deliveries) {
-		const reward = `${rewardIcon(outcome.delivery.reward)} ${formatRewardLine(outcome.delivery.reward)}`;
-		lines.push(
-			outcome.status === "delivered"
-				? reward
-				: `⚠️ ${reward} · ${outcome.error ?? "could not be delivered"}`,
-		);
+		const reward = outcome.delivery.reward;
+		if (dyes.length > 1 && dyes.includes(outcome)) {
+			if (dyesListed) continue;
+			dyesListed = true;
+			const names = dyes.map((dye) => formatRewardLine(dye.delivery.reward));
+			const rest = names.length - DYE_NAMES_SHOWN;
+			lines.push(
+				`${rewardIcon(reward)} ${dyes.length} Legendary Dyes`,
+				`-# ${names.slice(0, DYE_NAMES_SHOWN).join(", ")}${rest > 0 ? ` and ${rest} more` : ""}`,
+			);
+			continue;
+		}
+		const line = `${rewardIcon(reward)} ${formatRewardLine(reward)}`;
+		lines.push(outcome.status === "delivered" ? line : `${line} · ⚠️ not delivered`);
+	}
+	if (deliveries.some((outcome) => outcome.status !== "delivered")) {
+		lines.push("-# Something marked ⚠️ did not reach your save. Staff have been notified and will add it by hand.");
 	}
 	return lines;
 }
@@ -415,6 +447,18 @@ function purchaseLogCard(
 			);
 		if (values.length > 0) {
 			fields.push({ name: "After write", value: values.join("\n") });
+		}
+		// A partly delivered pack is not refunded, so the rewards that did not land need staff
+		// to grant them — this is the list to work from.
+		const missed = result.deliveries
+			.filter((outcome) => outcome.status !== "delivered")
+			.slice(0, 6)
+			.map(
+				(outcome) =>
+					`- ${formatRewardLine(outcome.delivery.reward)} → ${outcome.error ?? "not delivered"}`,
+			);
+		if (missed.length > 0) {
+			fields.push({ name: "⚠️ Not delivered", value: missed.join("\n") });
 		}
 		const saveIds = [
 			...new Set(

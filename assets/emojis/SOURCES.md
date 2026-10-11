@@ -33,6 +33,26 @@ its aspect ratio kept, and centered on a transparent 128x128 canvas (2 px margin
 | `ui_character` | `caa/UI_Library.swf` | 1227 | `_DoodadToBeHeadshot` (grey portrait silhouette) | 1 | 4 |
 | `ui_delete` | `caa/UI_Library.swf` | 611 | `_DoodadSkull01` | 1 | 4 |
 
+### Reward icons (`item_*`)
+
+Exported by hand from the client art (source symbols not recorded), then put through the same
+trim / fit 124 / pad 128x128 step. The pack shop uses them on its "What you got" list.
+
+| Emoji | Shows | Original file |
+|---|---|---|
+| `item_trove_chest` | Trove Chest (lockbox 1) | `trove_chest.png` |
+| `item_gold` | Gold reward | `gold.png` |
+| `item_silver_sigil` | Silver Sigils reward (no tile behind it, unlike `cur_silver_sigil`) | `sigil_silver.png` |
+| `item_dye_legendary` | Legendary dye | `dye_legendary.png` |
+| `item_dye_rare` | Rare dye | `dye_rare.png` |
+| `item_potion_exp` | EXP Potion | `potion_exp.png` |
+| `item_potion_gear` | Gear Potion | `potion_gear.png` |
+| `item_potion_gold` | Gold Potion | `potion_gold.png` |
+| `item_potion_material` | Material Potion | `potion_material.png` |
+| `item_mount` | Mount (non-exclusive) | `Non-exclusive.png` |
+| `item_mount_exclusive` | Exclusive mount | `Exclusive.png` |
+| `item_pet` | Pet (not used yet) | `pets.png` |
+
 The frame-to-discipline mapping for sprite 507 comes from its `FrameLabel` tags
 (`ffdec -dumpSWF cbp/UI_4.swf`). The labels match the `mMasterClass` strings the client uses.
 

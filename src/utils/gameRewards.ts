@@ -347,6 +347,13 @@ export async function stripPackRewards(
 	return { userId, characters };
 }
 
+const CONSUMABLE_NAMES: Record<keyof typeof CONSUMABLE_ID_BY_KIND, string> = {
+	exp: "EXP Potion",
+	gear: "Gear Potion",
+	gold: "Gold Potion",
+	material: "Material Potion",
+};
+
 /**
  * Formats one reward into a short "what you got" line for the shop confirmation and the
  * operator log. Mounts and dyes are named through the shared registry, so a purchase reads
@@ -363,7 +370,7 @@ export function formatRewardLine(reward: PackReward): string {
 		case "lockbox":
 			return `${reward.count.toLocaleString()}× Trove Chest`;
 		case "consumable":
-			return `${reward.count}× ${reward.consumableId} potion`;
+			return `${reward.count.toLocaleString()}× ${CONSUMABLE_NAMES[reward.consumableId]}`;
 		case "gold":
 			return `${reward.amount.toLocaleString()} gold`;
 		case "sigils":
@@ -392,10 +399,17 @@ async function runCharacterUpdate(
 	saveId: RewardDocument["_id"],
 	characterName: string,
 	update: CharacterUpdate,
-	options: { arrayFilters?: Record<string, unknown>[] } = {},
+	options: {
+		arrayFilters?: Record<string, unknown>[];
+		/** Extra conditions the character itself must meet for the write to apply. */
+		where?: Record<string, unknown>;
+	} = {},
 ): Promise<"written" | "character-not-found"> {
+	const filter = options.where
+		? { _id: saveId, characters: { $elemMatch: { name: characterName, ...options.where } } }
+		: { _id: saveId, "characters.name": characterName };
 	const result = await saves.updateOne(
-		{ _id: saveId, "characters.name": characterName } as Filter<RewardDocument>,
+		filter as Filter<RewardDocument>,
 		{
 			...update,
 			$set: { ...(update.$set ?? {}), updatedAt: new Date() },
@@ -741,12 +755,21 @@ async function applySingleReward(
 }
 
 /**
- * Adds `count` to a stacked array entry such as lockboxes/consumables.
+ * Adds `count` to a stacked array entry such as lockboxes/consumables, creating the entry when
+ * the character has none.
  *
- * Incrementing through `$[entry]` requires the entry **and its array** to already exist —
- * MongoDB raises a path error rather than reporting "no match" — so the increment is attempted
- * first and a `$push` (which creates the array itself) is the fallback. The delivery check reads
- * the count back afterwards, so a stack that was not created is reported instead of assumed.
+ * The game drops a stack once its count reaches zero, so a player who opened their last Trove
+ * Chest has `lockboxes: []`. An `$inc` through `$[entry]` on that array matches the character,
+ * finds no entry and quietly changes nothing — no error, no fallback. So every step states in its
+ * filter what it expects to find, and only one of them can apply:
+ *
+ * 1. the entry exists → increment it;
+ * 2. the array exists without the entry → append the entry (the guard also stops two purchases
+ *    landing together from creating two stacks);
+ * 3. the field is missing or not an array → set it to just this entry.
+ *
+ * A step whose guard stopped holding (a game save landed in between) falls through to the next
+ * round. The delivery check still reads the count back afterwards.
  */
 async function bumpStackedEntry(
 	saves: Collection<RewardDocument>,
@@ -757,27 +780,42 @@ async function bumpStackedEntry(
 	entryId: number,
 	count: number,
 ): Promise<string | null> {
-	try {
-		const outcome = await runCharacterUpdate(
-			saves,
-			saveId,
-			characterName,
-			{ $inc: { [`characters.$[char].${field}.$[entry].count`]: count } },
-			{ arrayFilters: [{ [`entry.${idField}`]: entryId }] },
-		);
-		if (outcome === "character-not-found") return CHARACTER_GONE;
-	} catch (error) {
-		// No such stack on this character yet: the increment cannot traverse it, so create it.
-		console.warn(
-			`[gameRewards] Could not increment ${field}[${entryId}] on ${characterName}; creating the stack instead.`,
-			error instanceof Error ? error.message : String(error),
-		);
-		const pushed = await runCharacterUpdate(saves, saveId, characterName, {
-			$push: { [`characters.$[char].${field}`]: { [idField]: entryId, count } },
-		});
-		return pushed === "written" ? null : CHARACTER_GONE;
+	const path = `characters.$[char].${field}`;
+	const entry = { [idField]: entryId, count };
+	const hasEntry = { $elemMatch: { [idField]: entryId } };
+	const steps: Array<{ update: CharacterUpdate; where: Record<string, unknown>; arrayFilters?: Record<string, unknown>[] }> = [
+		{
+			update: { $inc: { [`${path}.$[entry].count`]: count } },
+			where: { [field]: hasEntry },
+			arrayFilters: [{ [`entry.${idField}`]: entryId }],
+		},
+		{
+			update: { $push: { [path]: entry } },
+			where: { [field]: { $type: "array", $not: hasEntry } },
+		},
+		{
+			update: { $set: { [path]: [entry] } },
+			where: { [field]: { $not: { $type: "array" } } },
+		},
+	];
+
+	for (let round = 0; round < 2; round++) {
+		for (const step of steps) {
+			const outcome = await runCharacterUpdate(saves, saveId, characterName, step.update, {
+				where: step.where,
+				arrayFilters: step.arrayFilters,
+			});
+			if (outcome === "written") return null;
+		}
 	}
-	return null;
+
+	const stillThere = await saves.countDocuments(
+		{ _id: saveId, "characters.name": characterName } as Filter<RewardDocument>,
+		{ limit: 1 },
+	);
+	return stillThere === 0
+		? CHARACTER_GONE
+		: `Could not add to ${field}[${entryId}]: the save kept changing underneath the write.`;
 }
 
 /* ------------------------------------------------------------------
@@ -933,36 +971,36 @@ export async function mutateGameCharacter(
 				requested: Math.abs(mutation.delta),
 			};
 		}
-		if (currentCount === 0 && mutation.delta > 0) {
-			// The stack does not exist yet, so `$inc` cannot traverse it: create it outright.
-			await runCharacterUpdate(saves, save.id, characterName, {
-				$push: { [`characters.$[char].${mutation.field}`]: { [mutation.idField]: entryId, count: mutation.delta } },
-			});
+		if (mutation.delta > 0) {
+			// Adding never needs a guard on the balance, and the stack may not exist yet.
+			const error = await bumpStackedEntry(
+				saves,
+				save.id,
+				characterName,
+				mutation.field,
+				mutation.idField,
+				entryId,
+				mutation.delta,
+			);
+			if (error === CHARACTER_GONE) return { status: "character-not-found", userId };
+			if (error) throw new Error(error);
 		} else {
-			const filter: Filter<RewardDocument> = {
-				_id: save.id,
-				"characters.name": characterName,
-			};
-			if (mutation.delta < 0) {
-				delete (filter as Record<string, unknown>)["characters.name"];
-				filter.characters = {
-					$elemMatch: {
-						name: characterName,
+			// A removal re-checks the stack on the server so a concurrent write cannot overdraw.
+			const outcome = await runCharacterUpdate(
+				saves,
+				save.id,
+				characterName,
+				{ $inc: { [`characters.$[char].${mutation.field}.$[entry].count`]: mutation.delta } },
+				{
+					where: {
 						[mutation.field]: {
 							$elemMatch: { [mutation.idField]: entryId, count: { $gte: -mutation.delta } },
 						},
 					},
-				} as never;
-			}
-			const result = await saves.updateOne(
-				filter,
-				{
-					$inc: { [`characters.$[char].${mutation.field}.$[entry].count`]: mutation.delta },
-					$set: { updatedAt: now },
-				} as never,
-				{ arrayFilters: [{ "char.name": characterName, [`entry.${mutation.idField}`]: entryId }] } as never,
+					arrayFilters: [{ [`entry.${mutation.idField}`]: entryId }],
+				},
 			);
-			if (result.matchedCount === 0) {
+			if (outcome === "character-not-found") {
 				return {
 					status: "insufficient",
 					userId,
