@@ -3,8 +3,6 @@ import {
 	ButtonBuilder,
 	ButtonStyle,
 	CommandBuilder,
-	CommandContext,
-	IntegrationType,
 } from "@minesa-org/mini-interaction";
 import type { APIButtonComponent } from "discord-api-types/v10";
 import type { CommandInteraction } from "@minesa-org/mini-interaction";
@@ -76,8 +74,6 @@ async function linkedAccountLine(discordId: string): Promise<string | null> {
 
 export const authorizeCommand = {
 	data: new CommandBuilder()
-		.setContexts([CommandContext.Guild])
-		.setIntegrationTypes([IntegrationType.GuildInstall])
 		.setName("authorize")
 		.setDescription(
 			"Connect your Discord account to Dungeon Blitz (profile widget, friends, lobbies)",

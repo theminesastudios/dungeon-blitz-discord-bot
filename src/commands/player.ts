@@ -1,8 +1,6 @@
 import {
   CommandBuilder,
-  CommandContext,
   ContainerBuilder,
-  IntegrationType,
 } from "@minesa-org/mini-interaction";
 import type { AutocompleteContext, CommandInteraction } from "@minesa-org/mini-interaction";
 import {
@@ -44,11 +42,8 @@ export function buildPlayerCard(character: GameWalletSummary): ContainerBuilder 
 
 export const playerCommand = {
   data: new CommandBuilder()
-    .setContexts([CommandContext.Guild])
-    .setIntegrationTypes([IntegrationType.GuildInstall])
     .setName("player")
     .setDescription("Show a player's public profile")
-    .setDMPermission(false)
     .addStringOption((option) =>
       option
         .setName("name")

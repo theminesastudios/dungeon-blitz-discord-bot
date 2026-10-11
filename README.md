@@ -4,6 +4,8 @@ This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord 
 
 ## Commands
 
+Commands are registered on the community server only (`DISCORD_GUILD_ID`); there are no global commands, so nothing is offered in DMs or other servers. `npm run build` (run on every production deploy) overwrites the guild's commands and clears any global ones — see [Command registration](#command-registration).
+
 Every reply is a Components V2 **container**; follow-up actions are buttons, select menus and modals on that message rather than extra commands. Game icons (classes, disciplines, currencies) are application emojis — see [Emojis](#emojis).
 
 - `/account create` sends an owner-bound Discord OAuth link. A MongoDB-backed game account and complete empty save document are created only after Discord returns a verified email; the player then sets the initial password with the **Set password** button.
@@ -11,7 +13,7 @@ Every reply is a Components V2 **container**; follow-up actions are buttons, sel
 - `/player name` shows anyone a character's public card: portrait, level, gold and current quest, and nothing else. Autocomplete lists live characters with their owner's Discord username.
 - `/authorize [connection]` sends owner-bound Discord OAuth links that connect a player's Discord account to the game's Discord surfaces: the Game Stats widget on their profile, the Social SDK's friends and rich presence, and its lobbies and chat. `connection` picks one; without it the reply offers a link for each, plus an "everything" link that authorizes them together. Links expire after 10 minutes and only the player who invoked the command can complete them.
 - `/packs` opens the sponsor pack shop. It writes each pack's rewards straight into the chosen character's save: credit is deducted (or the one-time Sponsor Pack claim recorded) before the rewards roll, and a purchase whose rewards cannot be written is refunded automatically. Every write is addressed by the `_id` of the save document the shop read the character from, and each reward is **confirmed by reading the character back out of the save** — a write MongoDB accepted but the save does not show is reported as failed (and refunded) instead of confirmed, so the shop can never charge for rewards nobody can find.
-- `/report-bug` opens a modal and files the report as a GitHub issue in the private tracker, recording the reporter as their Discord username and user ID and optionally linking screenshots they upload. Any member can use it, in a guild or in DMs, one report per 10 minutes; the confirmation is ephemeral and quotes the issue number rather than a link, because the tracker is private.
+- `/report-bug` opens a modal and files the report as a GitHub issue in the private tracker, recording the reporter as their Discord username and user ID and optionally linking screenshots they upload. Any member can use it in the server, one report per 10 minutes; the confirmation is ephemeral and quotes the issue number rather than a link, because the tracker is private.
 - `/admin profile player` (administrator) shows a player's Discord and GitHub identity, sponsor state, shop credit and every live character's balances.
 - `/admin ban target duration [reason]` (administrator) bans a Discord member from the game for a limited time. `duration` is one of `1-hour`, `1-day`, `3-days`, `7-days`, `30-days` or `Permanent`; the bot resolves the member to their linked game user and asks the game server to enforce it, which also drops a live session.
 - `/admin unban target [reason]` (administrator) lifts a game ban, permanent or otherwise.
@@ -27,6 +29,16 @@ Every reply is a Components V2 **container**; follow-up actions are buttons, sel
 - `/server` (administrator) shows the live game server and restarts it onto another branch: the running branch, commit, uptime and player count, every branch the VM can pull, and a restart onto the selected one (with the one-minute player warning, or immediately). A scheduled restart can be cancelled from the same panel.
 
 `/admin` is administrator-gated as a whole (a server can widen that in **Integrations**). `/admin ban` and `/admin unban` additionally check **Manage Server**, which an Administrator also holds.
+
+### Command registration
+
+`scripts/register.ts` (`npm run build`) does three bulk overwrites, in this order:
+
+1. `PUT /applications/{app}/guilds/{DISCORD_GUILD_ID}/commands` with every command — guild commands update instantly.
+2. `PUT /applications/{app}/commands` with `[]`, deleting the global commands so nothing shows up twice.
+3. The linked role metadata (`is_sponsor`, `contributor`), which is application-wide.
+
+It needs `DISCORD_BOT_TOKEN`, `DISCORD_APPLICATION_ID` and `DISCORD_GUILD_ID`; if any is missing it skips everything, so the global commands are never cleared without the guild ones taking their place. Preview deployments skip registration unless `ALLOW_PREVIEW_COMMAND_REGISTRATION=true`.
 
 Every player picker reads only live data: characters on a current `saves` document whose account is linked to a Discord user, shown as `Character · Lv 50 Mage — @username`. Old snapshot documents and the accounts imported from the old `Accounts.json` test data have no Discord link and never appear.
 
@@ -171,7 +183,7 @@ is byte-for-byte what a verification would write.
 
 ## Bug reports (`/report-bug`)
 
-Every member can file a bug straight into the private issue tracker, from a guild or from the bot's DMs — the command is registered with the Bot context, so it shows up in DMs even though the bot is only guild-installed. The command checks a per-player cooldown first, opens a modal (title, details, optional steps, optional screenshots), then POSTs to `POST /repos/{owner}/{repo}/issues`.
+Every member of the server can file a bug straight into the private issue tracker. The command checks a per-player cooldown first, opens a modal (title, details, optional steps, optional screenshots), then POSTs to `POST /repos/{owner}/{repo}/issues`.
 
 The issue body records the reporter as **Discord username followed by the user ID in parentheses** (`Reported by hansklein (1234567890)`), then the two text fields. It does not record the server or a timestamp: every report lands in the one tracker, and GitHub stamps its own open time. **Both text fields are wrapped in fenced code blocks on purpose** — without the fence a player could inject an `@everyone` ping or a tracking link into a ticket that staff read. The tracker is private, but it is still a shared surface.
 

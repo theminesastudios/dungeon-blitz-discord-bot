@@ -2,9 +2,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   CommandBuilder,
-  CommandContext,
   ContainerBuilder,
-  IntegrationType,
   LabelBuilder,
   ModalBuilder,
   TextInputBuilder,
@@ -419,11 +417,8 @@ async function handleView(interaction: CommandInteraction, discordId: string) {
 
 export const accountCommand = {
   data: new CommandBuilder()
-    .setContexts([CommandContext.Guild])
-    .setIntegrationTypes([IntegrationType.GuildInstall])
     .setName("account")
     .setDescription("Your Dungeon Blitz account")
-    .setDMPermission(false)
     .addSubcommand((subcommand) =>
       subcommand
         .setName("view")

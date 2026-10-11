@@ -1,7 +1,5 @@
 import {
   CommandBuilder,
-  CommandContext,
-  IntegrationType,
 } from "@minesa-org/mini-interaction";
 import type {
   AutocompleteContext,
@@ -47,12 +45,9 @@ import { BAN_DURATION_CHOICES } from "../utils/gameModeration.js";
  */
 export const adminCommand = {
   data: new CommandBuilder()
-    .setContexts([CommandContext.Guild])
-    .setIntegrationTypes([IntegrationType.GuildInstall])
     .setName("admin")
     .setDescription("Staff tools for Dungeon Blitz")
     .setDefaultMemberPermissions(8n)
-    .setDMPermission(false)
     .addSubcommand((subcommand) =>
       subcommand
         .setName("profile")

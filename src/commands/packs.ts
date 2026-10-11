@@ -3,11 +3,9 @@ import {
 	ButtonBuilder,
 	ButtonStyle,
 	CommandBuilder,
-	CommandContext,
 	ContainerBuilder,
 	GalleryBuilder,
 	GalleryItemBuilder,
-	IntegrationType,
 	InteractionFlags,
 	SectionBuilder,
 	SeparatorBuilder,
@@ -628,11 +626,8 @@ async function handleShop(
 
 export const packsCommand = {
 	data: new CommandBuilder()
-		.setContexts([CommandContext.Guild])
-		.setIntegrationTypes([IntegrationType.GuildInstall])
 		.setName("packs")
-		.setDescription("Browse and buy sponsor packs")
-		.setDMPermission(false),
+		.setDescription("Browse and buy sponsor packs"),
 	handler: (interaction: CommandInteraction) => handleShop(interaction),
 };
 
