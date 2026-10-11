@@ -20,7 +20,7 @@ assert.equal(
 );
 assert.equal(
 	formatRewardLine({ kind: "consumable", consumableId: "exp", count: 2, label: "exp potion" }),
-	"2× exp potion",
+	"2× EXP Potion",
 );
 assert.equal(formatRewardLine({ kind: "gold", amount: 100_000 }), "100,000 gold");
 assert.equal(formatRewardLine({ kind: "sigils", amount: 250 }), "250 Silver Sigils");
