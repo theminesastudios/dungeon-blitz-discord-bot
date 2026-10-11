@@ -4,6 +4,9 @@ import {
 	grantBonusCredit,
 	recordPackPurchase,
 	refundPackPurchase,
+	hasPackClaim,
+	recordPackClaim,
+	releasePackClaim,
 	type PackPurchase,
 } from "./gameWallet.js";
 import {
@@ -20,6 +23,10 @@ export type { GameCharacterOption } from "./gameRewards.js";
 
 /** Discord role that unlocks the free Sponsor Pack claim. */
 export const SPONSOR_ROLE_ID = "1365618632415248444";
+
+/** How long a member must have been boosting the server to claim the Booster Pack. */
+export const BOOSTER_PACK_DAYS = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /* ------------------------------------------------------------------
  * Pack rewards
@@ -39,17 +46,37 @@ export type PackReward =
 	| { kind: "lockbox"; lockboxId: number; count: number; label: string }
 	| { kind: "consumable"; consumableId: ConsumableId; count: number; label: string }
 	| { kind: "gold"; amount: number }
-	| { kind: "sigils"; amount: number };
+	| { kind: "sigils"; amount: number }
+	/** Trove keys: the character's `DragonKeys` balance, which opens trove chests. */
+	| { kind: "keys"; amount: number };
 
 /** Reward pools the game maintains. Mount/dye IDs must match live game content. */
-export const NON_EXCLUSIVE_MOUNT_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
-export const EXCLUSIVE_MOUNT_IDS = [81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91] as const;
-export const LEGENDARY_DYE_IDS = [4, 9, 11, 13, 19, 20, 22, 26, 27, 33] as const;
+/*
+ * Mount pools, from the game's `MountTypes.xml` (`IdolCost`):
+ * - non-exclusive: the 100/150-idol mounts (Sponsor Pack's random roll);
+ * - exclusive: every 340-idol mount (8, 11, 15, 17, 18–105).
+ * The mounts that cannot be bought at all (Longma 7, The Nightmare 10, Masked
+ * Crypthound 16, the trove mounts 106–108) are in neither pool.
+ */
+export const NON_EXCLUSIVE_MOUNT_IDS: readonly number[] = [1, 2, 3, 4, 5, 6, 9, 12, 13, 14];
+export const EXCLUSIVE_MOUNT_IDS: readonly number[] = [
+	8,
+	11,
+	15,
+	17,
+	...Array.from({ length: 105 - 18 + 1 }, (_, index) => 18 + index),
+];
+/** Every dye with rarity "L" in the game's `DyeTypes.json`, keyed by dye id. */
+export const LEGENDARY_DYE_IDS = [
+	1, 9, 10, 18, 24, 29, 33, 34, 44, 51, 66, 67, 85, 99, 136, 143, 181, 205, 211, 247,
+] as const;
 
-const EXP_POTION_ID = 1;
-const GEAR_POTION_ID = 3;
-const GOLD_POTION_ID = 6;
-const MATERIAL_POTION_ID = 8;
+/** Ids from the game's `ConsumableTypes.json`. */
+const EXP_POTION_ID = 8; // XPFindRegular, "Potion of XP Boost"
+const GEAR_POTION_ID = 13; // GearFindRegular, "Potion of Gear Find"
+const GOLD_POTION_ID = 6; // GoldFindRegular, "Potion of Gold Find"
+const MATERIAL_POTION_ID = 7; // MaterialFindRegular, "Potion of Material Find"
+/** `LockboxTypes.xml` id 1, the Treasure Trove; `DragonKeys` opens it. */
 const TROVE_LOCKBOX_ID = 1;
 
 export const CONSUMABLE_ID_BY_KIND: Record<ConsumableId, number> = {
@@ -61,6 +88,16 @@ export const CONSUMABLE_ID_BY_KIND: Record<ConsumableId, number> = {
 
 function pickRandom<T>(values: readonly T[]): T {
 	return values[Math.floor(Math.random() * values.length)];
+}
+
+/** `count` different values, so a pack promising "3 mounts" never rolls the same one twice. */
+function pickDistinct<T>(values: readonly T[], count: number): T[] {
+	const pool = [...values];
+	for (let index = pool.length - 1; index > 0; index -= 1) {
+		const swap = Math.floor(Math.random() * (index + 1));
+		[pool[index], pool[swap]] = [pool[swap], pool[index]];
+	}
+	return pool.slice(0, count);
 }
 
 function mountReward(mountId: number, exclusive: boolean): PackReward {
@@ -98,29 +135,36 @@ export function buildPackRewards(pack: Pick<SponsorPack, "id">): PackReward[] {
 				mountReward(pickRandom(NON_EXCLUSIVE_MOUNT_IDS), false),
 				{ kind: "gold", amount: 10_000 },
 			];
+		case "booster":
+			return [
+				lockboxReward(2),
+				{ kind: "keys", amount: 2 },
+				{ kind: "gold", amount: 10_000 },
+				consumableReward("exp", 1),
+			];
 		case "supporter":
 			return [
+				{ kind: "keys", amount: 3 },
 				lockboxReward(3),
 				dyeReward(pickRandom(LEGENDARY_DYE_IDS)),
 				{ kind: "gold", amount: 25_000 },
 			];
 		case "adventurer":
 			return [
+				{ kind: "keys", amount: 10 },
 				lockboxReward(10),
 				mountReward(pickRandom(EXCLUSIVE_MOUNT_IDS), true),
 				{ kind: "sigils", amount: 250 },
-				dyeReward(pickRandom(LEGENDARY_DYE_IDS)),
+				...pickDistinct(LEGENDARY_DYE_IDS, 2).map((dyeId) => dyeReward(dyeId)),
 				consumableReward("exp", 2),
 			];
 		case "hero":
 			return [
+				{ kind: "keys", amount: 25 },
 				lockboxReward(25),
-				mountReward(pickRandom(EXCLUSIVE_MOUNT_IDS), true),
-				mountReward(pickRandom(EXCLUSIVE_MOUNT_IDS), true),
-				mountReward(pickRandom(EXCLUSIVE_MOUNT_IDS), true),
+				...pickDistinct(EXCLUSIVE_MOUNT_IDS, 3).map((mountId) => mountReward(mountId, true)),
 				{ kind: "sigils", amount: 750 },
-				dyeReward(pickRandom(LEGENDARY_DYE_IDS)),
-				dyeReward(pickRandom(LEGENDARY_DYE_IDS)),
+				...pickDistinct(LEGENDARY_DYE_IDS, 4).map((dyeId) => dyeReward(dyeId)),
 				{ kind: "gold", amount: 100_000 },
 				consumableReward("exp", 2),
 				consumableReward("gear", 2),
@@ -129,8 +173,9 @@ export function buildPackRewards(pack: Pick<SponsorPack, "id">): PackReward[] {
 			];
 		case "champions":
 			return [
+				{ kind: "keys", amount: 50 },
 				lockboxReward(50),
-				// One bundle so the summary lists all 11 mounts together.
+				// One bundle so the summary lists every exclusive mount as one line.
 				mountBundleReward([...EXCLUSIVE_MOUNT_IDS], true),
 				{ kind: "sigils", amount: 750 },
 				...LEGENDARY_DYE_IDS.map((dyeId) => dyeReward(dyeId)),
@@ -156,7 +201,23 @@ export type SponsorPack = {
 	imageUrl: string;
 	/** When set, only members with this Discord role can claim the pack. */
 	requiredRoleId?: string;
+	/** When set, only members who have boosted the server for this many days can claim it. */
+	requiredBoostDays?: number;
 };
+
+/**
+ * Pack banners ship with the bot (`assets/packs/<id>.png`) and Vercel serves them as
+ * static files. Always the production host: a preview deployment sits behind Vercel's
+ * login wall, where Discord's media proxy cannot fetch the image.
+ */
+const PRODUCTION_HOST = "discord-github-assistant-bot.vercel.app";
+
+function packImageUrl(packId: string): string {
+	const host =
+		process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim().replace(/^https?:\/\//, "").replace(/\/$/, "") ||
+		PRODUCTION_HOST;
+	return `https://${host}/assets/packs/${packId}.png`;
+}
 
 /** A pack reward together with the character that received it. */
 export type PackRewardDelivery = {
@@ -184,9 +245,18 @@ export const SPONSOR_PACKS: SponsorPack[] = [
 		emoji: "🐴",
 		color: 0xf1f1f1,
 		items: ["1 random non-exclusive mount", "10,000 golds"],
-		imageUrl:
-			"https://media.discordapp.net/attachments/1533512926474797126/1533571335576485928/Sponsor.png?ex=6a8dfa1a&is=6a8ca89a&hm=eb550755829f0edd7e8733ecbe54f2641c092eaca10c8f791d4152a6a2ff6c4c&=&format=webp&quality=lossless&width=2048&height=689",
+		imageUrl: packImageUrl("sponsor"),
 		requiredRoleId: SPONSOR_ROLE_ID,
+	},
+	{
+		id: "booster",
+		name: "Booster Pack",
+		priceCents: 0,
+		emoji: "💎",
+		color: 0xf47fff,
+		items: ["2 trove chests", "2 trove keys", "10,000 golds", "1 EXP potion"],
+		imageUrl: packImageUrl("booster"),
+		requiredBoostDays: BOOSTER_PACK_DAYS,
 	},
 	{
 		id: "supporter",
@@ -200,8 +270,7 @@ export const SPONSOR_PACKS: SponsorPack[] = [
 			"1 legendary dye",
 			"25,000 golds",
 		],
-		imageUrl:
-			"https://media.discordapp.net/attachments/1533512926474797126/1533571343813971969/Supporter.png?ex=6a8dfa1c&is=6a8ca89c&hm=d5c29eadd2d31d29734c60a8e6bc49ef5f27e14413faa1f1ae637939659db188&=&format=webp&quality=lossless&width=2048&height=689",
+		imageUrl: packImageUrl("supporter"),
 	},
 	{
 		id: "adventurer",
@@ -217,8 +286,7 @@ export const SPONSOR_PACKS: SponsorPack[] = [
 			"2 legendary dyes",
 			"2 EXP potions",
 		],
-		imageUrl:
-			"https://media.discordapp.net/attachments/1533512926474797126/1533571352857149491/Adventurer.png?ex=6a8dfa1e&is=6a8ca89e&hm=8c8b8a075a04ef0bd2e527c16912c755ee1daf2abacd98b247ead9b4b8b6079e&=&format=webp&quality=lossless&width=2048&height=689",
+		imageUrl: packImageUrl("adventurer"),
 	},
 	{
 		id: "hero",
@@ -238,8 +306,7 @@ export const SPONSOR_PACKS: SponsorPack[] = [
 			"2 gold potions",
 			"2 material potions",
 		],
-		imageUrl:
-			"https://media.discordapp.net/attachments/1533512926474797126/1533571366744227890/Hero.png?ex=6a8dfa22&is=6a8ca8a2&hm=3bdc9a2de727401a2eb21b68af69e43a97c947f52992a9f795145ee22149d4a&=&format=webp&quality=lossless&width=2048&height=689",
+		imageUrl: packImageUrl("hero"),
 	},
 	{
 		id: "champions",
@@ -261,8 +328,7 @@ export const SPONSOR_PACKS: SponsorPack[] = [
 			"Custom Discord role",
 			"Rename an NPC",
 		],
-		imageUrl:
-			"https://media.discordapp.net/attachments/1533512926474797126/1533571380053016686/Champions.png?ex=6a8dfa25&is=6a8ca8a5&hm=7a76b17821c4c1aa210f71527b362300819a5443f13176506c086f1bf55fe92d&=&format=webp&quality=lossless&width=2048&height=698",
+		imageUrl: packImageUrl("champions"),
 	},
 ];
 
@@ -401,6 +467,8 @@ export type PackPurchaseResult =
 	| { status: "credit-unknown" }
 	| { status: "insufficient"; pack: SponsorPack; balanceCents: number }
 	| { status: "missing-role"; pack: SponsorPack }
+	/** `boostedDays` is how long they have boosted so far, or null when not boosting. */
+	| { status: "not-boosting"; pack: SponsorPack; boostedDays: number | null }
 	| { status: "already-claimed"; pack: SponsorPack }
 	| { status: "conflict"; pack: SponsorPack }
 	| {
@@ -449,17 +517,80 @@ async function refundQuietly(discordId: string, purchase: PackPurchase): Promise
  * Delivery therefore runs with no remote round trip behind it, so the
  * confirmation reply cannot be outlived by a slow dependency.
  */
+/** What the interaction says about the buyer, for the role- and boost-gated packs. */
+export type PackMember = {
+	roleIds?: string[];
+	/** `member.premium_since`: when they started boosting, or null/absent when they are not. */
+	premiumSince?: string | null;
+};
+
+/** Whole days since the member started boosting, or null when they are not boosting. */
+export function boostedDays(premiumSince: string | null | undefined, nowMs = Date.now()): number | null {
+	const sinceMs = premiumSince ? Date.parse(premiumSince) : Number.NaN;
+	if (!Number.isFinite(sinceMs)) return null;
+	return Math.max(0, Math.floor((nowMs - sinceMs) / DAY_MS));
+}
+
+/** Where a player stands on a free pack, shown before they press Claim. */
+export type FreePackStatus =
+	| { kind: "eligible" }
+	| { kind: "missing-role"; roleId: string }
+	| { kind: "boosting"; boostedDays: number | null; requiredDays: number }
+	| { kind: "claimed" };
+
+/**
+ * The same gates `purchaseSponsorPack` applies to a free pack, read without claiming it,
+ * so the shop can say "you can claim this" or why not. Null for a paid pack. A lookup
+ * that fails reports eligible: the claim itself still checks, so the worst case is a
+ * button that answers "already claimed".
+ */
+export async function getFreePackStatus(
+	discordId: string,
+	pack: SponsorPack,
+	member: PackMember,
+): Promise<FreePackStatus | null> {
+	if (pack.priceCents !== 0) return null;
+	if (pack.requiredRoleId && !(member.roleIds ?? []).includes(pack.requiredRoleId)) {
+		return { kind: "missing-role", roleId: pack.requiredRoleId };
+	}
+	if (pack.requiredBoostDays !== undefined) {
+		const days = boostedDays(member.premiumSince);
+		if (days === null || days < pack.requiredBoostDays) {
+			return { kind: "boosting", boostedDays: days, requiredDays: pack.requiredBoostDays };
+		}
+	}
+	try {
+		const claimed =
+			pack.requiredBoostDays !== undefined
+				? await hasPackClaim(discordId, pack.id)
+				: (await getPackLedger(discordId.trim())).purchases.some(
+						(purchase) => purchase.packId === pack.id,
+					);
+		return claimed ? { kind: "claimed" } : { kind: "eligible" };
+	} catch {
+		return { kind: "eligible" };
+	}
+}
+
 export async function purchaseSponsorPack(
 	discordId: string,
 	packId: string,
-	memberRoleIds: string[] = [],
+	member: PackMember = {},
 	targetCharacterName?: string,
 ): Promise<PackPurchaseResult> {
 	const pack = findSponsorPack(packId);
 	if (!pack) return { status: "no-profile" };
 
-	if (pack.requiredRoleId && !memberRoleIds.includes(pack.requiredRoleId)) {
+	if (pack.requiredRoleId && !(member.roleIds ?? []).includes(pack.requiredRoleId)) {
 		return { status: "missing-role", pack };
+	}
+
+	if (pack.requiredBoostDays !== undefined) {
+		const days = boostedDays(member.premiumSince);
+		if (days === null || days < pack.requiredBoostDays) {
+			return { status: "not-boosting", pack, boostedDays: days };
+		}
+		return claimBoosterPack(discordId, pack, targetCharacterName);
 	}
 
 	// The Sponsor Pack is a free claim gated by the Sponsor role, so it costs no
@@ -592,6 +723,62 @@ export async function purchaseSponsorPack(
 					? null
 					: Math.max(0, credit.balanceCents - pack.priceCents),
 			purchases: [...credit.purchases, purchase],
+		},
+	};
+}
+
+/**
+ * The Booster Pack: free and once per player, like the Sponsor Pack, but a booster
+ * need not have a linked profile, so the claim is recorded in `packClaims` instead
+ * of the profile ledger. No credit is involved; the result carries an empty credit
+ * so the confirmation renders the same way.
+ */
+async function claimBoosterPack(
+	discordId: string,
+	pack: SponsorPack,
+	targetCharacterName?: string,
+): Promise<PackPurchaseResult> {
+	const claimedAtMs = await recordPackClaim(discordId, pack.id);
+	if (claimedAtMs === null) return { status: "already-claimed", pack };
+	const release = () =>
+		releasePackClaim(discordId, pack.id, claimedAtMs).catch((error) => {
+			console.error("[sponsorPacks] Could not release a failed Booster Pack claim:", error);
+			return false;
+		});
+
+	let deliveries: PackRewardDeliveryResult[];
+	try {
+		deliveries = await deliverPackRewards(discordId, pack, targetCharacterName);
+	} catch (error) {
+		await release();
+		if (error instanceof LockedCharacterError) {
+			return { status: "no-character", pack, reason: error.message, deliveries: [] };
+		}
+		throw error;
+	}
+	if (hasNoSuccessfulDelivery(deliveries)) {
+		await release();
+		return { status: "no-character", pack, reason: failedDeliveryReason(deliveries), deliveries };
+	}
+
+	const purchase: PackPurchase = {
+		packId: pack.id,
+		packName: pack.name,
+		priceCents: 0,
+		purchasedAtMs: claimedAtMs,
+	};
+	return {
+		status: "ok",
+		pack,
+		deliveries,
+		credit: {
+			githubUsername: "",
+			isSponsor: false,
+			sponsoredCents: null,
+			bonusCents: 0,
+			usedCents: 0,
+			balanceCents: null,
+			purchases: [purchase],
 		},
 	};
 }

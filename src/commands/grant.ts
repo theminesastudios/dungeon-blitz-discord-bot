@@ -228,24 +228,40 @@ function characterSelectRow(
   return new ActionRowBuilder<MessageActionRowComponent>().addComponents(select);
 }
 
-function itemSelectRow(state: OpState): ActionRowBuilder<MessageActionRowComponent> {
-  const select = new StringSelectMenuBuilder()
-    .setCustomId(itemCustomId(state))
-    .setPlaceholder("Which one?")
-    .setMinValues(1)
-    .setMaxValues(1)
-    .setOptions(
-      listGrantItems(state.categoryId)
-        .slice(0, 25)
-        .map((option) =>
+/** Discord caps a select menu at 25 options. */
+const SELECT_OPTION_LIMIT = 25;
+
+/**
+ * One select per 25 items, so a long list (the mounts) is split across several menus
+ * instead of cut off. Each menu's id ends in its page number to keep the ids unique;
+ * `parseItemState` reads only the parts before it.
+ */
+function itemSelectRows(state: OpState): ActionRowBuilder<MessageActionRowComponent>[] {
+  const items = listGrantItems(state.categoryId);
+  const rows: ActionRowBuilder<MessageActionRowComponent>[] = [];
+  for (let start = 0; start < items.length; start += SELECT_OPTION_LIMIT) {
+    const page = items.slice(start, start + SELECT_OPTION_LIMIT);
+    const select = new StringSelectMenuBuilder()
+      .setCustomId(`${itemCustomId(state)}:${start / SELECT_OPTION_LIMIT}`)
+      .setPlaceholder(
+        items.length > SELECT_OPTION_LIMIT
+          ? `Which one? (${start + 1}–${start + page.length} of ${items.length})`
+          : "Which one?",
+      )
+      .setMinValues(1)
+      .setMaxValues(1)
+      .setOptions(
+        page.map((option) =>
           new StringSelectMenuOptionBuilder()
             .setLabel(option.label.slice(0, 100))
             .setValue(option.key)
             .setDescription(option.description.slice(0, 100))
             .setDefault(option.key === state.itemKey),
         ),
-    );
-  return new ActionRowBuilder<MessageActionRowComponent>().addComponents(select);
+      );
+    rows.push(new ActionRowBuilder<MessageActionRowComponent>().addComponents(select));
+  }
+  return rows;
 }
 
 function operationRow(state: OpState): ActionRowBuilder<MessageActionRowComponent> {
@@ -346,7 +362,7 @@ async function renderPanel(
   if (category.shape !== "currency" && !state.itemKey) {
     container.addComponent(separator());
     container.addComponent(text("**Step 3 · Pick the exact item**"));
-    container.addComponent(itemSelectRow(state as OpState));
+    for (const row of itemSelectRows(state as OpState)) container.addComponent(row);
     container.addComponent(separator());
     container.addComponent(startOverRow());
     return container;

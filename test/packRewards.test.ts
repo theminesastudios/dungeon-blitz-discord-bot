@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import {
+	BOOSTER_PACK_DAYS,
+	boostedDays,
 	buildPackRewards,
 	findSponsorPack,
 	SPONSOR_PACKS,
@@ -33,6 +36,7 @@ for (const pack of SPONSOR_PACKS) {
 				break;
 			case "gold":
 			case "sigils":
+			case "keys":
 				assert.ok(reward.amount > 0, "currency amounts are positive");
 				break;
 		}
@@ -80,5 +84,72 @@ for (let roll = 0; roll < 25; roll += 1) {
 	const dye = supporterRewards.find((reward): reward is PackReward & { kind: "dye" } => reward.kind === "dye")!;
 	assert.ok(LEGENDARY_DYE_IDS.includes(dye.dyeId as never));
 }
+
+// Every pack's reward list matches its banner: count each kind of thing it hands out.
+function tally(rewards: PackReward[]) {
+	const sum = (kind: PackReward["kind"]) =>
+		rewards.reduce((total, reward) => {
+			if (reward.kind !== kind) return total;
+			if (reward.kind === "lockbox" || reward.kind === "consumable") return total + reward.count;
+			if (reward.kind === "mount") return total + (reward.mountIds?.length ?? 1);
+			if (reward.kind === "dye") return total + 1;
+			return total + reward.amount;
+		}, 0);
+	return {
+		keys: sum("keys"),
+		chests: sum("lockbox"),
+		mounts: sum("mount"),
+		dyes: sum("dye"),
+		sigils: sum("sigils"),
+		gold: sum("gold"),
+		potions: sum("consumable"),
+	};
+}
+const expected: Record<string, ReturnType<typeof tally>> = {
+	sponsor: { keys: 0, chests: 0, mounts: 1, dyes: 0, sigils: 0, gold: 10_000, potions: 0 },
+	booster: { keys: 2, chests: 2, mounts: 0, dyes: 0, sigils: 0, gold: 10_000, potions: 1 },
+	supporter: { keys: 3, chests: 3, mounts: 0, dyes: 1, sigils: 0, gold: 25_000, potions: 0 },
+	adventurer: { keys: 10, chests: 10, mounts: 1, dyes: 2, sigils: 250, gold: 0, potions: 2 },
+	hero: { keys: 25, chests: 25, mounts: 3, dyes: 4, sigils: 750, gold: 100_000, potions: 8 },
+	champions: {
+		keys: 50,
+		chests: 50,
+		mounts: EXCLUSIVE_MOUNT_IDS.length,
+		dyes: LEGENDARY_DYE_IDS.length,
+		sigils: 750,
+		gold: 250_000,
+		potions: 20,
+	},
+};
+for (const pack of SPONSOR_PACKS) {
+	assert.deepEqual(tally(buildPackRewards(pack)), expected[pack.id], `${pack.id} matches its banner`);
+}
+
+// Packs promising several mounts or dyes never roll the same one twice.
+for (let roll = 0; roll < 50; roll += 1) {
+	for (const id of ["adventurer", "hero"]) {
+		const rewards = buildPackRewards(findSponsorPack(id)!);
+		const mounts = rewards.flatMap((reward) => (reward.kind === "mount" ? [reward.mountId] : []));
+		const dyes = rewards.flatMap((reward) => (reward.kind === "dye" ? [reward.dyeId] : []));
+		assert.equal(new Set(mounts).size, mounts.length, `${id} mounts are distinct`);
+		assert.equal(new Set(dyes).size, dyes.length, `${id} dyes are distinct`);
+	}
+}
+
+// Banners are served from the bot's own production host, one file per pack.
+for (const pack of SPONSOR_PACKS) {
+	assert.ok(existsSync(`assets/packs/${pack.id}.png`), `assets/packs/${pack.id}.png exists`);
+	assert.match(pack.imageUrl, new RegExp(`^https://[^/]+/assets/packs/${pack.id}\\.png$`));
+}
+
+// The Booster Pack is free and gated on boosting for BOOSTER_PACK_DAYS days.
+const booster = findSponsorPack("booster")!;
+assert.equal(booster.priceCents, 0);
+assert.equal(booster.requiredBoostDays, BOOSTER_PACK_DAYS);
+const now = Date.parse("2026-10-11T12:00:00Z");
+assert.equal(boostedDays(null, now), null);
+assert.equal(boostedDays("not a date", now), null);
+assert.equal(boostedDays("2026-10-05T12:00:01Z", now), 5);
+assert.equal(boostedDays("2026-10-04T12:00:00Z", now), 7);
 
 console.log("packRewards tests passed");

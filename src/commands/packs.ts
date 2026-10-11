@@ -7,12 +7,8 @@ import {
 	GalleryBuilder,
 	GalleryItemBuilder,
 	InteractionFlags,
-	SectionBuilder,
-	SeparatorBuilder,
-	SeparatorSpacingSize,
 	StringSelectMenuBuilder,
 	StringSelectMenuOptionBuilder,
-	TextDisplayBuilder,
 } from "@minesa-org/mini-interaction";
 import { MessageFlags } from "discord-api-types/v10";
 import type { MessageActionRowComponent } from "@minesa-org/mini-interaction";
@@ -25,7 +21,11 @@ import {
 	formatUsd,
 	purchaseSponsorPack,
 	findSponsorPack,
+	getFreePackStatus,
+	type FreePackStatus,
+	type PackMember,
 	type PackPurchaseResult,
+	type PackReward,
 	type PackRewardDeliveryResult,
 	type SponsorCredit,
 	type SponsorPack,
@@ -36,13 +36,19 @@ import {
 	type GameCharacterOption,
 } from "../utils/gameRewards.js";
 import { ensureGameItemNames, primeGameItemNames } from "../utils/gameContent.js";
-import { getMemberRoleIds, interactionDiscordId } from "../utils/discordInteractions.js";
+import {
+	getMemberPremiumSince,
+	getMemberRoleIds,
+	interactionDiscordId,
+} from "../utils/discordInteractions.js";
 import {
 	publishGameLog,
 	type GameLogField,
 	type GameLogPayload,
 } from "../utils/gameLogChannel.js";
 import { waitUntil } from "@vercel/functions";
+import { buttonRow, COLORS, divider, text } from "../ui/containers.js";
+import { classComponentEmoji, emoji } from "../ui/emojis.js";
 
 const BUY_BUTTON_PREFIX = "packs:buy:";
 const PACK_SELECT_ID = "packs:view";
@@ -54,30 +60,31 @@ const CONTAINER_EPHEMERAL_FLAGS =
 	(MessageFlags.IsComponentsV2 | InteractionFlags.Ephemeral) as MessageFlags;
 
 function packPriceLabel(pack: SponsorPack) {
-	return pack.priceCents === 0 ? "FREE" : formatUsd(pack.priceCents);
+	return pack.priceCents === 0 ? "Free" : formatUsd(pack.priceCents);
 }
 
-function packButtonLabel(pack: SponsorPack) {
-	return pack.priceCents === 0 ? "Claim" : "Buy";
+/** Who a pack is for, in a few words: the pack list and the detail view both use it. */
+function packTerms(pack: SponsorPack): string {
+	if (pack.requiredRoleId) return "Sponsors · once per player";
+	if (pack.requiredBoostDays !== undefined) {
+		return `After ${pack.requiredBoostDays} days of boosting · once per player`;
+	}
+	return "Paid from your donation credit";
 }
 
 function buildPackSelectRow(defaultId?: string) {
 	const select = new StringSelectMenuBuilder()
 		.setCustomId(PACK_SELECT_ID)
-		.setPlaceholder("Select a pack to view…")
+		.setPlaceholder(defaultId ? "Look at another pack…" : "Pick a pack to see what's inside…")
 		.setMinValues(1)
 		.setMaxValues(1)
 		.setOptions(
 			SPONSOR_PACKS.map((pack) =>
 				new StringSelectMenuOptionBuilder()
-					.setLabel(`${pack.name} — ${packPriceLabel(pack)}`)
+					.setLabel(`${pack.name} · ${packPriceLabel(pack)}`)
 					.setValue(pack.id)
 					.setEmoji(pack.emoji)
-					.setDescription(
-						pack.requiredRoleId
-							? "Sponsor role required"
-							: undefined,
-					)
+					.setDescription(packTerms(pack))
 					.setDefault(pack.id === defaultId),
 			),
 		);
@@ -103,6 +110,7 @@ function buildCharacterSelectRow(
 					.setLabel(character.name.slice(0, 100))
 					.setValue(character.name)
 					.setDescription(`Level ${character.level} ${character.class}`)
+					.setEmoji(classComponentEmoji(character.class))
 					.setDefault(
 						selectedCharacter
 							? character.name === selectedCharacter
@@ -114,113 +122,159 @@ function buildCharacterSelectRow(
 	return new ActionRowBuilder<MessageActionRowComponent>().addComponents(select);
 }
 
+/** The line under the price saying whether this player can take the pack, and if not, why. */
+function statusLine(status: FreePackStatus | null): string | null {
+	if (!status) return null;
+	switch (status.kind) {
+		case "eligible":
+			return "✅ You can claim this pack.";
+		case "claimed":
+			return "📦 You have already claimed this pack.";
+		case "missing-role":
+			return `🔒 You need the <@&${status.roleId}> role to claim this pack.`;
+		case "boosting": {
+			if (status.boostedDays === null) {
+				return `🔒 Boost the server and keep it for ${status.requiredDays} days to unlock this pack.`;
+			}
+			const left = status.requiredDays - status.boostedDays;
+			return `⏳ You have boosted for ${status.boostedDays} of ${status.requiredDays} days. ${left} more ${left === 1 ? "day" : "days"} to go.`;
+		}
+	}
+}
+
+function packBanner(pack: SponsorPack) {
+	return new GalleryBuilder().addItem(
+		new GalleryItemBuilder()
+			.setMedia({ url: pack.imageUrl })
+			.setDescription(`${pack.name}: ${pack.items.join(", ")}`.slice(0, 1024)),
+	);
+}
+
 function buildPackContainer(
 	pack: SponsorPack,
-	credit?: SponsorCredit | null,
+	status: FreePackStatus | null,
 	characters: GameCharacterOption[] = [],
 	selectedCharacter?: string,
 ): ContainerBuilder {
 	const container = new ContainerBuilder().setAccentColor(pack.color);
+	container.addComponent(packBanner(pack));
 
-	// Pack image gallery
-	const gallery = new GalleryBuilder().addItem(
-		new GalleryItemBuilder().setMedia({ url: pack.imageUrl }).setDescription(pack.name),
-	);
-	container.addComponent(gallery);
-
-	// Header + price + role info
-	const headerParts: string[] = [];
-	headerParts.push(`### ${pack.emoji} ${pack.name}`);
-	headerParts.push(`**Price:** ${packPriceLabel(pack)}`);
-
-	if (pack.requiredRoleId) {
-		headerParts.push(`-# 🎟️ Free claim for <@&${pack.requiredRoleId}> role holders only`);
-	}
-
-	if (credit) {
-		headerParts.push(
-			`-# 💰 Your balance: ${credit.balanceCents === null ? "Unknown" : formatUsd(credit.balanceCents)}`,
-		);
-	}
-
+	const status_ = statusLine(status);
 	container.addComponent(
-		new TextDisplayBuilder().setContent(headerParts.join("\n")),
+		text(
+			[
+				`## ${pack.emoji} ${pack.name}`,
+				`**${packPriceLabel(pack)}** · ${packTerms(pack)}`,
+				...(status_ ? [status_] : []),
+			].join("\n"),
+		),
 	);
 
-	container.addComponent(
-		new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small),
-	);
+	container.addComponent(divider());
 
-	// Buy/Claim button in a section
-	container.addSection(
-		new SectionBuilder()
-			.addComponent(
-				new TextDisplayBuilder().setContent(
-					pack.priceCents === 0
-						? "-# Tap **Claim** to get this free pack"
-						: `-# Tap **Buy** to purchase with ${formatUsd(pack.priceCents)}`,
-				),
-			)
-			.setAccessory(
-				new ButtonBuilder()
-					.setLabel(packButtonLabel(pack))
-					.setStyle(ButtonStyle.Primary)
-					.setCustomId(
-						selectedCharacter
-							? `${BUY_BUTTON_PREFIX}${pack.id}:${selectedCharacter}`
-							: `${BUY_BUTTON_PREFIX}${pack.id}`,
-					),
-			),
-	);
+	// A free pack this player cannot take: the status line already says why, so the
+	// delivery controls would only be a disabled button to look at.
+	if (status && status.kind !== "eligible") {
+		container.addComponent(buildPackSelectRow(pack.id));
+		return container;
+	}
 
 	const characterRow = buildCharacterSelectRow(pack, characters, selectedCharacter);
 	if (characterRow) {
+		container.addComponent(text("**Deliver to**"));
+		container.addComponent(characterRow);
+	} else {
 		container.addComponent(
-			new TextDisplayBuilder().setContent(
-				"-# 🎒 Pick which character receives the pack rewards (defaults to your most recent character).",
+			text(
+				"**Deliver to**\n-# You have no character yet. Create one in-game, then come back to claim it.",
 			),
 		);
-		container.addComponent(characterRow);
 	}
 
+	// Paid packs check credit only on Buy (it is a GitHub round trip), so the button is
+	// disabled only when there is no character to deliver to.
+	const canTake = characterRow !== null;
+	// Without an explicit pick the server delivers to the most recent unlocked character.
+	const target = selectedCharacter;
 	container.addComponent(
-		new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small),
+		buttonRow(
+			new ButtonBuilder()
+				.setLabel(
+					pack.priceCents === 0
+						? "Claim for free"
+						: `Buy for ${formatUsd(pack.priceCents)}`,
+				)
+				.setStyle(ButtonStyle.Success)
+				.setDisabled(!canTake)
+				.setCustomId(
+					target
+						? `${BUY_BUTTON_PREFIX}${pack.id}:${target}`
+						: `${BUY_BUTTON_PREFIX}${pack.id}`,
+				),
+		),
 	);
 
-	// Select menu row at the bottom
+	container.addComponent(divider());
 	container.addComponent(buildPackSelectRow(pack.id));
-
 	return container;
 }
 
 function buildShopContainer(): ContainerBuilder {
-	const container = new ContainerBuilder().setAccentColor(0xf1c40f);
+	const container = new ContainerBuilder().setAccentColor(COLORS.warning);
+	const line = (pack: SponsorPack) =>
+		`${pack.emoji} **${pack.name}** · ${pack.priceCents === 0 ? packTerms(pack).replace(" · once per player", "") : packPriceLabel(pack)}`;
+	const free = SPONSOR_PACKS.filter((pack) => pack.priceCents === 0);
+	const paid = SPONSOR_PACKS.filter((pack) => pack.priceCents > 0);
 
 	container.addComponent(
-		new TextDisplayBuilder().setContent(
-			"## 🛍️ Sponsor Pack Shop\nBrowse and purchase sponsor packs below.\n-# Select a pack to see details and purchase.",
+		text(
+			[
+				"## 🛍️ Pack Shop",
+				"-# Rewards go straight into the character you pick, the moment you buy.",
+			].join("\n"),
 		),
 	);
-
+	container.addComponent(divider());
 	container.addComponent(
-		new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small),
+		text(["### Free, once per player", ...free.map(line)].join("\n")),
 	);
-
+	container.addComponent(
+		text(["### Paid from your donation credit", ...paid.map(line)].join("\n")),
+	);
+	container.addComponent(divider());
 	container.addComponent(buildPackSelectRow());
-
 	return container;
+}
+
+function rewardIcon(reward: PackReward): string {
+	switch (reward.kind) {
+		case "keys":
+			return emoji("cur_dragon_key");
+		case "gold":
+			return emoji("cur_gold");
+		case "sigils":
+			return emoji("cur_silver_sigil");
+		case "mount":
+			return "🐴";
+		case "dye":
+			return "🎨";
+		case "lockbox":
+			return "📦";
+		case "consumable":
+			return "🧪";
+	}
 }
 
 function buildDeliverySummary(deliveries: PackRewardDeliveryResult[]): string[] {
 	if (deliveries.length === 0) return ["-# No rewards to deliver for this pack."];
 
-	const lines: string[] = ["**Delivered rewards**"];
+	const lines: string[] = ["**What you got**"];
 	for (const outcome of deliveries) {
-		const reward = formatRewardLine(outcome.delivery.reward);
+		const reward = `${rewardIcon(outcome.delivery.reward)} ${formatRewardLine(outcome.delivery.reward)}`;
 		lines.push(
 			outcome.status === "delivered"
-				? `- ✅ ${reward} → **${outcome.delivery.characterName}**`
-				: `- ⚠️ ${reward} — ${outcome.error ?? "delivery failed"}`,
+				? reward
+				: `⚠️ ${reward} · ${outcome.error ?? "could not be delivered"}`,
 		);
 	}
 	return lines;
@@ -232,44 +286,26 @@ function buildPurchasedContainer(
 	deliveries: PackRewardDeliveryResult[],
 ): ContainerBuilder {
 	const container = new ContainerBuilder().setAccentColor(pack.color);
+	container.addComponent(packBanner(pack));
 
-	// Pack image
-	const gallery = new GalleryBuilder().addItem(
-		new GalleryItemBuilder().setMedia({ url: pack.imageUrl }).setDescription(pack.name),
-	);
-	container.addComponent(gallery);
-
+	const characterName =
+		deliveries.find((outcome) => outcome.status === "delivered")?.delivery.characterName ?? "";
+	const paidLine =
+		pack.priceCents === 0
+			? "-# Free claim"
+			: `-# Paid ${formatUsd(pack.priceCents)} · ${credit.balanceCents === null ? "balance unknown" : `${formatUsd(credit.balanceCents)} left`}`;
 	container.addComponent(
-		new TextDisplayBuilder().setContent(
-			`### ${pack.emoji} ${pack.name} purchased!${pack.priceCents === 0 ? " (free claim)" : ""}`,
-		),
-	);
-
-	container.addComponent(
-		new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small),
-	);
-
-	container.addComponent(
-		new TextDisplayBuilder().setContent(
+		text(
 			[
-				`**Price:** ${packPriceLabel(pack)}`,
-				`**Remaining balance:** ${credit.balanceCents === null ? "Unknown" : formatUsd(credit.balanceCents)}`,
-				`**Sponsored / Used:** ${credit.sponsoredCents === null ? "Unknown" : formatUsd(credit.sponsoredCents)}${credit.bonusCents > 0 ? ` + ${formatUsd(credit.bonusCents)} bonus` : ""} / ${formatUsd(credit.usedCents)}`,
+				`## ✅ ${pack.name} delivered${characterName ? ` to ${characterName}` : ""}`,
+				paidLine,
 			].join("\n"),
 		),
 	);
-
-	container.addComponent(
-		new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small),
-	);
-
-	container.addComponent(
-		new TextDisplayBuilder().setContent(buildDeliverySummary(deliveries).join("\n")),
-	);
-
-	// Select menu to keep browsing
+	container.addComponent(divider());
+	container.addComponent(text(buildDeliverySummary(deliveries).join("\n")));
+	container.addComponent(divider());
 	container.addComponent(buildPackSelectRow());
-
 	return container;
 }
 
@@ -298,6 +334,7 @@ const PURCHASE_STATUS: Record<string, { emoji: string; label: string }> = {
 	ok: { emoji: "✅", label: "Delivered" },
 	insufficient: { emoji: "💸", label: "Not enough credit" },
 	"missing-role": { emoji: "🎟️", label: "Sponsor role required" },
+	"not-boosting": { emoji: "💎", label: "Not boosting long enough" },
 	"already-claimed": { emoji: "📦", label: "Already claimed" },
 	"no-character": { emoji: "❌", label: "Delivery failed — refunded" },
 	"credit-unknown": { emoji: "⚠️", label: "Credit could not be verified" },
@@ -429,7 +466,9 @@ function buildPurchaseSummary(
 	return [
 		`### ${pack.emoji} ${pack.name} purchased!${pack.priceCents === 0 ? " (free claim)" : ""}`,
 		`**Price:** ${packPriceLabel(pack)}`,
-		`**Remaining balance:** ${credit.balanceCents === null ? "Unknown" : formatUsd(credit.balanceCents)}`,
+		...(pack.requiredBoostDays !== undefined
+			? []
+			: [`**Remaining balance:** ${credit.balanceCents === null ? "Unknown" : formatUsd(credit.balanceCents)}`]),
 		...buildDeliverySummary(deliveries),
 	].join("\n");
 }
@@ -462,18 +501,22 @@ async function editWithFallback(
 async function respondWithPurchase(
 	discordId: string,
 	packId: string,
-	memberRoleIds: string[],
+	member: PackMember,
 	characterName: string | undefined,
 	editReply: (data: Record<string, unknown>) => Promise<unknown>,
 ) {
-	const result = await purchaseSponsorPack(discordId, packId, memberRoleIds, characterName);
+	const result = await purchaseSponsorPack(discordId, packId, member, characterName);
 	// Loaded after the purchase, never before: the reward lines should name what was
 	// delivered ("Skybone Wyrm"), but a slow game server must not delay the write.
 	await ensureGameItemNames();
 	// Every outcome that means something happened to a save or a balance is
 	// logged. A random member clicking a sponsor-only pack is not an event an
 	// operator needs to read.
-	if (result.status !== "no-profile" && result.status !== "not-sponsor") {
+	if (
+		result.status !== "no-profile" &&
+		result.status !== "not-sponsor" &&
+		result.status !== "not-boosting"
+	) {
 		reportPurchase(purchaseLogCard(result, discordId, packId));
 	}
 
@@ -487,6 +530,14 @@ async function respondWithPurchase(
 		case "missing-role":
 			return editReply({
 				content: `The **${result.pack.name}** is a free claim for sponsors only — you need the <@&${result.pack.requiredRoleId}> role to claim it.`,
+				flags: InteractionFlags.Ephemeral,
+			});
+		case "not-boosting":
+			return editReply({
+				content:
+					result.boostedDays === null
+						? `The **${result.pack.name}** is for server boosters. Boost the server and keep it up for ${result.pack.requiredBoostDays} days, then claim it here.`
+						: `You have boosted the server for ${result.boostedDays} of the ${result.pack.requiredBoostDays} days the **${result.pack.name}** needs. Come back in ${result.pack.requiredBoostDays! - result.boostedDays} more ${result.pack.requiredBoostDays! - result.boostedDays === 1 ? "day" : "days"}.`,
 				flags: InteractionFlags.Ephemeral,
 			});
 		case "already-claimed":
@@ -560,7 +611,10 @@ async function handleBuy(
 		return await respondWithPurchase(
 			discordId,
 			packId,
-			getMemberRoleIds(interaction),
+			{
+				roleIds: getMemberRoleIds(interaction),
+				premiumSince: getMemberPremiumSince(interaction),
+			},
 			characterName,
 			(data) => interaction.editReply(data as never),
 		);
@@ -605,13 +659,28 @@ async function handlePackView(
 		});
 	}
 
-	const discordId = interactionDiscordId(interaction);
-	const characters = discordId ? await listGameSaveCharacters(discordId).catch(() => []) : [];
-
 	return interaction.update({
-		components: [buildPackContainer(pack, null, characters)],
+		components: [await buildPackView(interaction, pack)],
 		flags: CONTAINER_FLAGS,
 	});
+}
+
+/** The pack's detail view for this player: their characters and, for a free pack, whether they can claim it. */
+async function buildPackView(
+	interaction: MessageComponentInteraction,
+	pack: SponsorPack,
+	selectedCharacter?: string,
+): Promise<ContainerBuilder> {
+	const discordId = interactionDiscordId(interaction);
+	const member: PackMember = {
+		roleIds: getMemberRoleIds(interaction),
+		premiumSince: getMemberPremiumSince(interaction),
+	};
+	const [characters, status] = await Promise.all([
+		discordId ? listGameSaveCharacters(discordId).catch(() => []) : Promise.resolve([]),
+		discordId ? getFreePackStatus(discordId, pack, member) : Promise.resolve(null),
+	]);
+	return buildPackContainer(pack, status, characters, selectedCharacter);
 }
 
 async function handleShop(
@@ -676,11 +745,8 @@ export const packsCharacterSelectComponent = {
 			});
 		}
 
-		const discordId = interactionDiscordId(interaction);
-		const characters = discordId ? await listGameSaveCharacters(discordId).catch(() => []) : [];
-
 		return interaction.update({
-			components: [buildPackContainer(pack, null, characters, selected)],
+			components: [await buildPackView(interaction, pack, selected)],
 			flags: CONTAINER_FLAGS,
 		});
 	},

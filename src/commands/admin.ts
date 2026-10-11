@@ -186,7 +186,7 @@ export const adminCommand = {
     .addSubcommand((subcommand) =>
       subcommand
         .setName("rewards")
-        .setDescription("Remove sponsor pack mounts and dyes from a player's save")
+        .setDescription("Undo test purchases: removes every buyable mount and legendary dye from a save")
         .addStringOption((option) =>
           option
             .setName("player")

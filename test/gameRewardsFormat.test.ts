@@ -24,9 +24,10 @@ assert.equal(
 );
 assert.equal(formatRewardLine({ kind: "gold", amount: 100_000 }), "100,000 gold");
 assert.equal(formatRewardLine({ kind: "sigils", amount: 250 }), "250 Silver Sigils");
+assert.equal(formatRewardLine({ kind: "keys", amount: 25 }), "25× Trove Key");
 
 // Exhaustiveness: adding a reward kind without a formatter breaks this test.
-const kinds = new Set<string>(["mount", "dye", "lockbox", "consumable", "gold", "sigils"]);
+const kinds = new Set<string>(["mount", "dye", "lockbox", "consumable", "gold", "sigils", "keys"]);
 const sample: PackReward = { kind: "gold", amount: 1 };
 assert.ok(kinds.has(sample.kind));
 
