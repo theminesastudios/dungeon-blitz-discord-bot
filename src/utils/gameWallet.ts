@@ -899,3 +899,11 @@ export async function releasePackClaim(
 	const result = await claims.deleteOne({ _id: packClaimId(packId, discordId), claimedAtMs });
 	return result.deletedCount === 1;
 }
+
+/** Whether this player has already claimed a pack recorded in `packClaims`. */
+export async function hasPackClaim(discordId: string, packId: string): Promise<boolean> {
+	const normalized = discordId.trim();
+	if (!normalized) return false;
+	const claims = await getPackClaimCollection();
+	return (await claims.countDocuments({ _id: packClaimId(packId, normalized) }, { limit: 1 })) > 0;
+}

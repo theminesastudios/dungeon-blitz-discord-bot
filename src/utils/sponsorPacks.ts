@@ -4,6 +4,7 @@ import {
 	grantBonusCredit,
 	recordPackPurchase,
 	refundPackPurchase,
+	hasPackClaim,
 	recordPackClaim,
 	releasePackClaim,
 	type PackPurchase,
@@ -528,6 +529,47 @@ export function boostedDays(premiumSince: string | null | undefined, nowMs = Dat
 	const sinceMs = premiumSince ? Date.parse(premiumSince) : Number.NaN;
 	if (!Number.isFinite(sinceMs)) return null;
 	return Math.max(0, Math.floor((nowMs - sinceMs) / DAY_MS));
+}
+
+/** Where a player stands on a free pack, shown before they press Claim. */
+export type FreePackStatus =
+	| { kind: "eligible" }
+	| { kind: "missing-role"; roleId: string }
+	| { kind: "boosting"; boostedDays: number | null; requiredDays: number }
+	| { kind: "claimed" };
+
+/**
+ * The same gates `purchaseSponsorPack` applies to a free pack, read without claiming it,
+ * so the shop can say "you can claim this" or why not. Null for a paid pack. A lookup
+ * that fails reports eligible: the claim itself still checks, so the worst case is a
+ * button that answers "already claimed".
+ */
+export async function getFreePackStatus(
+	discordId: string,
+	pack: SponsorPack,
+	member: PackMember,
+): Promise<FreePackStatus | null> {
+	if (pack.priceCents !== 0) return null;
+	if (pack.requiredRoleId && !(member.roleIds ?? []).includes(pack.requiredRoleId)) {
+		return { kind: "missing-role", roleId: pack.requiredRoleId };
+	}
+	if (pack.requiredBoostDays !== undefined) {
+		const days = boostedDays(member.premiumSince);
+		if (days === null || days < pack.requiredBoostDays) {
+			return { kind: "boosting", boostedDays: days, requiredDays: pack.requiredBoostDays };
+		}
+	}
+	try {
+		const claimed =
+			pack.requiredBoostDays !== undefined
+				? await hasPackClaim(discordId, pack.id)
+				: (await getPackLedger(discordId.trim())).purchases.some(
+						(purchase) => purchase.packId === pack.id,
+					);
+		return claimed ? { kind: "claimed" } : { kind: "eligible" };
+	} catch {
+		return { kind: "eligible" };
+	}
 }
 
 export async function purchaseSponsorPack(
