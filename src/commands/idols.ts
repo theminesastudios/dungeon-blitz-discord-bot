@@ -1,6 +1,10 @@
 import type { AutocompleteContext } from "@minesa-org/mini-interaction";
 import type { CommandInteraction } from "@minesa-org/mini-interaction";
-import { adjustMammothIdols, searchGameWallets } from "../utils/gameWallet.js";
+import {
+  adjustMammothIdols,
+  formatCharacterLabel,
+  searchGameWallets,
+} from "../utils/gameWallet.js";
 import { isAdministrator } from "../utils/discordInteractions.js";
 
 /** `/admin idols` — atomically adds or subtracts a player's Mammoth Idols. */
@@ -94,11 +98,7 @@ export async function handleIdolsAutocomplete(
     const wallets = await searchGameWallets(String(focused.value ?? ""));
     autocomplete.respond(
       wallets.map((wallet) => ({
-        name:
-          `${wallet.characterName} [${wallet.gameUserId}] • Idols ${wallet.mammothIdols} • Gold ${wallet.gold} • Keys ${wallet.dragonKeys}`.slice(
-            0,
-            100,
-          ),
+        name: `${formatCharacterLabel(wallet)} · ${wallet.mammothIdols} idols`.slice(0, 100),
         value: wallet.selector,
       })),
     );

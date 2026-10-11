@@ -31,17 +31,12 @@ import {
 } from "../src/commands/server.js";
 import {
   accountCommand,
-  initialPasswordButton,
-  initialPasswordModal,
-  notificationsToggleButton,
-  resetPasswordModal,
+  accountComponents,
+  accountModals,
 } from "../src/commands/account.js";
+import { playerCommand, handlePlayerAutocomplete } from "../src/commands/player.js";
 import { adminCommand, handleAdminAutocomplete } from "../src/commands/admin.js";
 import { authorizeCommand } from "../src/commands/authorize.js";
-import {
-  profileCommand,
-  handleProfileAutocomplete,
-} from "../src/commands/profile.js";
 import {
   packsCommand,
   packsBuyComponent,
@@ -98,14 +93,13 @@ const commandModules: CommandModule[] = [
   accountCommand,
   adminCommand,
   authorizeCommand,
-  profileCommand,
+  playerCommand,
   packsCommand,
   reportBugCommand,
 ];
 
 const componentModules: ComponentModule[] = [
-  initialPasswordButton,
-  notificationsToggleButton,
+  ...accountComponents,
   packsBuyComponent,
   packsSelectComponent,
   packsCharacterSelectComponent,
@@ -122,15 +116,14 @@ const componentModules: ComponentModule[] = [
 ];
 
 const modalModules: ModalModule[] = [
-  initialPasswordModal,
-  resetPasswordModal,
+  ...accountModals,
   grantAmountModal,
   reportBugModal,
 ];
 
 const autocompleteModules: AutocompleteModule[] = [
   { command: "admin", handler: handleAdminAutocomplete },
-  { command: "profile", handler: handleProfileAutocomplete },
+  { command: "player", handler: handlePlayerAutocomplete },
 ];
 
 /** Command payloads for global registration (see scripts/register.ts). */
@@ -139,36 +132,29 @@ export const commandData = commandModules.map((command) => command.data.toJSON()
 const commandHandlers = new Map<string, CommandHandler>(
   commandData.map((payload, index) => [payload.name, commandModules[index].handler]),
 );
-const exactComponentHandlers = new Map<string, ComponentHandler>();
-const prefixComponentHandlers: Array<{
-  prefix: string;
-  handler: ComponentHandler;
-}> = [];
-for (const component of componentModules) {
-  if (component.customId.endsWith("*")) {
-    prefixComponentHandlers.push({
-      prefix: component.customId.slice(0, -1),
-      handler: component.handler,
-    });
-  } else {
-    exactComponentHandlers.set(component.customId, component.handler);
+/**
+ * Custom ids ending in `*` match by prefix, so a handler can carry state in the id
+ * (`account:view:<character>`). Exact ids win over prefixes.
+ */
+function buildMatcher<H>(modules: Array<{ customId: string; handler: H }>) {
+  const exact = new Map<string, H>();
+  const prefixes: Array<{ prefix: string; handler: H }> = [];
+  for (const module of modules) {
+    if (module.customId.endsWith("*")) {
+      prefixes.push({ prefix: module.customId.slice(0, -1), handler: module.handler });
+    } else {
+      exact.set(module.customId, module.handler);
+    }
   }
+  return (customId: string): H | undefined =>
+    exact.get(customId) ?? prefixes.find((entry) => customId.startsWith(entry.prefix))?.handler;
 }
-const modalHandlers = new Map<string, ModalHandler>(
-  modalModules.map((modal) => [modal.customId, modal.handler]),
-);
+
+const matchComponentHandler = buildMatcher<ComponentHandler>(componentModules);
+const matchModalHandler = buildMatcher<ModalHandler>(modalModules);
 const autocompleteHandlers = new Map<string, AutocompleteHandler>(
   autocompleteModules.map((module) => [module.command, module.handler]),
 );
-
-function matchComponentHandler(customId: string): ComponentHandler | undefined {
-  const exact = exactComponentHandlers.get(customId);
-  if (exact) return exact;
-  for (const entry of prefixComponentHandlers) {
-    if (customId.startsWith(entry.prefix)) return entry.handler;
-  }
-  return undefined;
-}
 
 function isDeferredResponse(response: APIInteractionResponse) {
   return (
@@ -346,7 +332,7 @@ async function dispatch(
   }
 
   if (interaction.type === InteractionType.ModalSubmit) {
-    const handler = modalHandlers.get(interaction.data.custom_id);
+    const handler = matchModalHandler(interaction.data.custom_id);
     if (!handler) return undefined;
     return runWithResponseLifecycle(
       interaction,

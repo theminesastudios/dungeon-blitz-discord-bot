@@ -99,7 +99,7 @@ export async function handleAddCreditsAutocomplete(
 
   try {
     // Only linked profiles can hold credit, so the picker lists exactly the
-    // `profile:<discordId>` rows (unlike /profile, which also offers wallets).
+    // `profile:<discordId>` rows.
     const players = (await searchPlayers(String(focused.value ?? ""))).filter(
       (player) => player.selector.startsWith("profile:"),
     );

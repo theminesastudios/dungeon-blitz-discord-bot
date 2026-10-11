@@ -4,19 +4,23 @@ This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord 
 
 ## Commands
 
-- `/account create` sends an owner-bound Discord OAuth link. A MongoDB-backed game account and complete empty save document are created only after Discord returns a verified email; the player then sets the initial password through the message button and modal.
-- `/account view` privately shows the linked account's Discord email, game user ID, password setup state, and the connections it authorized.
-- `/account reset-password` opens an owner-scoped modal and replaces the linked game account's password hash.
-- `/account ban target duration [reason]` (staff) bans a Discord member from the game for a limited time. `duration` is one of `1-hour`, `1-day`, `3-days`, `7-days`, `30-days` or `Permanent`; the bot resolves the member to their linked game user and asks the game server to enforce it, which also drops a live session.
-- `/account unban target [reason]` (staff) lifts a game ban, permanent or otherwise.
+Commands are registered on the community server only (`DISCORD_GUILD_ID`); there are no global commands, so nothing is offered in DMs or other servers. `npm run build` (run on every production deploy) overwrites the guild's commands and clears any global ones — see [Command registration](#command-registration).
+
+Every reply is a Components V2 **container**; follow-up actions are buttons, select menus and modals on that message rather than extra commands. Game icons (classes, disciplines, currencies) are application emojis — see [Emojis](#emojis).
+
+- `/account create` sends an owner-bound Discord OAuth link. A MongoDB-backed game account and complete empty save document are created only after Discord returns a verified email; the player then sets the initial password with the **Set password** button.
+- `/account view` is the player's private panel: their current character (name, then a `-#` line with level, class and discipline), every character with a **View** button, and buttons to set or reset the game password and turn upgrade DMs on or off. **View** opens the character's balances, current quest and playtime, with **Rename** (500 Mammoth Idols) and **Delete**. Each of those asks "are you sure?" in a separate ephemeral message, and every action re-reads the account when it runs, so a stale panel cannot act on a character that was already renamed, deleted or moved. Rename and delete are carried out by the game server — see [Character rename and delete](#character-rename-and-delete).
+- `/player name` shows anyone a character's public card: portrait, level, gold and current quest, and nothing else. Autocomplete lists live characters with their owner's Discord username.
 - `/authorize [connection]` sends owner-bound Discord OAuth links that connect a player's Discord account to the game's Discord surfaces: the Game Stats widget on their profile, the Social SDK's friends and rich presence, and its lobbies and chat. `connection` picks one; without it the reply offers a link for each, plus an "everything" link that authorizes them together. Links expire after 10 minutes and only the player who invoked the command can complete them.
-- `/profile [player]` shows the invoking player their own linked profile and balances. Naming another player is a staff action: it needs the **Manage Server** permission, so a player can never read someone else's wallet through the command.
 - `/packs` opens the sponsor pack shop. It writes each pack's rewards straight into the chosen character's save: credit is deducted (or the one-time Sponsor Pack claim recorded) before the rewards roll, and a purchase whose rewards cannot be written is refunded automatically. Every write is addressed by the `_id` of the save document the shop read the character from, and each reward is **confirmed by reading the character back out of the save** — a write MongoDB accepted but the save does not show is reported as failed (and refunded) instead of confirmed, so the shop can never charge for rewards nobody can find.
-- `/report-bug` opens a modal and files the report as a GitHub issue in the private tracker, recording the reporter as their Discord username and user ID and optionally linking screenshots they upload. Any member can use it, in a guild or in DMs, one report per 10 minutes; the confirmation is ephemeral and quotes the issue number rather than a link, because the tracker is private.
+- `/report-bug` opens a modal and files the report as a GitHub issue in the private tracker, recording the reporter as their Discord username and user ID and optionally linking screenshots they upload. Any member can use it in the server, one report per 10 minutes; the confirmation is ephemeral and quotes the issue number rather than a link, because the tracker is private.
+- `/admin profile player` (administrator) shows a player's Discord and GitHub identity, sponsor state, shop credit and every live character's balances.
+- `/admin ban target duration [reason]` (administrator) bans a Discord member from the game for a limited time. `duration` is one of `1-hour`, `1-day`, `3-days`, `7-days`, `30-days` or `Permanent`; the bot resolves the member to their linked game user and asks the game server to enforce it, which also drops a live session.
+- `/admin unban target [reason]` (administrator) lifts a game ban, permanent or otherwise.
 - `/admin maintenance seconds` (administrator) starts the in-game maintenance warning.
 - `/admin lobby-chat [channel]` (administrator) moves the game's lobby chat to a Discord channel: the game server links its Discord lobby to that channel (Discord "Linked Channels"), so players speak there as themselves through the game. Give a channel as `#channel-name`, `<#id>` or a raw id; `none` returns to the server's default channel, and running it with no channel shows the channel in use now. The reply only says the channel moved once the game server confirms the link. See [Linked lobby chat](#linked-lobby-chat).
 - `/admin credits player dollars [note]` (administrator) adds shop credit to a linked player, converting donated dollars 1:1 into spendable credit. It stacks on top of the player's GitHub-reported donation total, is audited on the player's profile, and can be spent in `/packs` like sponsor credit.
-- `/admin idols player operation amount` (administrator) atomically adds or subtracts Mammoth Idols. Player autocomplete displays the character's current Idols, Gold, and Dragon Keys.
+- `/admin idols player operation amount` (administrator) atomically adds or subtracts Mammoth Idols. Player autocomplete lists live characters with their owner's Discord username and current Idols.
 - `/admin rewards player [character] [reset-credit]` (administrator) removes the mounts and legendary dyes the shop wrote into a player's save, and with `reset-credit` also clears their pack purchase history so a pack can be bought again. Rewards are written to the stored save, so run it while the target character is out of game — the game server owns the save of a character that is online.
 - `/admin grant` (administrator) opens an interactive panel for handing out one specific thing: pick the player, the character, the item type (gold, Mammoth Idols, Dragon Keys, Dragon Ore, Silver Sigils, Royal Sigils, mount, legendary dye, trove chest or potion), the exact item where one is needed, then **Add** or **Remove**. Balances and counted items ask for an amount in a modal; mounts and dyes are one-of-a-kind, so their add/remove applies on the click. Each write is confirmed by reading the character back out of the save, and the result is posted to the operator log.
 - `/admin widget [player]` (administrator) reports what is standing between a player and a working Game Stats profile widget: the application's game-stats access, the game server's scope switch, the connections the player authorized, the record Discord actually stores, and the payload the sync would send (built in dry-run mode, so it writes nothing).
@@ -24,7 +28,19 @@ This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord 
 - `/admin sponsor-role [user] [github_username] [mode]` (administrator) marks a player as a sponsor by hand: it writes the player's linked-role metadata, which is how the **linked** Sponsor role is awarded, and marks their stored profile so sponsor packs and credit unlock. The player receives the role by authorizing their account (or claiming it from their own profile) — no role is granted by hand. `mode: remove` takes it all back. See [Sponsor role and the badge](#sponsor-role-and-the-badge).
 - `/server` (administrator) shows the live game server and restarts it onto another branch: the running branch, commit, uptime and player count, every branch the VM can pull, and a restart onto the selected one (with the one-minute player warning, or immediately). A scheduled restart can be cancelled from the same panel.
 
-`/admin` is administrator-gated as a whole. The moderation and balance-inspection actions (`/account ban`, `/account unban` and `/profile`'s player lookup) require **Manage Server**, which an Administrator also holds.
+`/admin` is administrator-gated as a whole (a server can widen that in **Integrations**). `/admin ban` and `/admin unban` additionally check **Manage Server**, which an Administrator also holds.
+
+### Command registration
+
+`scripts/register.ts` (`npm run build`) does three bulk overwrites, in this order:
+
+1. `PUT /applications/{app}/guilds/{DISCORD_GUILD_ID}/commands` with every command — guild commands update instantly.
+2. `PUT /applications/{app}/commands` with `[]`, deleting the global commands so nothing shows up twice.
+3. The linked role metadata (`is_sponsor`, `contributor`), which is application-wide.
+
+It needs `DISCORD_BOT_TOKEN`, `DISCORD_APPLICATION_ID` and `DISCORD_GUILD_ID`; if any is missing it skips everything, so the global commands are never cleared without the guild ones taking their place. Preview deployments skip registration unless `ALLOW_PREVIEW_COMMAND_REGISTRATION=true`.
+
+Every player picker reads only live data: characters on a current `saves` document whose account is linked to a Discord user, shown as `Character · Lv 50 Mage — @username`. Old snapshot documents and the accounts imported from the old `Accounts.json` test data have no Discord link and never appear.
 
 ### Grant item names
 
@@ -45,7 +61,7 @@ To pin or override a name by hand — or to name an id the game server reports d
 
 ### Ban enforcement
 
-The game server enforces bans — only the process holding the player connections can refuse a login and drop a session. `/account ban` and `/account unban` call `POST /api/admin/ban` and `POST /api/admin/unban` with the same shared secret as the other admin endpoints, so the game server needs those routes; a deployment that can run `/admin maintenance` can ban too.
+The game server enforces bans — only the process holding the player connections can refuse a login and drop a session. `/admin ban` and `/admin unban` call `POST /api/admin/ban` and `POST /api/admin/unban` with the same shared secret as the other admin endpoints, so the game server needs those routes; a deployment that can run `/admin maintenance` can ban too.
 
 The `/admin maintenance` and `/admin idols` subcommands require matching `DISCORD_MAINTENANCE_API_SECRET` values in the bot and game-server environments. The bot defaults to `http://dungeonblitzr.theminesa.studio`; override it with `GAME_SERVER_BASE_URL` in the bot deployment when the game moves. (It used to default to the raw VM address `35.185.71.109`, which is a **reserved but idle** address in the same GCP project — the same finding `gameHealthCheck.ts` records against that IP. Nothing game-related listens there, so every admin call went to an address that cannot answer.)
 
@@ -167,7 +183,7 @@ is byte-for-byte what a verification would write.
 
 ## Bug reports (`/report-bug`)
 
-Every member can file a bug straight into the private issue tracker, from a guild or from the bot's DMs — the command is registered with the Bot context, so it shows up in DMs even though the bot is only guild-installed. The command checks a per-player cooldown first, opens a modal (title, details, optional steps, optional screenshots), then POSTs to `POST /repos/{owner}/{repo}/issues`.
+Every member of the server can file a bug straight into the private issue tracker. The command checks a per-player cooldown first, opens a modal (title, details, optional steps, optional screenshots), then POSTs to `POST /repos/{owner}/{repo}/issues`.
 
 The issue body records the reporter as **Discord username followed by the user ID in parentheses** (`Reported by hansklein (1234567890)`), then the two text fields. It does not record the server or a timestamp: every report lands in the one tracker, and GitHub stamps its own open time. **Both text fields are wrapped in fenced code blocks on purpose** — without the fence a player could inject an `@everyone` ping or a tracking link into a ticket that staff read. The tracker is private, but it is still a shared surface.
 
@@ -222,12 +238,39 @@ Cooldowns live in the `bugReports` collection of the profile database (`PROFILE_
 
 ## Game wallet database
 
-The wallet commands use `MONGODB_URI` by default. The current game schema is read from the `saves` collection, where each account document contains a `characters[]` array. Legacy flat `minidb` and `wallets` documents remain supported for compatibility. Production deployments are sourced from the repository's `main` branch. A separate game database can be selected with:
+The wallet commands use `MONGODB_URI` by default and read the `saves` collection, where each document holds one game user's `characters[]`, joined to the `accounts` collection for the owner's Discord id and username. A save whose account has no `discordId` is not a player and is left out of every lookup; the legacy flat `minidb` / `wallets` snapshot documents are no longer read. Production deployments are sourced from the repository's `main` branch. A separate game database can be selected with:
 
 - `GAME_MONGODB_URI`
 - `GAME_MONGODB_DB_NAME`
 - `MONGODB_SAVES_COLLECTION` (default `saves`)
-- `GAME_WALLET_COLLECTION` (legacy flat wallet collection)
+- `MONGODB_ACCOUNTS_COLLECTION` (default `accounts`)
+
+### Current quest
+
+The save stores missions by id and state; `/player` and the character view show the tracked mission (state 1 or 2), preferring the story quest. Mission names come from `src/data/missions.ts`, generated from the game's `MissionTypes.json`:
+
+```bash
+npx tsx scripts/export-missions.ts ../private-dungeon-blitz-r/src/server/data/MissionTypes.json
+```
+
+### Character rename and delete
+
+A character's save is held in memory by the game server while its player is online, so the bot never edits it directly. It calls two admin routes on the game server with the shared admin secret:
+
+- `POST /api/admin/character/rename` `{ userId, characterName, newName, cost, requestedByDiscordId }` → `{ ok, oldName, newName, idolsBefore, idolsAfter }`. The game server checks and charges the `cost` (500 Mammoth Idols, account-wide) in the same step as the rename.
+- `POST /api/admin/character/delete` `{ userId, characterName, requestedByDiscordId }` → `{ ok, characterName, remaining }`.
+
+A refusal is `{ error, code }` with `code` one of `online` (the player must log out first), `name-taken`, `invalid-name`, `insufficient-idols` or `not-found`. Until the game server has these routes, the buttons answer that the game server could not be reached and nothing changes.
+
+### Emojis
+
+The class, discipline and currency icons are exported from the client SWFs with FFDec into `assets/emojis/` (`SOURCES.md` there records each symbol), then uploaded as application emojis:
+
+```bash
+npx tsx scripts/sync-emojis.ts
+```
+
+It uploads only the names the application does not have yet and rewrites `src/ui/emojiIds.ts`. Every icon has a unicode fallback in `src/ui/emojis.ts`, so the bot renders fine before the upload.
 
 ## Game account database
 

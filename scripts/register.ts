@@ -1,25 +1,42 @@
 import dotenv from "dotenv";
-dotenv.config();
+// Locally, the full set (including DISCORD_GUILD_ID) is in .env.production.local
+// (`vercel env pull`); the first file that sets a variable wins. On Vercel neither
+// file exists and the project's environment is used as-is.
+dotenv.config({ path: [".env.production.local", ".env"] });
+
+/**
+ * Registers every slash command on the one community guild (DISCORD_GUILD_ID) and
+ * clears the application's global commands, so each command shows up once, only in
+ * that server, and updates instantly instead of waiting on Discord's global cache.
+ * Linked role metadata is application-wide and is synced here too.
+ */
 
 if (
 	process.env.VERCEL_ENV === "preview" &&
 	process.env.ALLOW_PREVIEW_COMMAND_REGISTRATION !== "true"
 ) {
-	console.log("Preview deployment detected. Skipping global Discord command registration.");
+	console.log("Preview deployment detected. Skipping Discord command registration.");
 	process.exit(0);
 }
 
-if (!process.env.DISCORD_BOT_TOKEN) {
-	console.log("⚠️ DISCORD_BOT_TOKEN not found. Skipping command registration.");
-	process.exit(0);
+const botToken = process.env.DISCORD_BOT_TOKEN?.trim();
+const applicationId = process.env.DISCORD_APPLICATION_ID?.trim();
+const guildId = process.env.DISCORD_GUILD_ID?.trim();
+
+// Bail out before touching anything: clearing the global commands without a guild to
+// register on would leave the server with no commands at all.
+for (const [name, value] of [
+	["DISCORD_BOT_TOKEN", botToken],
+	["DISCORD_APPLICATION_ID", applicationId],
+	["DISCORD_GUILD_ID", guildId],
+] as const) {
+	if (!value) {
+		console.log(`⚠️ ${name} not found. Skipping command registration.`);
+		process.exit(0);
+	}
 }
 
 const { commandData } = await import("../api/interactions");
-const applicationId = process.env.DISCORD_APPLICATION_ID;
-if (!applicationId) {
-  console.log("⚠️ DISCORD_APPLICATION_ID not found. Skipping command registration.");
-  process.exit(0);
-}
 
 const linkedRoleMetadata = [
 	{
@@ -36,40 +53,30 @@ const linkedRoleMetadata = [
 	},
 ];
 
-const response = await fetch(
-	`https://discord.com/api/v10/applications/${applicationId}/commands`,
-	{
+const applicationUrl = `https://discord.com/api/v10/applications/${applicationId}`;
+
+/** PUT a bulk overwrite and throw with Discord's response if it is refused. */
+async function put(path: string, body: unknown, what: string): Promise<void> {
+	const response = await fetch(`${applicationUrl}${path}`, {
 		method: "PUT",
 		headers: {
-			Authorization: `Bot ${process.env.DISCORD_BOT_TOKEN}`,
+			Authorization: `Bot ${botToken}`,
 			"Content-Type": "application/json",
 		},
-		body: JSON.stringify(commandData),
-	},
-);
-
-if (!response.ok) {
-	throw new Error(
-		`[register] Failed to clear application commands: [${response.status}] ${await response.text()}`,
-	);
+		body: JSON.stringify(body),
+	});
+	if (!response.ok) {
+		throw new Error(
+			`[register] Failed to ${what}: [${response.status}] ${await response.text()}`,
+		);
+	}
 }
 
-const metadataResponse = await fetch(
-	`https://discord.com/api/v10/applications/${applicationId}/role-connections/metadata`,
-	{
-		method: "PUT",
-		headers: {
-			Authorization: `Bot ${process.env.DISCORD_BOT_TOKEN}`,
-			"Content-Type": "application/json",
-		},
-		body: JSON.stringify(linkedRoleMetadata),
-	},
+// Guild first: if it is refused, the global commands are left in place.
+await put(`/guilds/${guildId}/commands`, commandData, "register guild commands");
+await put("/commands", [], "clear global commands");
+await put("/role-connections/metadata", linkedRoleMetadata, "sync linked role metadata");
+
+console.log(
+	`Registered ${commandData.length} commands on guild ${guildId}, cleared global commands, synced linked role metadata.`,
 );
-
-if (!metadataResponse.ok) {
-	throw new Error(
-		`[register] Failed to sync linked role metadata: [${metadataResponse.status}] ${await metadataResponse.text()}`,
-	);
-}
-
-console.log("Slash command and linked role metadata sync complete!");

@@ -3,9 +3,7 @@ import {
 	ButtonBuilder,
 	ButtonStyle,
 	CommandBuilder,
-	CommandContext,
 	ContainerBuilder,
-	IntegrationType,
 	InteractionFlags,
 	SeparatorBuilder,
 	SeparatorSpacingSize,
@@ -401,12 +399,9 @@ async function handleCancel(interaction: MessageComponentInteraction): Promise<u
 
 export const serverCommand = {
 	data: new CommandBuilder()
-		.setContexts([CommandContext.Guild])
-		.setIntegrationTypes([IntegrationType.GuildInstall])
 		.setName("server")
 		.setDescription("Show the game server's branch and restart it onto another one")
-		.setDefaultMemberPermissions(8n)
-		.setDMPermission(false),
+		.setDefaultMemberPermissions(8n),
 	handler: (interaction: CommandInteraction) => handleOpen(interaction),
 };
 
