@@ -8,6 +8,7 @@ dotenv.config({ path: [".env.production.local", ".env"] });
  * Registers every slash command on the one community guild (DISCORD_GUILD_ID) and
  * clears the application's global commands, so each command shows up once, only in
  * that server, and updates instantly instead of waiting on Discord's global cache.
+ * The Activity's Entry Point command is global by nature and is kept.
  * Linked role metadata is application-wide and is synced here too.
  */
 
@@ -72,9 +73,49 @@ async function put(path: string, body: unknown, what: string): Promise<void> {
 	}
 }
 
+/** Application command type of the Activity launcher, which a bulk overwrite cannot remove. */
+const PRIMARY_ENTRY_POINT = 4;
+
+type GlobalCommand = {
+	id: string;
+	type: number;
+	name: string;
+	description?: string;
+	handler?: number;
+	integration_types?: number[];
+	contexts?: number[] | null;
+};
+
+/**
+ * The global Entry Point command, if the app has one. Discord refuses a global
+ * overwrite that leaves it out, so clearing the global commands has to carry it.
+ */
+async function globalEntryPoints(): Promise<GlobalCommand[]> {
+	const response = await fetch(`${applicationUrl}/commands`, {
+		headers: { Authorization: `Bot ${botToken}` },
+	});
+	if (!response.ok) {
+		throw new Error(
+			`[register] Failed to read global commands: [${response.status}] ${await response.text()}`,
+		);
+	}
+	const commands = (await response.json()) as GlobalCommand[];
+	return commands
+		.filter((command) => command.type === PRIMARY_ENTRY_POINT)
+		.map(({ id, type, name, description, handler, integration_types, contexts }) => ({
+			id,
+			type,
+			name,
+			description,
+			handler,
+			integration_types,
+			contexts,
+		}));
+}
+
 // Guild first: if it is refused, the global commands are left in place.
 await put(`/guilds/${guildId}/commands`, commandData, "register guild commands");
-await put("/commands", [], "clear global commands");
+await put("/commands", await globalEntryPoints(), "clear global commands");
 await put("/role-connections/metadata", linkedRoleMetadata, "sync linked role metadata");
 
 console.log(
