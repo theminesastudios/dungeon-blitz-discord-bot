@@ -230,9 +230,7 @@ export type PackRewardDeliveryResult = {
 	status: "delivered" | "failed";
 	delivery: PackRewardDelivery;
 	error?: string;
-	/** The save document the reward was written to, so an operator can check that exact one. */
-	saveId?: string;
-	/** What the field read after the write, or why it could not be read back. */
+	/** What the game server reports the field reads after the delivery. */
 	verified?: string;
 };
 
@@ -784,8 +782,8 @@ async function claimBoosterPack(
 }
 
 /**
- * Rolls the pack's rewards and writes them into the buyer's game save. Every
- * reward is attempted independently so one failure does not block the rest.
+ * Rolls the pack's rewards and has the game server pay them to the buyer's
+ * character (the live one when they are in game, the stored save when not).
  *
  * When the buyer picked a target character, the whole pack goes there and a
  * locked pick throws `LockedCharacterError` before anything is written. The
@@ -835,7 +833,12 @@ export async function deliverPackRewards(
 		return noCharacterResults(rewards, targetCharacterName);
 	}
 
-	return applyPackRewardsToSave(character.userId, character.characterName, rewards);
+	return applyPackRewardsToSave(
+		character.userId,
+		character.characterName,
+		rewards,
+		`pack:${pack.id} discord:${discordId.trim()}`,
+	);
 }
 
 function noCharacterResults(

@@ -460,12 +460,19 @@ function outcomeToPanel(
     case "insufficient":
       return {
         container: errorContainer(
-          `Not enough to remove: the save holds **${outcome.available.toLocaleString()}** and the request was **${outcome.requested.toLocaleString()}**.`,
+          outcome.available === null
+            ? `Not enough to remove: the character holds less than **${outcome.requested.toLocaleString()}**.`
+            : `Not enough to remove: the character holds **${outcome.available.toLocaleString()}** and the request was **${outcome.requested.toLocaleString()}**.`,
         ),
         failed: true,
       };
     case "invalid":
       return { container: errorContainer(outcome.reason), failed: true };
+    case "unavailable":
+      return {
+        container: errorContainer(`Nothing was changed. ${outcome.reason}`),
+        failed: true,
+      };
   }
 }
 
@@ -528,6 +535,7 @@ async function executeGrant(
     itemKey: input.itemKey,
     operation: input.operation,
     amount: input.amount,
+    requestedBy: actor,
   });
   const { container, failed } = outcomeToPanel(outcome, input.targetId, actor);
   const summary =

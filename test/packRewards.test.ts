@@ -12,6 +12,11 @@ import {
 	NON_EXCLUSIVE_MOUNT_IDS,
 	type PackReward,
 } from "../src/utils/sponsorPacks.js";
+import {
+	applyPackRewardsToSave,
+	LockedCharacterError,
+	toGameRewardChange,
+} from "../src/utils/gameRewards.js";
 
 // Every pack rolls a non-empty, shape-valid reward list.
 for (const pack of SPONSOR_PACKS) {
@@ -151,5 +156,119 @@ assert.equal(boostedDays(null, now), null);
 assert.equal(boostedDays("not a date", now), null);
 assert.equal(boostedDays("2026-10-05T12:00:01Z", now), 5);
 assert.equal(boostedDays("2026-10-04T12:00:00Z", now), 7);
+
+// Rewards are paid by the game server, never written to Mongo: the game's live save overwrites
+// Mongo, which is how "Supporter Pack delivered to Aiden" ended up with nothing in game.
+assert.deepEqual(toGameRewardChange({ kind: "mount", mountId: 81, exclusive: true, label: "" }), {
+	kind: "mount",
+	mountIds: [81],
+});
+assert.deepEqual(
+	toGameRewardChange({ kind: "consumable", consumableId: "exp", count: 2, label: "" }),
+	{ kind: "consumable", consumableID: CONSUMABLE_ID_BY_KIND.exp, count: 2 },
+	"potions travel as the game's numeric id",
+);
+assert.deepEqual(toGameRewardChange({ kind: "keys", amount: 3 }), { kind: "keys", amount: 3 });
+
+{
+	const originalFetch = globalThis.fetch;
+	const originalSecret = process.env.DISCORD_MAINTENANCE_API_SECRET;
+	const calls: Array<{ url: string; auth: string; body: Record<string, any> }> = [];
+	let answers: Array<{ status: number; body: string } | Error> = [];
+
+	globalThis.fetch = (async (url: string, init?: RequestInit) => {
+		calls.push({
+			url: String(url),
+			auth: String((init?.headers as Record<string, string>)?.Authorization ?? ""),
+			body: JSON.parse(String(init?.body ?? "{}")),
+		});
+		const next = answers.shift() ?? { status: 500, body: "{}" };
+		if (next instanceof Error) throw next;
+		return new Response(next.body, { status: next.status });
+	}) as typeof fetch;
+	process.env.DISCORD_MAINTENANCE_API_SECRET = "test-secret";
+
+	const supporter: PackReward[] = [
+		{ kind: "keys", amount: 3 },
+		{ kind: "lockbox", lockboxId: 1, count: 3, label: "Trove Chests" },
+		{ kind: "dye", dyeId: 34, legendary: true, label: "Legendary Dye" },
+		{ kind: "gold", amount: 25_000 },
+	];
+	const paid = {
+		ok: true,
+		userId: 14,
+		characterName: "Aiden",
+		online: true,
+		onlineRecipients: 1,
+		results: [
+			{ kind: "keys", field: "DragonKeys", operation: "add", status: "applied", before: 0, after: 3 },
+			{ kind: "lockbox", field: "lockboxes[1]", operation: "add", status: "applied", before: 0, after: 3 },
+			{ kind: "dye", field: "OwnedDyes", operation: "add", status: "applied", before: 0, after: 1 },
+			{ kind: "gold", field: "gold", operation: "add", status: "applied", before: 100, after: 25_100 },
+		],
+	};
+
+	try {
+		// The whole pack is one authorized request, and every reward comes back delivered.
+		answers = [{ status: 200, body: JSON.stringify(paid) }];
+		const delivered = await applyPackRewardsToSave(14, "aiden", supporter);
+		assert.equal(calls.length, 1);
+		assert.match(calls[0].url, /\/api\/admin\/rewards$/);
+		assert.equal(calls[0].auth, "Bearer test-secret");
+		assert.equal(calls[0].body.userId, 14);
+		assert.equal(calls[0].body.characterName, "aiden");
+		assert.deepEqual(calls[0].body.rewards, supporter.map(toGameRewardChange));
+		assert.equal(typeof calls[0].body.requestId, "string");
+		assert.ok(!calls[0].body.allowLocked, "the shop never pays a locked character");
+		assert.deepEqual(delivered.map((entry) => entry.status), ["delivered", "delivered", "delivered", "delivered"]);
+		assert.equal(delivered[0].delivery.characterName, "Aiden", "the game's own spelling of the name");
+		assert.equal(delivered[3].verified, "gold 100 → 25,100 (live)");
+
+		// A timeout may already have paid: the retry carries the same requestId, so it pays once.
+		calls.length = 0;
+		answers = [new Error("The operation was aborted due to timeout"), { status: 200, body: JSON.stringify(paid) }];
+		const retried = await applyPackRewardsToSave(14, "Aiden", supporter);
+		assert.equal(calls.length, 2);
+		assert.equal(calls[1].body.requestId, calls[0].body.requestId);
+		assert.ok(retried.every((entry) => entry.status === "delivered"));
+
+		// Unreachable twice: every reward fails, which refunds the purchase.
+		calls.length = 0;
+		answers = [new Error("ECONNREFUSED"), new Error("ECONNREFUSED")];
+		const unreachable = await applyPackRewardsToSave(14, "Aiden", supporter);
+		assert.ok(unreachable.every((entry) => entry.status === "failed"));
+		assert.match(String(unreachable[0].error), /could not be reached/);
+
+		// A game server without the route yet answers with an HTML 404: nothing was paid.
+		answers = [{ status: 404, body: "<!DOCTYPE html><pre>Cannot POST /api/admin/rewards</pre>" }];
+		const noRoute = await applyPackRewardsToSave(14, "Aiden", supporter);
+		assert.ok(noRoute.every((entry) => entry.status === "failed"));
+		assert.match(String(noRoute[0].error), /no \/api\/admin\/rewards route/);
+
+		// Refusals name what the player can do about them.
+		answers = [{ status: 404, body: JSON.stringify({ error: "x", code: "not-found" }) }];
+		const missing = await applyPackRewardsToSave(14, "Ghost", supporter);
+		assert.ok(missing.every((entry) => entry.status === "failed"));
+		assert.match(String(missing[0].error), /"Ghost" is not on your game save/);
+
+		answers = [{ status: 404, body: JSON.stringify({ error: "x", code: "no-save" }) }];
+		assert.match(String((await applyPackRewardsToSave(14, "Aiden", supporter))[0].error), /No game save exists/);
+
+		answers = [{ status: 409, body: JSON.stringify({ error: "x", code: "held-elsewhere" }) }];
+		assert.match(String((await applyPackRewardsToSave(14, "Aiden", supporter))[0].error), /another game server/);
+
+		answers = [{ status: 409, body: JSON.stringify({ error: "x", code: "locked" }) }];
+		await assert.rejects(applyPackRewardsToSave(14, "Alt", supporter), LockedCharacterError);
+
+		// A 500 is a failed save on the game server, which put the character back as it was.
+		answers = [{ status: 500, body: JSON.stringify({ error: "The reward delivery failed." }) }];
+		const crashed = await applyPackRewardsToSave(14, "Aiden", supporter);
+		assert.ok(crashed.every((entry) => entry.status === "failed"));
+	} finally {
+		globalThis.fetch = originalFetch;
+		if (originalSecret === undefined) delete process.env.DISCORD_MAINTENANCE_API_SECRET;
+		else process.env.DISCORD_MAINTENANCE_API_SECRET = originalSecret;
+	}
+}
 
 console.log("packRewards tests passed");

@@ -6,6 +6,7 @@ import {
 	MOUNT_NAMES,
 	findGrantCategory,
 	grantItemLabel,
+	grantOutcomeFromGame,
 	listGrantItems,
 	mountLabel,
 } from "../src/utils/gameGrant.js";
@@ -14,6 +15,7 @@ import {
 	LEGENDARY_DYE_IDS,
 	NON_EXCLUSIVE_MOUNT_IDS,
 } from "../src/utils/sponsorPacks.js";
+import { requestGameRewards } from "../src/utils/gameRewards.js";
 import {
 	BAN_DURATION_CHOICES,
 	banDurationSeconds,
@@ -100,5 +102,73 @@ assert.equal(canManageGuild({ member: { permissions: null } }), false);
 assert.equal(canManageGuild({}), false);
 assert.equal(isAdministrator({ member: { permissions: "32" } }), false);
 assert.equal(isAdministrator({ member: { permissions: "8" } }), true);
+
+// Grants go through the game server like pack rewards: a direct save write is overwritten by the
+// game's live copy. The server's answer for the one change maps onto the grant outcome.
+{
+	const gold = findGrantCategory("gold")!;
+	const mount = findGrantCategory("mount")!;
+	const context = { category: gold, operation: "add" as const, amount: 500 };
+	const answer = (status: "applied" | "unchanged" | "insufficient", before: number, after: number) =>
+		({
+			ok: true as const,
+			userId: 14,
+			characterName: "Aiden",
+			online: true,
+			results: [{ kind: "gold", field: "gold", operation: "add" as const, status, before, after }],
+		});
+
+	assert.deepEqual(grantOutcomeFromGame(answer("applied", 100, 600), 14, context), {
+		status: "ok",
+		userId: 14,
+		characterName: "Aiden",
+		category: gold,
+		operation: "add",
+		beforeValue: 100,
+		afterValue: 600,
+		unchanged: false,
+	});
+	assert.deepEqual(
+		grantOutcomeFromGame(answer("insufficient", 20, 20), 14, { ...context, operation: "remove" }),
+		{ status: "insufficient", available: 20, requested: 500 },
+		"an overdraw is refused with the balance the game holds",
+	);
+	const owned = grantOutcomeFromGame(answer("unchanged", 1, 1), 14, { category: mount, operation: "add", amount: 1, itemKey: "81", itemLabel: "Mount #81" });
+	assert.equal(owned.status === "ok" && owned.unchanged, true, "a mount already owned reads as unchanged");
+
+	const refused = (refusal: "no-save" | "not-found" | "held-elsewhere" | "invalid-request" | "unavailable") =>
+		grantOutcomeFromGame({ ok: false, refusal, message: "m" }, 14, context).status;
+	assert.equal(refused("no-save"), "no-character");
+	assert.equal(refused("not-found"), "character-not-found");
+	assert.equal(refused("held-elsewhere"), "unavailable");
+	assert.equal(refused("invalid-request"), "invalid");
+	assert.equal(refused("unavailable"), "unavailable");
+
+	// A removal is sent as one, and staff may change a locked character.
+	const originalFetch = globalThis.fetch;
+	const originalSecret = process.env.DISCORD_MAINTENANCE_API_SECRET;
+	const bodies: Array<Record<string, any>> = [];
+	globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+		bodies.push(JSON.parse(String(init?.body ?? "{}")));
+		return new Response(JSON.stringify({ ok: true, userId: 14, characterName: "Aiden", online: false, results: [] }), { status: 200 });
+	}) as typeof fetch;
+	process.env.DISCORD_MAINTENANCE_API_SECRET = "test-secret";
+	try {
+		await requestGameRewards({
+			userId: 14,
+			characterName: "Aiden",
+			rewards: [{ kind: "gold", amount: 5, operation: "remove" }],
+			requestedBy: "staff",
+			allowLocked: true,
+		});
+		assert.deepEqual(bodies[0].rewards, [{ kind: "gold", amount: 5, operation: "remove" }]);
+		assert.equal(bodies[0].allowLocked, true);
+		assert.equal(bodies[0].requestedBy, "staff");
+	} finally {
+		globalThis.fetch = originalFetch;
+		if (originalSecret === undefined) delete process.env.DISCORD_MAINTENANCE_API_SECRET;
+		else process.env.DISCORD_MAINTENANCE_API_SECRET = originalSecret;
+	}
+}
 
 console.log("gameGrant tests passed");
