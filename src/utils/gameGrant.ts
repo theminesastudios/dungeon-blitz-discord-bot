@@ -1,4 +1,3 @@
-import type { Document } from "mongodb";
 import {
   CONSUMABLE_ID_BY_KIND,
   EXCLUSIVE_MOUNT_IDS,
@@ -7,11 +6,13 @@ import {
   type ConsumableId,
 } from "./sponsorPacks.js";
 import {
-  mutateGameCharacter,
-  type CharacterMutation,
-  type CharacterMutationOutcome,
+  findGameUserIdForDiscord,
+  requestGameRewards,
   type CurrencyField,
+  type GameRewardChange,
+  type GameRewardsOutcome,
 } from "./gameRewards.js";
+import { adjustGameMammothIdols, GameServerAdminError } from "./gameMaintenance.js";
 import { DYE_NAMES, MOUNT_NAMES, dyeLabel, mountLabel } from "./gameItemNames.js";
 
 /* ------------------------------------------------------------------
@@ -200,93 +201,122 @@ export type GrantOutcome =
   | { status: "no-account" }
   | { status: "no-character"; userId: number }
   | { status: "character-not-found"; userId: number }
-  | { status: "insufficient"; available: number; requested: number }
-  | { status: "invalid"; reason: string };
+  /** `available` is null when the game server did not say what the balance is. */
+  | { status: "insufficient"; available: number | null; requested: number }
+  | { status: "invalid"; reason: string }
+  /** The game server refused or could not be reached; nothing was changed. */
+  | { status: "unavailable"; reason: string };
 
-function arrayField(categoryId: GrantCategoryId): "mounts" | "OwnedDyes" {
-  return categoryId === "dye" ? "OwnedDyes" : "mounts";
-}
+/** Game-server currency kinds, by the save field a grant category adjusts. */
+const CURRENCY_KINDS: Record<Exclude<CurrencyField, "mammothIdols">, "gold" | "sigils" | "keys" | "ore" | "royalSigils"> = {
+  gold: "gold",
+  SilverSigils: "sigils",
+  DragonKeys: "keys",
+  DragonOre: "ore",
+  RoyalSigils: "royalSigils",
+};
 
-function listValue(character: Document, field: "mounts" | "OwnedDyes", id: number): number {
-  const raw = (character as Record<string, unknown>)[field];
-  const ids = Array.isArray(raw)
-    ? raw.map((entry) => Number(entry)).filter((entry) => Number.isFinite(entry))
-    : [];
-  return ids.includes(id) ? 1 : 0;
-}
+type GrantContext = {
+  category: GrantCategory;
+  operation: GrantOperation;
+  amount: number;
+  itemKey?: string;
+  itemLabel?: string;
+};
 
-function numberFieldValue(character: Document, field: string): number {
-  const value = Number((character as Record<string, unknown>)[field] ?? 0);
-  return Number.isFinite(value) ? Math.max(0, value) : 0;
-}
-
-function stackValue(
-  character: Document,
-  field: "lockboxes" | "consumables",
-  idField: string,
-  entryId: number,
-): number {
-  const entries = (character as Record<string, unknown>)[field];
-  if (!Array.isArray(entries)) return 0;
-  const entry = entries.find(
-    (candidate) =>
-      Number((candidate as Record<string, unknown> | null)?.[idField] ?? NaN) === entryId,
-  );
-  const count = Number((entry as Record<string, unknown> | undefined)?.count ?? 0);
-  return Number.isFinite(count) ? count : 0;
-}
-
-function outcomeToGrant(
-  outcome: CharacterMutationOutcome,
-  context: {
-    category: GrantCategory;
-    operation: GrantOperation;
-    itemKey?: string;
-    itemLabel?: string;
-    entryId?: number;
-  },
+function okOutcome(
+  context: GrantContext,
+  userId: number,
+  characterName: string,
+  beforeValue: number,
+  afterValue: number,
 ): GrantOutcome {
-  if (outcome.status !== "ok") return outcome;
-
-  const { category, itemKey, operation, itemLabel } = context;
-  const readValue = (character: Document): number => {
-    if (category.shape === "currency" && category.currencyField) {
-      return numberFieldValue(character, category.currencyField);
-    }
-    if (category.shape === "list") {
-      return listValue(character, arrayField(category.id), Number(itemKey));
-    }
-    return stackValue(
-      character,
-      category.id === "consumable" ? "consumables" : "lockboxes",
-      category.id === "consumable" ? "consumableID" : "lockboxID",
-      context.entryId ?? 1,
-    );
-  };
-
-  const beforeValue = readValue(outcome.before);
-  const afterValue = readValue(outcome.after);
   return {
     status: "ok",
-    userId: outcome.userId,
-    characterName: outcome.characterName,
-    category,
-    operation,
-    ...(itemKey ? { itemKey } : {}),
-    ...(itemLabel ? { itemLabel } : {}),
+    userId,
+    characterName,
+    category: context.category,
+    operation: context.operation,
+    ...(context.itemKey ? { itemKey: context.itemKey } : {}),
+    ...(context.itemLabel ? { itemLabel: context.itemLabel } : {}),
     beforeValue,
     afterValue,
     unchanged: beforeValue === afterValue,
   };
 }
 
+/** Maps the game server's answer for a single-change grant onto the grant outcome. */
+export function grantOutcomeFromGame(
+  outcome: GameRewardsOutcome,
+  userId: number,
+  context: GrantContext,
+): GrantOutcome {
+  if (!outcome.ok) {
+    switch (outcome.refusal) {
+      case "no-save":
+        return { status: "no-character", userId };
+      case "not-found":
+        return { status: "character-not-found", userId };
+      case "held-elsewhere":
+        return {
+          status: "unavailable",
+          reason: "The player is signed in on another game server. Try again once they log out.",
+        };
+      case "invalid-request":
+        return { status: "invalid", reason: outcome.message };
+      default:
+        return { status: "unavailable", reason: outcome.message };
+    }
+  }
+
+  const result = outcome.results[0];
+  if (!result) {
+    return { status: "unavailable", reason: "The game server did not report the change." };
+  }
+  if (result.status === "insufficient") {
+    return { status: "insufficient", available: result.before, requested: context.amount };
+  }
+  return okOutcome(context, outcome.userId, outcome.characterName, result.before, result.after);
+}
+
 /**
- * Applies one grant against a linked player's character save.
+ * Account-wide Mammoth Idols (game issue #529) have their own route, which moves every
+ * character's balance together.
+ */
+async function applyIdolGrant(
+  userId: number,
+  characterName: string,
+  context: GrantContext,
+): Promise<GrantOutcome> {
+  try {
+    const result = await adjustGameMammothIdols(
+      userId,
+      characterName,
+      context.operation === "add" ? "add" : "sub",
+      context.amount,
+    );
+    return okOutcome(context, userId, result.characterName || characterName, result.before, result.after);
+  } catch (error) {
+    if (error instanceof GameServerAdminError && error.status === 404 && /not found/i.test(error.message)) {
+      return { status: "character-not-found", userId };
+    }
+    if (error instanceof GameServerAdminError && error.status === 409) {
+      return { status: "insufficient", available: null, requested: context.amount };
+    }
+    return {
+      status: "unavailable",
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Applies one grant to a linked player's character through the game server, which changes the
+ * live character when the player is online and the stored save when not. A direct save write
+ * would be overwritten by the game's own copy.
  *
  * Currency and stack categories use the amount; mount and dye are one-of-a-kind, so their
- * amount is always 1 and the operation decides whether the id is added or pulled. All the
- * write safety (save addressed by `_id`, character matched by name, value read back) lives
- * in `mutateGameCharacter`.
+ * amount is always 1 and the operation decides whether the id is added or removed.
  */
 export async function applyGrant(input: {
   discordId: string;
@@ -295,14 +325,12 @@ export async function applyGrant(input: {
   itemKey?: string;
   operation: GrantOperation;
   amount: number;
+  requestedBy?: string;
 }): Promise<GrantOutcome> {
   const category = findGrantCategory(input.categoryId);
   if (!category) return { status: "invalid", reason: "That item type is not supported." };
 
-  const signed = input.operation === "add" ? input.amount : -input.amount;
-  let mutation: CharacterMutation;
-  let entryId: number | undefined;
-
+  let change: GameRewardChange | null = null;
   switch (category.id) {
     case "mount":
     case "dye": {
@@ -310,44 +338,25 @@ export async function applyGrant(input: {
       if (!Number.isSafeInteger(id) || id <= 0) {
         return { status: "invalid", reason: "Pick a specific item first." };
       }
-      const field = arrayField(category.id);
-      mutation =
-        input.operation === "add"
-          ? { kind: "list", field, add: [id] }
-          : { kind: "list", field, remove: [id] };
+      change = category.id === "mount" ? { kind: "mount", mountIds: [id] } : { kind: "dye", dyeId: id };
       break;
     }
     case "lockbox": {
       if (!Number.isSafeInteger(input.amount) || input.amount <= 0) {
         return { status: "invalid", reason: "Enter a positive whole number." };
       }
-      entryId = 1;
-      mutation = {
-        kind: "stack",
-        field: "lockboxes",
-        idField: "lockboxID",
-        entryId,
-        delta: signed,
-      };
+      change = { kind: "lockbox", lockboxId: 1, count: input.amount };
       break;
     }
     case "consumable": {
-      const consumable = input.itemKey as ConsumableId;
-      const mapped = CONSUMABLE_ID_BY_KIND[consumable];
+      const mapped = CONSUMABLE_ID_BY_KIND[input.itemKey as ConsumableId];
       if (!mapped) {
         return { status: "invalid", reason: "Pick a specific potion first." };
       }
       if (!Number.isSafeInteger(input.amount) || input.amount <= 0) {
         return { status: "invalid", reason: "Enter a positive whole number." };
       }
-      entryId = mapped;
-      mutation = {
-        kind: "stack",
-        field: "consumables",
-        idField: "consumableID",
-        entryId,
-        delta: signed,
-      };
+      change = { kind: "consumable", consumableID: mapped, count: input.amount };
       break;
     }
     default: {
@@ -357,23 +366,34 @@ export async function applyGrant(input: {
       if (!Number.isSafeInteger(input.amount) || input.amount <= 0) {
         return { status: "invalid", reason: "Enter a positive whole number." };
       }
-      mutation = { kind: "currency", field: category.currencyField, delta: signed };
+      if (category.currencyField !== "mammothIdols") {
+        change = { kind: CURRENCY_KINDS[category.currencyField], amount: input.amount };
+      }
       break;
     }
   }
 
-  const outcome = await mutateGameCharacter(
-    input.discordId,
-    input.characterName,
-    mutation,
-  );
-  return outcomeToGrant(outcome, {
+  const userId = await findGameUserIdForDiscord(input.discordId);
+  if (userId === null) return { status: "no-account" };
+
+  const context: GrantContext = {
     category,
     operation: input.operation,
+    amount: category.single ? 1 : input.amount,
     itemKey: input.itemKey,
     itemLabel: grantItemLabel(category.id, input.itemKey),
-    entryId,
+  };
+  if (!change) return applyIdolGrant(userId, input.characterName, context);
+
+  const outcome = await requestGameRewards({
+    userId,
+    characterName: input.characterName,
+    rewards: [{ ...change, operation: input.operation }],
+    requestedBy: input.requestedBy ?? "grant",
+    // Staff may grant to a character the game has not unlocked yet; the shop may not.
+    allowLocked: true,
   });
+  return grantOutcomeFromGame(outcome, userId, context);
 }
 
 /** A one-line description of a grant, used in the confirmation and the operator log. */

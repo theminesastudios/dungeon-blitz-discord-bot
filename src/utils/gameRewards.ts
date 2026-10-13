@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { MongoClient, type Collection, type Filter } from "mongodb";
 import type { PackReward, PackRewardDeliveryResult } from "./sponsorPacks.js";
 import {
@@ -7,6 +8,7 @@ import {
 	NON_EXCLUSIVE_MOUNT_IDS,
 } from "./sponsorPacks.js";
 import { dyeLabel, mountLabel } from "./gameItemNames.js";
+import { postGameServerAdmin, type GameServerAdminResponse } from "./gameMaintenance.js";
 
 type RewardDocument = Document & {
 	_id: string;
@@ -113,11 +115,10 @@ async function listSaveCharactersForUser(userId: number): Promise<GameCharacterO
 /**
  * The buyer's save document, resolved once per operation.
  *
- * Every read and write in this module goes through this handle. Matching writes on `user_id`
- * alone would let a second document that carries the same `user_id` — a legacy or duplicate
- * save — satisfy the write while the shop reported success, which reads to the player as "the
- * pack took my credit and delivered nothing". Addressing the exact `_id` we read makes that
- * impossible: either the character we listed is updated, or the write fails loudly.
+ * Every Mongo read in this module goes through this handle, and so does the one write left
+ * (`stripPackRewards`). Matching on `user_id` alone would let a second document that carries
+ * the same `user_id` — a legacy or duplicate save — answer instead. Rewards themselves are
+ * paid through the game server (`applyPackRewardsToSave`), never written here.
  */
 type SaveDocumentHandle = {
 	id: RewardDocument["_id"];
@@ -136,18 +137,6 @@ async function resolveSaveDocument(
 		id: save._id,
 		characters: Array.isArray(save.characters) ? save.characters : [],
 	};
-}
-
-/** The character entry inside a save document, matched the way the database matches it. */
-function findCharacter(
-	characters: readonly Document[],
-	characterName: string,
-): Document | null {
-	const wanted = characterName.trim();
-	const found = characters.find(
-		(character) => String((character as { name?: unknown }).name ?? "").trim() === wanted,
-	);
-	return (found as Document | undefined) ?? null;
 }
 
 let clientPromise: Promise<MongoClient> | null = null;
@@ -380,452 +369,22 @@ export function formatRewardLine(reward: PackReward): string {
 	}
 }
 
-type CharacterUpdate = {
-	$addToSet?: Record<string, unknown>;
-	$push?: Record<string, unknown>;
-	$inc?: Record<string, unknown>;
-	$set?: Record<string, unknown>;
-};
-
-/**
- * Runs one atomic update against the target character using arrayFilters, so a
- * concurrent game-server save can never clobber an unrelated field.
- *
- * The write is addressed by the save document's own `_id` plus the character name, so it can
- * only land on the document the shop read from and on the buyer's own character.
- */
-async function runCharacterUpdate(
-	saves: Collection<RewardDocument>,
-	saveId: RewardDocument["_id"],
-	characterName: string,
-	update: CharacterUpdate,
-	options: {
-		arrayFilters?: Record<string, unknown>[];
-		/** Extra conditions the character itself must meet for the write to apply. */
-		where?: Record<string, unknown>;
-	} = {},
-): Promise<"written" | "character-not-found"> {
-	const filter = options.where
-		? { _id: saveId, characters: { $elemMatch: { name: characterName, ...options.where } } }
-		: { _id: saveId, "characters.name": characterName };
-	const result = await saves.updateOne(
-		filter as Filter<RewardDocument>,
-		{
-			...update,
-			$set: { ...(update.$set ?? {}), updatedAt: new Date() },
-		} as never,
-		{ arrayFilters: [{ "char.name": characterName }, ...(options.arrayFilters ?? [])] } as never,
-	);
-	return result.matchedCount === 0 ? "character-not-found" : "written";
-}
-
-const CHARACTER_GONE = "Character not found in the save document the shop writes to.";
-
-function fail(
-	reward: PackReward,
-	characterName: string,
-	error: string,
-	saveId?: string,
-	verified?: string,
-): PackRewardDeliveryResult {
-	return {
-		status: "failed",
-		delivery: { reward, characterName },
-		error,
-		...(saveId ? { saveId } : {}),
-		...(verified ? { verified } : {}),
-	};
-}
-
-function numberField(character: Document | null, field: string): number {
-	const value = Number((character as Record<string, unknown> | null)?.[field] ?? 0);
-	return Number.isFinite(value) ? value : 0;
-}
-
-function stackCount(
-	character: Document | null,
-	field: "lockboxes" | "consumables",
-	idField: "lockboxID" | "consumableID",
-	entryId: number,
-): number {
-	const entries = (character as Record<string, unknown> | null)?.[field];
-	if (!Array.isArray(entries)) return 0;
-	const entry = entries.find(
-		(candidate) => Number((candidate as Record<string, unknown> | null)?.[idField] ?? NaN) === entryId,
-	);
-	const count = Number((entry as Record<string, unknown> | undefined)?.count ?? 0);
-	return Number.isFinite(count) ? count : 0;
-}
-
-/** The result of comparing the save before and after a reward write. */
-export type RewardVerification = {
-	/** True only when the value the reward promised is present in the save. */
-	ok: boolean;
-	/** What the affected field reads now, for the operator log. */
-	detail: string;
-	/** Set when the value is provably absent from the save. */
-	error?: string;
-};
-
-function checkIdsAdded(
-	field: string,
-	beforeIds: number[],
-	afterIds: number[],
-	wanted: number[],
-): RewardVerification {
-	const missing = wanted.filter((id) => !afterIds.includes(id));
-	if (missing.length > 0) {
-		return {
-			ok: false,
-			detail: `${field}: ${afterIds.join(", ") || "empty"}`,
-			error: `"${field}" is missing ${missing.join(", ")} after the write — the save update did not persist.`,
-		};
-	}
-	const added = wanted.filter((id) => !beforeIds.includes(id));
-	return {
-		ok: true,
-		detail:
-			added.length > 0
-				? `${field} +${added.join(", ")}`
-				: `${field} already owned (${wanted.join(", ")})`,
-	};
-}
-
-function checkGain(
-	field: string,
-	beforeValue: number,
-	afterValue: number,
-	amount: number,
-): RewardVerification {
-	if (afterValue >= beforeValue + amount) {
-		return {
-			ok: true,
-			detail: `${field} ${beforeValue.toLocaleString()} → ${afterValue.toLocaleString()}`,
-		};
-	}
-	return {
-		ok: false,
-		detail: `${field}: ${afterValue.toLocaleString()}`,
-		error: `"${field}" reads ${afterValue.toLocaleString()} after adding ${amount.toLocaleString()} to ${beforeValue.toLocaleString()} — the save update did not persist.`,
-	};
-}
-
-/**
- * Compares what one reward promised against the save read back afterwards.
- *
- * MongoDB answers for the write it accepted, not for what the game will keep, and a duplicate
- * or legacy save document can absorb an update that the player never sees. This is the check
- * that turns "credit gone, nothing delivered" from a silent outcome into a reported failure
- * (and, because nothing landed, an automatic refund).
- */
-export function verifyRewardDelivery(
-	reward: PackReward,
-	before: Document | null,
-	after: Document | null,
-): RewardVerification {
-	switch (reward.kind) {
-		case "mount": {
-			const mountIds = reward.mountIds ?? [reward.mountId];
-			return checkIdsAdded(
-				"mounts",
-				toNumberArray((before as { mounts?: unknown } | null)?.mounts),
-				toNumberArray((after as { mounts?: unknown } | null)?.mounts),
-				mountIds,
-			);
-		}
-		case "dye":
-			return checkIdsAdded(
-				"OwnedDyes",
-				toNumberArray((before as { OwnedDyes?: unknown } | null)?.OwnedDyes),
-				toNumberArray((after as { OwnedDyes?: unknown } | null)?.OwnedDyes),
-				[reward.dyeId],
-			);
-		case "gold":
-			return checkGain(
-				"gold",
-				numberField(before, "gold"),
-				numberField(after, "gold"),
-				reward.amount,
-			);
-		case "sigils":
-			return checkGain(
-				"SilverSigils",
-				numberField(before, "SilverSigils"),
-				numberField(after, "SilverSigils"),
-				reward.amount,
-			);
-		case "keys":
-			return checkGain(
-				"DragonKeys",
-				numberField(before, "DragonKeys"),
-				numberField(after, "DragonKeys"),
-				reward.amount,
-			);
-		case "lockbox":
-			return checkGain(
-				`lockboxes[${reward.lockboxId}]`,
-				stackCount(before, "lockboxes", "lockboxID", reward.lockboxId),
-				stackCount(after, "lockboxes", "lockboxID", reward.lockboxId),
-				reward.count,
-			);
-		case "consumable":
-			return checkGain(
-				`consumables[${CONSUMABLE_ID_BY_KIND[reward.consumableId]}]`,
-				stackCount(before, "consumables", "consumableID", CONSUMABLE_ID_BY_KIND[reward.consumableId]),
-				stackCount(after, "consumables", "consumableID", CONSUMABLE_ID_BY_KIND[reward.consumableId]),
-				reward.count,
-			);
-	}
-}
-
-/** Reads one character back out of a save document, to confirm what a write left behind. */
-async function readSaveCharacter(
-	saves: Collection<RewardDocument>,
-	saveId: RewardDocument["_id"],
-	characterName: string,
-): Promise<Document | null> {
-	const save = await saves.findOne({ _id: saveId } as Filter<RewardDocument>, {
-		projection: { characters: 1 },
-	});
-	return findCharacter(Array.isArray(save?.characters) ? save!.characters! : [], characterName);
-}
-
-/**
- * Writes every reward into the target character's save document, then reads the character back
- * and reports each reward as delivered only if its value is really there.
- *
- * Every reward is attempted independently so one failure does not block the rest. A write that
- * MongoDB accepts but the save does not show is reported as failed — for the shop that means an
- * automatic refund instead of a charge for rewards nobody can find.
- */
-export async function applyPackRewardsToSave(
-	userId: number,
-	characterName: string,
-	rewards: PackReward[],
-): Promise<PackRewardDeliveryResult[]> {
-	const saves = await getSavesCollection();
-	const save = await resolveSaveDocument(saves, userId);
-	if (!save) {
-		return rewards.map((reward) =>
-			fail(
-				reward,
-				characterName,
-				"No game save exists for this player yet — play once in-game, then claim the pack again.",
-			),
-		);
-	}
-
-	const saveId = String(save.id);
-	const before = findCharacter(save.characters, characterName);
-	if (!before) {
-		return rewards.map((reward) =>
-			fail(
-				reward,
-				characterName,
-				`Character "${characterName}" is not in the save document the shop writes to.`,
-				saveId,
-			),
-		);
-	}
-
-	// Each write is independent: one failing reward must not block the others.
-	const writeErrors = new Map<PackReward, string>();
-	for (const reward of rewards) {
-		try {
-			const error = await applySingleReward(saves, save.id, characterName, reward);
-			if (error) writeErrors.set(reward, error);
-		} catch (error) {
-			writeErrors.set(reward, error instanceof Error ? error.message : String(error));
-		}
-	}
-
-	let after: Document | null = null;
-	let readBackError: string | null = null;
-	try {
-		after = await readSaveCharacter(saves, save.id, characterName);
-	} catch (error) {
-		readBackError = error instanceof Error ? error.message : String(error);
-	}
-
-	return rewards.map((reward) => {
-		const writeError = writeErrors.get(reward);
-		if (writeError) return fail(reward, characterName, writeError, saveId);
-
-		if (readBackError) {
-			// The read-back itself failed, which is not evidence that the reward was lost: keep the
-			// write's answer and carry the doubt into the operator log rather than refunding a
-			// delivery that probably landed.
-			return {
-				status: "delivered" as const,
-				delivery: { reward, characterName },
-				saveId,
-				verified: `unverified: ${readBackError}`,
-			};
-		}
-		if (after === null) {
-			return fail(
-				reward,
-				characterName,
-				"The character disappeared from the save while the pack was being delivered.",
-				saveId,
-			);
-		}
-
-		const verification = verifyRewardDelivery(reward, before, after);
-		if (!verification.ok) {
-			return fail(
-				reward,
-				characterName,
-				`${verification.error} (save ${saveId})`,
-				saveId,
-				verification.detail,
-			);
-		}
-		return {
-			status: "delivered" as const,
-			delivery: { reward, characterName },
-			saveId,
-			verified: verification.detail,
-		};
-	});
-}
-
-/** Returns an error message when the write could not be placed, or null when it was accepted. */
-async function applySingleReward(
-	saves: Collection<RewardDocument>,
-	saveId: RewardDocument["_id"],
-	characterName: string,
-	reward: PackReward,
-): Promise<string | null> {
-	switch (reward.kind) {
-		case "mount": {
-			// $addToSet keeps the mount list duplicate-free even if the game client
-			// already granted the same mount.
-			const mountIds = reward.mountIds ?? [reward.mountId];
-			const outcome = await runCharacterUpdate(saves, saveId, characterName, {
-				$addToSet: { "characters.$[char].mounts": { $each: mountIds } },
-			});
-			return outcome === "written" ? null : CHARACTER_GONE;
-		}
-		case "dye": {
-			const outcome = await runCharacterUpdate(saves, saveId, characterName, {
-				$addToSet: { "characters.$[char].OwnedDyes": reward.dyeId },
-			});
-			return outcome === "written" ? null : CHARACTER_GONE;
-		}
-		case "lockbox":
-			return bumpStackedEntry(
-				saves,
-				saveId,
-				characterName,
-				"lockboxes",
-				"lockboxID",
-				reward.lockboxId,
-				reward.count,
-			);
-		case "consumable":
-			return bumpStackedEntry(
-				saves,
-				saveId,
-				characterName,
-				"consumables",
-				"consumableID",
-				CONSUMABLE_ID_BY_KIND[reward.consumableId],
-				reward.count,
-			);
-		case "gold": {
-			const outcome = await runCharacterUpdate(saves, saveId, characterName, {
-				$inc: { "characters.$[char].gold": reward.amount },
-			});
-			return outcome === "written" ? null : CHARACTER_GONE;
-		}
-		case "sigils": {
-			const outcome = await runCharacterUpdate(saves, saveId, characterName, {
-				$inc: { "characters.$[char].SilverSigils": reward.amount },
-			});
-			return outcome === "written" ? null : CHARACTER_GONE;
-		}
-		case "keys": {
-			const outcome = await runCharacterUpdate(saves, saveId, characterName, {
-				$inc: { "characters.$[char].DragonKeys": reward.amount },
-			});
-			return outcome === "written" ? null : CHARACTER_GONE;
-		}
-	}
-}
-
-/**
- * Adds `count` to a stacked array entry such as lockboxes/consumables, creating the entry when
- * the character has none.
- *
- * The game drops a stack once its count reaches zero, so a player who opened their last Trove
- * Chest has `lockboxes: []`. An `$inc` through `$[entry]` on that array matches the character,
- * finds no entry and quietly changes nothing — no error, no fallback. So every step states in its
- * filter what it expects to find, and only one of them can apply:
- *
- * 1. the entry exists → increment it;
- * 2. the array exists without the entry → append the entry (the guard also stops two purchases
- *    landing together from creating two stacks);
- * 3. the field is missing or not an array → set it to just this entry.
- *
- * A step whose guard stopped holding (a game save landed in between) falls through to the next
- * round. The delivery check still reads the count back afterwards.
- */
-async function bumpStackedEntry(
-	saves: Collection<RewardDocument>,
-	saveId: RewardDocument["_id"],
-	characterName: string,
-	field: "lockboxes" | "consumables",
-	idField: "lockboxID" | "consumableID",
-	entryId: number,
-	count: number,
-): Promise<string | null> {
-	const path = `characters.$[char].${field}`;
-	const entry = { [idField]: entryId, count };
-	const hasEntry = { $elemMatch: { [idField]: entryId } };
-	const steps: Array<{ update: CharacterUpdate; where: Record<string, unknown>; arrayFilters?: Record<string, unknown>[] }> = [
-		{
-			update: { $inc: { [`${path}.$[entry].count`]: count } },
-			where: { [field]: hasEntry },
-			arrayFilters: [{ [`entry.${idField}`]: entryId }],
-		},
-		{
-			update: { $push: { [path]: entry } },
-			where: { [field]: { $type: "array", $not: hasEntry } },
-		},
-		{
-			update: { $set: { [path]: [entry] } },
-			where: { [field]: { $not: { $type: "array" } } },
-		},
-	];
-
-	for (let round = 0; round < 2; round++) {
-		for (const step of steps) {
-			const outcome = await runCharacterUpdate(saves, saveId, characterName, step.update, {
-				where: step.where,
-				arrayFilters: step.arrayFilters,
-			});
-			if (outcome === "written") return null;
-		}
-	}
-
-	const stillThere = await saves.countDocuments(
-		{ _id: saveId, "characters.name": characterName } as Filter<RewardDocument>,
-		{ limit: 1 },
-	);
-	return stillThere === 0
-		? CHARACTER_GONE
-		: `Could not add to ${field}[${entryId}]: the save kept changing underneath the write.`;
-}
 
 /* ------------------------------------------------------------------
- * Admin item grants
+ * Delivery through the game server
  *
- * A grant is a single, arbitrary change to one character's save — a currency delta,
- * a mount/dye added or removed, or a stacked entry bumped. It shares the same safety
- * rules as the shop: the write is addressed by the `_id` of the save document that was
- * read, the character is matched by name, and the result is confirmed by reading the
- * character back so an operator is never told "done" for a write that did not land.
+ * Rewards used to be written into the `saves` collection directly. The game server keeps its
+ * local JSON save as the live copy and overwrites Mongo's `characters` with it on every backup,
+ * so those writes were thrown away: the shop said "delivered" and the player had nothing. Like
+ * idol adjustments and character rename/delete, rewards now go through the game server, which
+ * changes the live character when the player is online and the stored save when not.
+ *
+ *   POST /api/admin/rewards { userId, characterName, rewards, requestedBy, requestId, allowLocked? }
+ *     200 { ok: true, userId, characterName, online, onlineRecipients, results }
+ *
+ * Each result is `{ kind, field, operation, status, before, after }`, status `applied`,
+ * `unchanged` or `insufficient`. A refusal is `{ error, code }`, code `no-save`, `not-found`,
+ * `locked`, `held-elsewhere` or `invalid-request`.
  * ------------------------------------------------------------------ */
 
 /** Currency fields a grant can adjust, as they are spelled in the save document. */
@@ -837,181 +396,252 @@ export type CurrencyField =
 	| "SilverSigils"
 	| "RoyalSigils";
 
-/** One atomic change applied to a character's save. */
-export type CharacterMutation =
-	| { kind: "currency"; field: CurrencyField; delta: number }
-	| {
-			kind: "list";
-			field: "mounts" | "OwnedDyes";
-			add?: number[];
-			remove?: number[];
-	  }
-	| {
-			kind: "stack";
-			field: "lockboxes" | "consumables";
-			idField: "lockboxID" | "consumableID";
-			entryId: number;
-			delta: number;
-	  };
+export type GameRewardOperation = "add" | "remove";
 
-export type CharacterMutationOutcome =
+/** One reward as the game server's `/api/admin/rewards` reads it. */
+export type GameRewardChange = (
+	| { kind: "mount"; mountIds: number[] }
+	| { kind: "dye"; dyeId: number }
+	| { kind: "lockbox"; lockboxId: number; count: number }
+	| { kind: "consumable"; consumableID: number; count: number }
+	| { kind: "gold" | "sigils" | "keys" | "ore" | "royalSigils"; amount: number }
+) & { operation?: GameRewardOperation };
+
+export type GameRewardResult = {
+	kind: string;
+	field: string;
+	operation: GameRewardOperation;
+	status: "applied" | "unchanged" | "insufficient";
+	before: number;
+	after: number;
+};
+
+export type GameRewardsRefusal =
+	| "no-save"
+	| "not-found"
+	| "locked"
+	| "held-elsewhere"
+	| "invalid-request"
+	| "unavailable";
+
+export type GameRewardsOutcome =
 	| {
-			status: "ok";
+			ok: true;
 			userId: number;
 			characterName: string;
-			before: Document;
-			after: Document;
+			/** The character was in play (or between levels), so the live copy took the rewards. */
+			online: boolean;
+			results: GameRewardResult[];
 	  }
-	| { status: "no-account" }
-	| { status: "no-character"; userId: number }
-	| { status: "character-not-found"; userId: number }
-	| {
-			status: "insufficient";
-			userId: number;
-			characterName: string;
-			/** What the field holds now. */
-			available: number;
-			/** How much the removal asked for. */
-			requested: number;
-	  };
+	| { ok: false; refusal: GameRewardsRefusal; message: string };
+
+const KNOWN_REFUSALS = new Set<GameRewardsRefusal>([
+	"no-save",
+	"not-found",
+	"locked",
+	"held-elsewhere",
+	"invalid-request",
+]);
+
+/** First try, then one retry after a timeout: the retry carries the same requestId, so it pays once. */
+const REWARD_TIMEOUTS_MS = [8_000, 6_000];
+
+/** A pack reward in the shape the game server reads. */
+export function toGameRewardChange(reward: PackReward): GameRewardChange {
+	switch (reward.kind) {
+		case "mount":
+			return { kind: "mount", mountIds: reward.mountIds ?? [reward.mountId] };
+		case "dye":
+			return { kind: "dye", dyeId: reward.dyeId };
+		case "lockbox":
+			return { kind: "lockbox", lockboxId: reward.lockboxId, count: reward.count };
+		case "consumable":
+			return {
+				kind: "consumable",
+				consumableID: CONSUMABLE_ID_BY_KIND[reward.consumableId],
+				count: reward.count,
+			};
+		case "gold":
+		case "sigils":
+		case "keys":
+			return { kind: reward.kind, amount: reward.amount };
+	}
+}
 
 /**
- * Applies one mutation to a linked player's character and reads the character back.
- *
- * The currency and stack removals are guarded both before the write (a fast, readable
- * refusal) and inside the filter (`$gte` on the current value), so two operators running
- * at once can never drive a balance negative.
+ * Asks the game server to pay `rewards` to one character. Never throws: an unreachable server
+ * or a route it does not have yet is the `unavailable` refusal, and nothing was paid then.
  */
-export async function mutateGameCharacter(
-	discordId: string,
-	characterName: string,
-	mutation: CharacterMutation,
-): Promise<CharacterMutationOutcome> {
-	const userId = await findGameUserIdForDiscord(discordId);
-	if (userId === null) return { status: "no-account" };
+export async function requestGameRewards(input: {
+	userId: number;
+	characterName: string;
+	rewards: GameRewardChange[];
+	requestedBy: string;
+	allowLocked?: boolean;
+}): Promise<GameRewardsOutcome> {
+	const body = { ...input, requestId: randomUUID() };
+	let lastError: unknown = null;
+	for (const timeoutMs of REWARD_TIMEOUTS_MS) {
+		let response: GameServerAdminResponse;
+		try {
+			response = await postGameServerAdmin("/api/admin/rewards", body, timeoutMs);
+		} catch (error) {
+			// A timeout may have paid already; the retry's requestId answers with that payment.
+			lastError = error;
+			continue;
+		}
 
-	const saves = await getSavesCollection();
-	const save = await resolveSaveDocument(saves, userId);
-	if (!save) return { status: "no-character", userId };
-
-	const before = findCharacter(save.characters, characterName);
-	if (!before) return { status: "character-not-found", userId };
-
-	const now = new Date();
-	const arrayFilters = [{ "char.name": characterName }];
-
-	if (mutation.kind === "currency") {
-		const current = numberField(before, mutation.field);
-		const next = current + mutation.delta;
-		if (next < 0) {
+		const answer = response.payload as Record<string, unknown> | null;
+		if (response.status >= 200 && response.status < 300 && answer?.ok === true) {
 			return {
-				status: "insufficient",
-				userId,
-				characterName,
-				available: current,
-				requested: Math.abs(mutation.delta),
+				ok: true,
+				userId: normalizeAmount(answer.userId) || input.userId,
+				characterName: String(answer.characterName ?? input.characterName),
+				online: answer.online === true,
+				results: Array.isArray(answer.results) ? (answer.results as GameRewardResult[]) : [],
 			};
 		}
-		const filter: Filter<RewardDocument> = {
-			_id: save.id,
-			"characters.name": characterName,
+		const code = String(answer?.code ?? "") as GameRewardsRefusal;
+		const error = typeof answer?.error === "string" ? answer.error : "";
+		if (KNOWN_REFUSALS.has(code)) {
+			return { ok: false, refusal: code, message: error || code };
+		}
+		console.error(`[gameRewards] /api/admin/rewards answered ${response.status}:`, answer ?? response.rawBody.slice(0, 200));
+		return {
+			ok: false,
+			refusal: "unavailable",
+			message:
+				response.status === 404 && !answer
+					? "The game server cannot take reward deliveries yet (it has no /api/admin/rewards route)."
+					: `The game server could not deliver the rewards (${response.status}${error ? `: ${error}` : ""}).`,
 		};
-		// A removal re-checks the guard on the server so a concurrent write cannot overdraw.
-		if (mutation.delta < 0) {
-			filter.characters = {
-				$elemMatch: {
-					name: characterName,
-					[mutation.field]: { $gte: -mutation.delta },
-				},
-			} as never;
-			delete (filter as Record<string, unknown>)["characters.name"];
-		}
-		const result = await saves.updateOne(
-			filter,
-			{
-				$inc: { [`characters.$[char].${mutation.field}`]: mutation.delta },
-				$set: { updatedAt: now },
-			} as never,
-			{ arrayFilters } as never,
-		);
-		if (result.matchedCount === 0) {
-			return {
-				status: "insufficient",
-				userId,
-				characterName,
-				available: current,
-				requested: Math.abs(mutation.delta),
-			};
-		}
-	} else if (mutation.kind === "list") {
-		const update: Record<string, unknown> = { $set: { updatedAt: now } };
-		const path = `characters.$[char].${mutation.field}`;
-		if (mutation.add && mutation.add.length > 0) {
-			update.$addToSet = { [path]: { $each: mutation.add } };
-		}
-		if (mutation.remove && mutation.remove.length > 0) {
-			update.$pull = { [path]: { $in: mutation.remove } };
-		}
-		const result = await saves.updateOne(
-			{ _id: save.id, "characters.name": characterName } as Filter<RewardDocument>,
-			update as never,
-			{ arrayFilters } as never,
-		);
-		if (result.matchedCount === 0) return { status: "character-not-found", userId };
-	} else {
-		const entryId = mutation.entryId;
-		const currentCount = stackCount(before, mutation.field, mutation.idField, entryId);
-		const next = currentCount + mutation.delta;
-		if (next < 0) {
-			return {
-				status: "insufficient",
-				userId,
-				characterName,
-				available: currentCount,
-				requested: Math.abs(mutation.delta),
-			};
-		}
-		if (mutation.delta > 0) {
-			// Adding never needs a guard on the balance, and the stack may not exist yet.
-			const error = await bumpStackedEntry(
-				saves,
-				save.id,
-				characterName,
-				mutation.field,
-				mutation.idField,
-				entryId,
-				mutation.delta,
-			);
-			if (error === CHARACTER_GONE) return { status: "character-not-found", userId };
-			if (error) throw new Error(error);
-		} else {
-			// A removal re-checks the stack on the server so a concurrent write cannot overdraw.
-			const outcome = await runCharacterUpdate(
-				saves,
-				save.id,
-				characterName,
-				{ $inc: { [`characters.$[char].${mutation.field}.$[entry].count`]: mutation.delta } },
-				{
-					where: {
-						[mutation.field]: {
-							$elemMatch: { [mutation.idField]: entryId, count: { $gte: -mutation.delta } },
-						},
-					},
-					arrayFilters: [{ [`entry.${mutation.idField}`]: entryId }],
-				},
-			);
-			if (outcome === "character-not-found") {
-				return {
-					status: "insufficient",
-					userId,
-					characterName,
-					available: currentCount,
-					requested: Math.abs(mutation.delta),
-				};
-			}
-		}
 	}
+	console.error("[gameRewards] /api/admin/rewards could not be reached:", lastError);
+	return {
+		ok: false,
+		refusal: "unavailable",
+		message: "The game server could not be reached, so nothing was delivered.",
+	};
+}
 
-	const after = await readSaveCharacter(saves, save.id, characterName);
-	return { status: "ok", userId, characterName, before, after: after ?? before };
+function fail(reward: PackReward, characterName: string, error: string, verified?: string): PackRewardDeliveryResult {
+	return {
+		status: "failed",
+		delivery: { reward, characterName },
+		error,
+		...(verified ? { verified } : {}),
+	};
+}
+
+function listIds(reward: PackReward): number[] | null {
+	if (reward.kind === "mount") return reward.mountIds ?? [reward.mountId];
+	if (reward.kind === "dye") return [reward.dyeId];
+	return null;
+}
+
+function rewardAmount(reward: PackReward): number {
+	if (reward.kind === "lockbox" || reward.kind === "consumable") return reward.count;
+	if (reward.kind === "gold" || reward.kind === "sigils" || reward.kind === "keys") return reward.amount;
+	return 0;
+}
+
+/**
+ * Turns the game server's per-reward answer into the shop's delivery results.
+ *
+ * A reward is delivered only when the value it promised is there afterwards: every mount or dye
+ * owned, or the count up by at least the amount. That is what turns "credit gone, nothing
+ * delivered" into a reported failure (and, when nothing landed, an automatic refund).
+ */
+export function deliveryResultsFromGame(
+	rewards: PackReward[],
+	characterName: string,
+	results: GameRewardResult[],
+	online = false,
+): PackRewardDeliveryResult[] {
+	const where = online ? " (live)" : "";
+	return rewards.map((reward, index) => {
+		const result = results[index];
+		if (!result) {
+			return fail(reward, characterName, "The game server did not answer for this reward.");
+		}
+		const before = normalizeAmount(result.before);
+		const after = normalizeAmount(result.after);
+		if (result.status === "insufficient") {
+			return fail(reward, characterName, `The game server refused "${result.field}".`, `${result.field}: ${after.toLocaleString()}`);
+		}
+
+		const ids = listIds(reward);
+		if (ids) {
+			if (after < ids.length) {
+				return fail(
+					reward,
+					characterName,
+					`"${result.field}" holds ${after} of ${ids.length} after the delivery — the reward did not land.`,
+					`${result.field}: ${after}/${ids.length}`,
+				);
+			}
+			return {
+				status: "delivered",
+				delivery: { reward, characterName },
+				verified:
+					before >= ids.length
+						? `${result.field} already owned (${ids.join(", ")})${where}`
+						: `${result.field} +${ids.join(", ")}${where}`,
+			};
+		}
+
+		const amount = rewardAmount(reward);
+		if (after < before + amount) {
+			return fail(
+				reward,
+				characterName,
+				`"${result.field}" reads ${after.toLocaleString()} after adding ${amount.toLocaleString()} to ${before.toLocaleString()} — the reward did not land.`,
+				`${result.field}: ${after.toLocaleString()}`,
+			);
+		}
+		return {
+			status: "delivered",
+			delivery: { reward, characterName },
+			verified: `${result.field} ${before.toLocaleString()} → ${after.toLocaleString()}${where}`,
+		};
+	});
+}
+
+const REFUSAL_REASONS: Record<Exclude<GameRewardsRefusal, "locked">, (characterName: string) => string> = {
+	"no-save": () => "No game save exists for this player yet — play once in-game, then claim the pack again.",
+	"not-found": (characterName) => `Character "${characterName}" is not on your game save.`,
+	"held-elsewhere": () =>
+		"You are signed in on another game server right now. Log out completely, then claim the pack again.",
+	"invalid-request": () => "The game server did not accept this pack's rewards.",
+	unavailable: () => "The game server could not be reached, so nothing was delivered.",
+};
+
+/**
+ * Delivers every reward to the target character through the game server, and reports each one
+ * as delivered only if the server shows its value afterwards.
+ *
+ * Every reward is paid in one request, so an online player gets the whole pack at once. A refusal
+ * fails every reward — for the shop that means an automatic refund instead of a charge for
+ * rewards nobody can find. A locked character throws `LockedCharacterError`, as the shop's own
+ * check does.
+ */
+export async function applyPackRewardsToSave(
+	userId: number,
+	characterName: string,
+	rewards: PackReward[],
+	requestedBy = "pack-shop",
+): Promise<PackRewardDeliveryResult[]> {
+	const outcome = await requestGameRewards({
+		userId,
+		characterName,
+		rewards: rewards.map(toGameRewardChange),
+		requestedBy,
+	});
+	if (!outcome.ok) {
+		if (outcome.refusal === "locked") throw new LockedCharacterError(characterName);
+		const reason = REFUSAL_REASONS[outcome.refusal](characterName);
+		const detail = outcome.refusal === "unavailable" ? outcome.message : reason;
+		return rewards.map((reward) => fail(reward, characterName, detail));
+	}
+	return deliveryResultsFromGame(rewards, outcome.characterName, outcome.results, outcome.online);
 }

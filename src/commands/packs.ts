@@ -434,10 +434,10 @@ function purchaseLogCard(
 				inline: true,
 			});
 		}
-		// What the save actually reads after the writes, plus which document was written. This is
-		// the line that answers "the credit went but the rewards are not in the database": either
-		// the values are named here and something else is reading a different save, or the
-		// delivery is reported as failed above.
+		// What the game server reports the character holds after the delivery ("(live)" when the
+		// player was in game). This is the line that answers "the credit went but the rewards are
+		// not in the game": either the values are named here, or the delivery is reported as
+		// failed above.
 		const values = result.deliveries
 			.filter((outcome) => outcome.status === "delivered")
 			.slice(0, 6)
@@ -460,14 +460,6 @@ function purchaseLogCard(
 		if (missed.length > 0) {
 			fields.push({ name: "⚠️ Not delivered", value: missed.join("\n") });
 		}
-		const saveIds = [
-			...new Set(
-				result.deliveries
-					.map((outcome) => outcome.saveId)
-					.filter((id): id is string => Boolean(id)),
-			),
-		];
-		if (saveIds.length > 0) fields.push({ name: "Save", value: saveIds.join(", ") });
 	} else if (result.status === "insufficient") {
 		fields.push({
 			name: "Balance",
@@ -482,16 +474,6 @@ function purchaseLogCard(
 		if (errors.length > 0) {
 			fields.push({ name: "Delivery errors", value: errors.slice(0, 3).join("\n") });
 		}
-		// A refunded purchase still has to say where the write went, or the operator has nothing
-		// to compare against the save they are looking at.
-		const saveIds = [
-			...new Set(
-				result.deliveries
-					.map((outcome) => outcome.saveId)
-					.filter((id): id is string => Boolean(id)),
-			),
-		];
-		if (saveIds.length > 0) fields.push({ name: "Save", value: saveIds.join(", ") });
 	}
 
 	return {
