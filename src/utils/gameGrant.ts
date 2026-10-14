@@ -10,6 +10,8 @@ import {
   requestGameRewards,
   type CurrencyField,
   type GameRewardChange,
+  type GearSetTier,
+  type MaterialRarity,
   type GameRewardsOutcome,
 } from "./gameRewards.js";
 import { adjustGameMammothIdols, GameServerAdminError } from "./gameMaintenance.js";
@@ -48,9 +50,16 @@ export type GrantCategoryId =
   | "mount"
   | "dye"
   | "lockbox"
-  | "consumable";
+  | "consumable"
+  | "gear"
+  | "materials"
+  | "xp";
 
-export type GrantShape = "currency" | "list" | "stack";
+/**
+ * `currency` asks for an amount, `stack` for an item then an amount, `list` and `set` for an
+ * item only: a mount or dye is one of a kind, and a gear set is the class's whole set at a tier.
+ */
+export type GrantShape = "currency" | "list" | "stack" | "set";
 
 export type GrantCategory = {
   id: GrantCategoryId;
@@ -64,6 +73,8 @@ export type GrantCategory = {
   unit: string;
   /** True for one-of-a-kind items that are added or removed rather than counted. */
   single?: boolean;
+  /** The amount modal's question, when "How many <unit>?" does not read right. */
+  amountPrompt?: string;
 };
 
 export const GRANT_CATEGORIES: GrantCategory[] = [
@@ -112,6 +123,16 @@ export const GRANT_CATEGORIES: GrantCategory[] = [
   { id: "dye", label: "Legendary Dye", emoji: "🎨", shape: "list", unit: "dye", single: true },
   { id: "lockbox", label: "Trove Chest", emoji: "📦", shape: "stack", unit: "Trove Chests" },
   { id: "consumable", label: "Potion", emoji: "🧪", shape: "stack", unit: "potions" },
+  { id: "gear", label: "All class gear", emoji: "🗡️", shape: "set", unit: "gear pieces", single: true },
+  {
+    id: "materials",
+    label: "Materials",
+    emoji: "🧱",
+    shape: "stack",
+    unit: "materials",
+    amountPrompt: "How many of each material?",
+  },
+  { id: "xp", label: "Experience", emoji: "✨", shape: "currency", currencyField: "xp", unit: "XP" },
 ];
 
 export function findGrantCategory(id: string): GrantCategory | null {
@@ -125,6 +146,19 @@ const CONSUMABLE_ITEMS: Array<{ key: ConsumableId; label: string }> = [
   { key: "gear", label: "Gear potion" },
   { key: "gold", label: "Gold potion" },
   { key: "material", label: "Material potion" },
+];
+
+const GEAR_TIERS: Array<{ key: `${GearSetTier}`; label: string; tier: GearSetTier }> = [
+  { key: "2", label: "Legendary gear", tier: 2 },
+  { key: "1", label: "Rare gear", tier: 1 },
+  { key: "0", label: "Magic gear", tier: 0 },
+];
+
+const MATERIAL_SETS: Array<{ key: MaterialRarity; label: string; description: string }> = [
+  { key: "L", label: "Legendary materials", description: "Every Legendary material" },
+  { key: "R", label: "Rare materials", description: "Every Rare material" },
+  { key: "M", label: "Magic materials", description: "Every Magic material" },
+  { key: "all", label: "All materials", description: "Every material, all rarities" },
 ];
 
 /**
@@ -153,6 +187,14 @@ export function listGrantItems(categoryId: GrantCategoryId): GrantItemOption[] {
         label: item.label,
         description: "Consumable potion",
       }));
+    case "gear":
+      return GEAR_TIERS.map((tier) => ({
+        key: tier.key,
+        label: tier.label,
+        description: `Every ${tier.label.replace(" gear", "")} piece the character's class can use`,
+      }));
+    case "materials":
+      return MATERIAL_SETS.map((set) => ({ key: set.key, label: set.label, description: set.description }));
     default:
       return [];
   }
@@ -176,6 +218,10 @@ export function grantItemLabel(
       );
     case "lockbox":
       return "Trove Chest";
+    case "gear":
+      return GEAR_TIERS.find((tier) => tier.key === itemKey)?.label ?? `Tier ${itemKey} gear`;
+    case "materials":
+      return MATERIAL_SETS.find((set) => set.key === itemKey)?.label ?? `${itemKey} materials`;
     default:
       return itemKey;
   }
@@ -197,6 +243,11 @@ export type GrantOutcome =
       afterValue: number;
       /** True when a list item was already present on an add (or absent on a remove). */
       unchanged: boolean;
+      /** Gear sets: how many pieces the class has at the tier. */
+      total?: number;
+      /** Experience: the level before and after. */
+      levelBefore?: number;
+      levelAfter?: number;
     }
   | { status: "no-account" }
   | { status: "no-character"; userId: number }
@@ -208,12 +259,13 @@ export type GrantOutcome =
   | { status: "unavailable"; reason: string };
 
 /** Game-server currency kinds, by the save field a grant category adjusts. */
-const CURRENCY_KINDS: Record<Exclude<CurrencyField, "mammothIdols">, "gold" | "sigils" | "keys" | "ore" | "royalSigils"> = {
+const CURRENCY_KINDS: Record<Exclude<CurrencyField, "mammothIdols">, "gold" | "sigils" | "keys" | "ore" | "royalSigils" | "xp"> = {
   gold: "gold",
   SilverSigils: "sigils",
   DragonKeys: "keys",
   DragonOre: "ore",
   RoyalSigils: "royalSigils",
+  xp: "xp",
 };
 
 type GrantContext = {
@@ -276,7 +328,15 @@ export function grantOutcomeFromGame(
   if (result.status === "insufficient") {
     return { status: "insufficient", available: result.before, requested: context.amount };
   }
-  return okOutcome(context, outcome.userId, outcome.characterName, result.before, result.after);
+  const ok = okOutcome(context, outcome.userId, outcome.characterName, result.before, result.after);
+  if (ok.status !== "ok") return ok;
+  return {
+    ...ok,
+    ...(typeof result.total === "number" ? { total: result.total } : {}),
+    ...(typeof result.levelBefore === "number" && typeof result.levelAfter === "number"
+      ? { levelBefore: result.levelBefore, levelAfter: result.levelAfter }
+      : {}),
+  };
 }
 
 /**
@@ -359,6 +419,25 @@ export async function applyGrant(input: {
       change = { kind: "consumable", consumableID: mapped, count: input.amount };
       break;
     }
+    case "gear": {
+      const tier = GEAR_TIERS.find((entry) => entry.key === input.itemKey)?.tier;
+      if (tier === undefined) {
+        return { status: "invalid", reason: "Pick a gear tier first." };
+      }
+      change = { kind: "gearSet", tier };
+      break;
+    }
+    case "materials": {
+      const rarity = MATERIAL_SETS.find((entry) => entry.key === input.itemKey)?.key;
+      if (!rarity) {
+        return { status: "invalid", reason: "Pick which materials first." };
+      }
+      if (!Number.isSafeInteger(input.amount) || input.amount <= 0) {
+        return { status: "invalid", reason: "Enter a positive whole number." };
+      }
+      change = { kind: "materialSet", rarity, count: input.amount };
+      break;
+    }
     default: {
       if (!category.currencyField) {
         return { status: "invalid", reason: "That item type is not supported." };
@@ -403,13 +482,28 @@ export function formatGrantLine(outcome: Extract<GrantOutcome, { status: "ok" }>
   if (outcome.category.shape === "list") {
     return `${outcome.category.emoji} ${sign}${item.trim()}${outcome.unchanged ? " (already set)" : ""}`;
   }
-  return `${outcome.category.emoji} ${sign}${Math.abs(outcome.afterValue - outcome.beforeValue).toLocaleString()}${item}`;
+  const delta = Math.abs(outcome.afterValue - outcome.beforeValue).toLocaleString();
+  if (outcome.category.shape === "set") {
+    return `${outcome.category.emoji} ${sign}${delta}${item}${outcome.unchanged ? " (nothing to change)" : " pieces"}`;
+  }
+  const level =
+    outcome.levelBefore !== undefined && outcome.levelAfter !== undefined && outcome.levelBefore !== outcome.levelAfter
+      ? ` (Lv ${outcome.levelBefore} → ${outcome.levelAfter})`
+      : "";
+  return `${outcome.category.emoji} ${sign}${delta}${item}${level}`;
 }
 
 /** The resulting value in the save, phrased for a human. */
 export function formatGrantValue(outcome: Extract<GrantOutcome, { status: "ok" }>): string {
   if (outcome.category.shape === "list") {
     return outcome.afterValue > 0 ? "owned ✅" : "not owned ❌";
+  }
+  if (outcome.category.shape === "set") {
+    const total = outcome.total !== undefined ? ` of ${outcome.total.toLocaleString()}` : "";
+    return `${outcome.afterValue.toLocaleString()}${total} pieces at this tier`;
+  }
+  if (outcome.levelAfter !== undefined) {
+    return `${outcome.afterValue.toLocaleString()} XP · Lv ${outcome.levelAfter}`;
   }
   return outcome.afterValue.toLocaleString();
 }

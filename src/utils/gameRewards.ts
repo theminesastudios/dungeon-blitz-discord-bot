@@ -383,8 +383,9 @@ export function formatRewardLine(reward: PackReward): string {
  *     200 { ok: true, userId, characterName, online, onlineRecipients, results }
  *
  * Each result is `{ kind, field, operation, status, before, after }`, status `applied`,
- * `unchanged` or `insufficient`. A refusal is `{ error, code }`, code `no-save`, `not-found`,
- * `locked`, `held-elsewhere` or `invalid-request`.
+ * `unchanged` or `insufficient`. A `gearSet` result also carries `total` (the pieces the class has
+ * at that tier), and an `xp` result `levelBefore` / `levelAfter`. A refusal is `{ error, code }`,
+ * code `no-save`, `not-found`, `locked`, `held-elsewhere` or `invalid-request`.
  * ------------------------------------------------------------------ */
 
 /** Currency fields a grant can adjust, as they are spelled in the save document. */
@@ -394,7 +395,13 @@ export type CurrencyField =
 	| "DragonKeys"
 	| "DragonOre"
 	| "SilverSigils"
-	| "RoyalSigils";
+	| "RoyalSigils"
+	| "xp";
+
+/** Gear tiers staff can grant a whole class set at: 0 Magic, 1 Rare, 2 Legendary. */
+export type GearSetTier = 0 | 1 | 2;
+/** Material rarities a material set covers; `all` is every material. */
+export type MaterialRarity = "M" | "R" | "L" | "all";
 
 export type GameRewardOperation = "add" | "remove";
 
@@ -404,7 +411,11 @@ export type GameRewardChange = (
 	| { kind: "dye"; dyeId: number }
 	| { kind: "lockbox"; lockboxId: number; count: number }
 	| { kind: "consumable"; consumableID: number; count: number }
-	| { kind: "gold" | "sigils" | "keys" | "ore" | "royalSigils"; amount: number }
+	| { kind: "gold" | "sigils" | "keys" | "ore" | "royalSigils" | "xp"; amount: number }
+	/** Every gear piece the character's class has at `tier`; the game resolves the ids. */
+	| { kind: "gearSet"; tier: GearSetTier }
+	/** `count` of every material of `rarity`; the game resolves the ids. */
+	| { kind: "materialSet"; rarity: MaterialRarity; count: number }
 ) & { operation?: GameRewardOperation };
 
 export type GameRewardResult = {
@@ -414,6 +425,11 @@ export type GameRewardResult = {
 	status: "applied" | "unchanged" | "insufficient";
 	before: number;
 	after: number;
+	/** gearSet: how many pieces the class has at that tier. */
+	total?: number;
+	/** xp: the character's level before and after. */
+	levelBefore?: number;
+	levelAfter?: number;
 };
 
 export type GameRewardsRefusal =

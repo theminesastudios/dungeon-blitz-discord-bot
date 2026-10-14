@@ -51,8 +51,9 @@ import { publishGameLog, type GameLogField } from "../utils/gameLogChannel.js";
  * The flow is a single ephemeral panel that reveals the next step as choices are made:
  * pick the player, pick the character, pick what it is, pick the exact item, then add or
  * remove. Every choice travels in the component custom ids, so there is no server-side
- * session to lose between clicks. Currency and counted items ask for an amount in a
- * modal; mounts and dyes are one-of-a-kind, so their add/remove applies immediately.
+ * session to lose between clicks. Currency, experience and counted items (materials ask
+ * for "how many of each") take an amount in a modal; mounts, dyes and a class's whole gear
+ * set at one tier need none, so their add/remove applies immediately.
  * ------------------------------------------------------------------ */
 
 const ACCENT = 0x9b59b6;
@@ -641,8 +642,8 @@ async function handleOperation(
     });
   }
 
-  // One-of-a-kind items need no amount: the click is the whole instruction.
-  if (category.shape === "list") {
+  // One-of-a-kind items and gear sets need no amount: the click is the whole instruction.
+  if (category.shape === "list" || category.shape === "set") {
     const result = await executeGrant(
       { ...state, operation, amount: 1 },
       interactionActorLabel(interaction),
@@ -702,9 +703,8 @@ async function handleStartOver(interaction: MessageComponentInteraction) {
 function amountModal(state: OpState, operation: GrantOperation) {
   const category = findGrantCategory(state.categoryId)!;
   const question =
-    category.shape === "stack"
-      ? `How many ${category.unit}?`
-      : `How much ${category.unit}?`;
+    category.amountPrompt ??
+    (category.shape === "stack" ? `How many ${category.unit}?` : `How much ${category.unit}?`);
   return new ModalBuilder()
     .setCustomId(GRANT_AMOUNT_MODAL_ID)
     .setTitle(
