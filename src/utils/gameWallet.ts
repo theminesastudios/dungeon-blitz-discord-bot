@@ -710,7 +710,8 @@ export async function grantBonusCredit(
 
 /**
  * Atomically records a pack purchase. The caller passes the highest used-cents value that is
- * still affordable (balance - price); if another purchase raced ahead, the filter no longer
+ * still affordable before this charge (used + balance - price, `maxUsedCentsBeforeCharge`);
+ * if another purchase raced ahead, the filter no longer
  * matches and nothing is written, so credit can never go negative.
  */
 export async function recordPackPurchase(
