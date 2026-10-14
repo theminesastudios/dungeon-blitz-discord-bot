@@ -4,7 +4,10 @@ import {
 	DYE_NAMES,
 	GRANT_CATEGORIES,
 	MOUNT_NAMES,
+	applyGrant,
 	findGrantCategory,
+	formatGrantLine,
+	formatGrantValue,
 	grantItemLabel,
 	grantOutcomeFromGame,
 	listGrantItems,
@@ -31,7 +34,7 @@ for (const category of GRANT_CATEGORIES) {
 	assert.ok(category.label.length > 0, `${category.id} needs a label`);
 	assert.ok(category.emoji.length > 0, `${category.id} needs an emoji`);
 	assert.ok(category.unit.length > 0, `${category.id} needs a unit`);
-	assert.ok(category.shape === "currency" || category.shape === "list" || category.shape === "stack");
+	assert.ok(["currency", "list", "stack", "set"].includes(category.shape));
 	if (category.shape === "currency") {
 		assert.ok(category.currencyField, `${category.id} is a currency and needs a save field`);
 	}
@@ -169,6 +172,48 @@ assert.equal(isAdministrator({ member: { permissions: "8" } }), true);
 		if (originalSecret === undefined) delete process.env.DISCORD_MAINTENANCE_API_SECRET;
 		else process.env.DISCORD_MAINTENANCE_API_SECRET = originalSecret;
 	}
+}
+
+// Gear, materials and experience: the game resolves the class's gear and the material ids, so the
+// bot only names a tier or a rarity.
+{
+	assert.deepEqual(listGrantItems("gear").map((item) => item.key), ["2", "1", "0"]);
+	assert.deepEqual(listGrantItems("materials").map((item) => item.key), ["L", "R", "M", "all"]);
+	assert.deepEqual(listGrantItems("xp"), [], "experience asks for an amount, nothing to pick");
+	assert.equal(grantItemLabel("gear", "2"), "Legendary gear");
+	assert.equal(grantItemLabel("materials", "all"), "All materials");
+	assert.equal(findGrantCategory("gear")?.shape, "set");
+	assert.equal(findGrantCategory("materials")?.amountPrompt, "How many of each material?");
+
+	const gear = findGrantCategory("gear")!;
+	const xp = findGrantCategory("xp")!;
+	const gearAnswer = {
+		ok: true as const, userId: 14, characterName: "Aiden", online: false,
+		results: [{ kind: "gearSet", field: "inventoryGears[Legendary]", operation: "add" as const, status: "applied" as const, before: 4, after: 394, total: 394 }],
+	};
+	const gearOutcome = grantOutcomeFromGame(gearAnswer, 14, { category: gear, operation: "add", amount: 1, itemKey: "2", itemLabel: "Legendary gear" });
+	assert.equal(gearOutcome.status, "ok");
+	if (gearOutcome.status === "ok") {
+		assert.equal(formatGrantLine(gearOutcome), "🗡️ +390 Legendary gear pieces");
+		assert.equal(formatGrantValue(gearOutcome), "394 of 394 pieces at this tier");
+	}
+
+	const xpAnswer = {
+		ok: true as const, userId: 14, characterName: "Aiden", online: true,
+		results: [{ kind: "xp", field: "xp", operation: "add" as const, status: "applied" as const, before: 100, after: 5_100, levelBefore: 2, levelAfter: 9 }],
+	};
+	const xpOutcome = grantOutcomeFromGame(xpAnswer, 14, { category: xp, operation: "add", amount: 5_000 });
+	assert.equal(xpOutcome.status, "ok");
+	if (xpOutcome.status === "ok") {
+		assert.equal(formatGrantLine(xpOutcome), "✨ +5,000 XP (Lv 2 → 9)");
+		assert.equal(formatGrantValue(xpOutcome), "5,100 XP · Lv 9");
+	}
+
+	// A gear grant needs a tier and a material grant a count; both are refused before anything is sent.
+	assert.equal((await applyGrant({ discordId: "1", characterName: "Aiden", categoryId: "gear", operation: "add", amount: 1 })).status, "invalid",
+		"a gear grant needs a tier");
+	assert.equal((await applyGrant({ discordId: "1", characterName: "Aiden", categoryId: "materials", itemKey: "L", operation: "add", amount: 0 })).status, "invalid",
+		"a material grant needs a count");
 }
 
 console.log("gameGrant tests passed");
