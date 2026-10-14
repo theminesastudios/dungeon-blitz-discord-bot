@@ -348,12 +348,22 @@ const CONSUMABLE_NAMES: Record<keyof typeof CONSUMABLE_ID_BY_KIND, string> = {
  * operator log. Mounts and dyes are named through the shared registry, so a purchase reads
  * "Skybone Wyrm" rather than "Mount #81" once the game has reported its names.
  */
+/** A mount reward longer than this (the Champions' bundle) is summarised as "N mounts". */
+const MOUNT_NAMES_SHOWN = 5;
+
 export function formatRewardLine(reward: PackReward): string {
 	switch (reward.kind) {
-		case "mount":
-			return reward.mountIds && reward.mountIds.length > 1
-				? `${reward.mountIds.length} mounts`
-				: `${mountLabel(reward.mountId)}${reward.exclusive ? " (exclusive)" : ""}`;
+		case "mount": {
+			const exclusive = reward.exclusive ? " (exclusive)" : "";
+			// A pick the game server has not chosen yet (the purchase never reached it).
+			if (reward.pick && !reward.mountId) {
+				const count = reward.pick.count;
+				return `${count} random ${count === 1 ? "mount" : "mounts"}${exclusive}`;
+			}
+			const ids = reward.mountIds ?? [reward.mountId];
+			if (ids.length > MOUNT_NAMES_SHOWN) return `${ids.length} mounts`;
+			return `${ids.map(mountLabel).join(", ")}${exclusive}`;
+		}
 		case "dye":
 			return dyeLabel(reward.dyeId);
 		case "lockbox":
@@ -384,7 +394,9 @@ export function formatRewardLine(reward: PackReward): string {
  *
  * Each result is `{ kind, field, operation, status, before, after }`, status `applied`,
  * `unchanged` or `insufficient`. A `gearSet` result also carries `total` (the pieces the class has
- * at that tier), and an `xp` result `levelBefore` / `levelAfter`. A refusal is `{ error, code }`,
+ * at that tier), an `xp` result `levelBefore` / `levelAfter`, and a mount pick
+ * (`{ kind: 'mount', fromIds, count }`) the `mountIds` the server chose from what the character
+ * did not own. A refusal is `{ error, code }`,
  * code `no-save`, `not-found`, `locked`, `held-elsewhere` or `invalid-request`.
  * ------------------------------------------------------------------ */
 
@@ -408,6 +420,8 @@ export type GameRewardOperation = "add" | "remove";
 /** One reward as the game server's `/api/admin/rewards` reads it. */
 export type GameRewardChange = (
 	| { kind: "mount"; mountIds: number[] }
+	/** `count` of `fromIds` the character does not own; the game picks them from the live save. */
+	| { kind: "mount"; fromIds: number[]; count: number }
 	| { kind: "dye"; dyeId: number }
 	| { kind: "lockbox"; lockboxId: number; count: number }
 	| { kind: "consumable"; consumableID: number; count: number }
@@ -430,6 +444,8 @@ export type GameRewardResult = {
 	/** xp: the character's level before and after. */
 	levelBefore?: number;
 	levelAfter?: number;
+	/** A mount pick: the mounts the server chose. */
+	mountIds?: number[];
 };
 
 export type GameRewardsRefusal =
@@ -466,7 +482,9 @@ const REWARD_TIMEOUTS_MS = [8_000, 6_000];
 export function toGameRewardChange(reward: PackReward): GameRewardChange {
 	switch (reward.kind) {
 		case "mount":
-			return { kind: "mount", mountIds: reward.mountIds ?? [reward.mountId] };
+			return reward.pick
+				? { kind: "mount", fromIds: [...reward.pick.fromIds], count: reward.pick.count }
+				: { kind: "mount", mountIds: reward.mountIds ?? [reward.mountId] };
 		case "dye":
 			return { kind: "dye", dyeId: reward.dyeId };
 		case "lockbox":
@@ -582,6 +600,9 @@ export function deliveryResultsFromGame(
 		}
 		const before = normalizeAmount(result.before);
 		const after = normalizeAmount(result.after);
+		if (reward.kind === "mount" && reward.pick) {
+			return pickedMountResult(reward, reward.pick.count, characterName, result, where);
+		}
 		if (result.status === "insufficient") {
 			return fail(reward, characterName, `The game server refused "${result.field}".`, `${result.field}: ${after.toLocaleString()}`);
 		}
@@ -621,6 +642,51 @@ export function deliveryResultsFromGame(
 			verified: `${result.field} ${before.toLocaleString()} → ${after.toLocaleString()}${where}`,
 		};
 	});
+}
+
+/**
+ * A mount pick is delivered as the mounts the server chose, so the confirmation names them. It
+ * fails when the character already owns every mount the pack could give, or when the chosen
+ * mounts are not owned afterwards.
+ */
+function pickedMountResult(
+	reward: PackReward & { kind: "mount" },
+	count: number,
+	characterName: string,
+	result: GameRewardResult,
+	where: string,
+): PackRewardDeliveryResult {
+	const picked = (Array.isArray(result.mountIds) ? result.mountIds : [])
+		.map((id) => normalizeAmount(id))
+		.filter((id) => id > 0);
+	if (picked.length === 0) {
+		return fail(
+			reward,
+			characterName,
+			"The character already owns every mount this pack can give.",
+			"mounts: all owned",
+		);
+	}
+	const chosen: PackReward = {
+		...reward,
+		mountId: picked[0],
+		mountIds: picked.length > 1 ? picked : undefined,
+	};
+	const after = normalizeAmount(result.after);
+	if (after < picked.length) {
+		return fail(
+			chosen,
+			characterName,
+			`"${result.field}" holds ${after} of ${picked.length} after the delivery — the reward did not land.`,
+			`${result.field}: ${after}/${picked.length}`,
+		);
+	}
+	const short = picked.length < count ? ` (${picked.length} of ${count}, owns the rest)` : "";
+	return {
+		status: "delivered",
+		delivery: { reward: chosen, characterName },
+		verified: `${result.field} +${picked.join(", ")}${short}${where}`,
+	};
 }
 
 const REFUSAL_REASONS: Record<Exclude<GameRewardsRefusal, "locked">, (characterName: string) => string> = {
