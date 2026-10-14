@@ -458,6 +458,21 @@ export async function addCreditsToPlayer(input: {
 	return { status: "ok", cents, totalBonusCents: ledger.bonusCents };
 }
 
+/**
+ * The most a player may already have spent for this charge to still be affordable: the
+ * ledger's `packUsedCents` is matched against it before the price is added. That is what they
+ * have spent plus what is left, minus the price. Passing the post-purchase balance instead
+ * (`balance - price`) compared spent cents against remaining cents, so anyone who had bought a
+ * pack before was refused a bigger one as a "conflict" even with enough credit left.
+ */
+export function maxUsedCentsBeforeCharge(
+	usedCents: number,
+	balanceCents: number,
+	priceCents: number,
+): number {
+	return usedCents + balanceCents - priceCents;
+}
+
 export type PackPurchaseResult =
 	| { status: "ok"; pack: SponsorPack; credit: SponsorCredit; deliveries: PackRewardDeliveryResult[] }
 	| { status: "no-profile" }
@@ -679,7 +694,7 @@ export async function purchaseSponsorPack(
 	const recorded = await recordPackPurchase(
 		discordId.trim(),
 		purchase,
-		credit.balanceCents - pack.priceCents,
+		maxUsedCentsBeforeCharge(credit.usedCents, credit.balanceCents, pack.priceCents),
 	);
 	if (!recorded) return { status: "conflict", pack };
 

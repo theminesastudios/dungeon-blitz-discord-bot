@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { sponsorCreditCentsFromDonation } from "../src/utils/sponsorPacks.js";
+import {
+	maxUsedCentsBeforeCharge,
+	sponsorCreditCentsFromDonation,
+} from "../src/utils/sponsorPacks.js";
 
 type Donation = Parameters<typeof sponsorCreditCentsFromDonation>[0];
 
@@ -48,3 +51,13 @@ assert.equal(
 	null,
 	"an active tier with a hidden price is unknown, not zero",
 );
+
+// `recordPackPurchase` charges only while `packUsedCents <= cap`, so the cap is what a player may
+// already have spent. Regression: it was the post-purchase balance, which refused the Hero Pack
+// as a "conflict" to a $40 sponsor who had already bought the Supporter and Adventurer packs.
+const charges = (used: number, total: number, price: number) =>
+	used <= maxUsedCentsBeforeCharge(used, total - used, price);
+assert.ok(charges(1_300, 4_000, 2_500), "$27 left buys the $25 Hero Pack after $13 spent");
+assert.ok(charges(0, 2_500, 2_500), "a first purchase may spend the whole balance");
+assert.ok(charges(1_500, 4_000, 2_500), "spending exactly the rest is affordable");
+assert.ok(!charges(1_600, 4_000, 2_500), "$24 left cannot buy the $25 Hero Pack");
