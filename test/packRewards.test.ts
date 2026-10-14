@@ -26,7 +26,12 @@ for (const pack of SPONSOR_PACKS) {
 	for (const reward of rewards) {
 		switch (reward.kind) {
 			case "mount":
-				assert.ok(reward.mountId > 0, "mount ids are positive");
+				if (reward.pick) {
+					assert.ok(reward.pick.fromIds.length >= reward.pick.count, "a pick's pool covers its count");
+					assert.ok(reward.pick.count > 0, "a pick gives at least one mount");
+				} else {
+					assert.ok(reward.mountId > 0, "mount ids are positive");
+				}
 				assert.equal(typeof reward.exclusive, "boolean");
 				break;
 			case "dye":
@@ -48,21 +53,24 @@ for (const pack of SPONSOR_PACKS) {
 	}
 }
 
-// The sponsor pack's mount roll stays inside the non-exclusive pool and the
-// pack contents stay gold-only otherwise.
+// Random mounts are picked by the game server from what the character does not own, so the bot
+// only names the pool: non-exclusive for the Sponsor Pack, exclusive for Adventurer and Hero.
+const packMounts = (id: string) =>
+	buildPackRewards(findSponsorPack(id)!).filter(
+		(reward): reward is PackReward & { kind: "mount" } => reward.kind === "mount",
+	);
 const sponsorRewards = buildPackRewards(findSponsorPack("sponsor")!);
 assert.equal(sponsorRewards.length, 2);
-const sponsorMount = sponsorRewards.find((reward): reward is PackReward & { kind: "mount" } => reward.kind === "mount")!;
-assert.ok(NON_EXCLUSIVE_MOUNT_IDS.includes(sponsorMount.mountId as never));
-assert.equal(sponsorMount.exclusive, false);
 assert.ok(sponsorRewards.some((reward) => reward.kind === "gold"));
-
-// Exclusive mounts only ever roll from the exclusive pool.
-for (let roll = 0; roll < 25; roll += 1) {
-	const rewards = buildPackRewards(findSponsorPack("adventurer")!);
-	const mount = rewards.find((reward): reward is PackReward & { kind: "mount" } => reward.kind === "mount")!;
-	assert.ok(EXCLUSIVE_MOUNT_IDS.includes(mount.mountId as never));
-	assert.equal(mount.exclusive, true);
+for (const [id, pool, count, exclusive] of [
+	["sponsor", NON_EXCLUSIVE_MOUNT_IDS, 1, false],
+	["adventurer", EXCLUSIVE_MOUNT_IDS, 1, true],
+	["hero", EXCLUSIVE_MOUNT_IDS, 3, true],
+] as const) {
+	const mounts = packMounts(id);
+	assert.equal(mounts.length, 1, `${id} asks for its mounts as one pick`);
+	assert.deepEqual(mounts[0].pick, { fromIds: [...pool], count }, `${id} picks ${count} from its pool`);
+	assert.equal(mounts[0].exclusive, exclusive);
 }
 
 // Champions' pack grants every exclusive mount and every legendary dye. The mounts arrive as one
@@ -96,7 +104,7 @@ function tally(rewards: PackReward[]) {
 		rewards.reduce((total, reward) => {
 			if (reward.kind !== kind) return total;
 			if (reward.kind === "lockbox" || reward.kind === "consumable") return total + reward.count;
-			if (reward.kind === "mount") return total + (reward.mountIds?.length ?? 1);
+			if (reward.kind === "mount") return total + (reward.pick?.count ?? reward.mountIds?.length ?? 1);
 			if (reward.kind === "dye") return total + 1;
 			return total + reward.amount;
 		}, 0);
@@ -130,13 +138,11 @@ for (const pack of SPONSOR_PACKS) {
 	assert.deepEqual(tally(buildPackRewards(pack)), expected[pack.id], `${pack.id} matches its banner`);
 }
 
-// Packs promising several mounts or dyes never roll the same one twice.
+// Packs promising several dyes never roll the same one twice.
 for (let roll = 0; roll < 50; roll += 1) {
 	for (const id of ["adventurer", "hero"]) {
 		const rewards = buildPackRewards(findSponsorPack(id)!);
-		const mounts = rewards.flatMap((reward) => (reward.kind === "mount" ? [reward.mountId] : []));
 		const dyes = rewards.flatMap((reward) => (reward.kind === "dye" ? [reward.dyeId] : []));
-		assert.equal(new Set(mounts).size, mounts.length, `${id} mounts are distinct`);
 		assert.equal(new Set(dyes).size, dyes.length, `${id} dyes are distinct`);
 	}
 }
@@ -163,6 +169,11 @@ assert.deepEqual(toGameRewardChange({ kind: "mount", mountId: 81, exclusive: tru
 	kind: "mount",
 	mountIds: [81],
 });
+assert.deepEqual(
+	toGameRewardChange({ kind: "mount", mountId: 0, exclusive: true, label: "", pick: { fromIds: [81, 82, 83], count: 2 } }),
+	{ kind: "mount", fromIds: [81, 82, 83], count: 2 },
+	"a pick names its pool, never a mount id, so an older game server refuses it instead of granting the pool",
+);
 assert.deepEqual(
 	toGameRewardChange({ kind: "consumable", consumableId: "exp", count: 2, label: "" }),
 	{ kind: "consumable", consumableID: CONSUMABLE_ID_BY_KIND.exp, count: 2 },

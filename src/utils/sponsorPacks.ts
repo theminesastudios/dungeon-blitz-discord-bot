@@ -41,7 +41,18 @@ export type ConsumableId = "exp" | "gear" | "gold" | "material";
 
 /** A concrete game reward: written into the save document at purchase time. */
 export type PackReward =
-	| { kind: "mount"; mountId: number; mountIds?: number[]; label: string; exclusive: boolean }
+	| {
+			kind: "mount";
+			mountId: number;
+			mountIds?: number[];
+			label: string;
+			exclusive: boolean;
+			/**
+			 * `count` mounts from `fromIds` that the character does not own yet, chosen by the game
+			 * server when it pays (`mountId` is 0 until then). Delivery results carry the mounts it chose.
+			 */
+			pick?: { fromIds: readonly number[]; count: number };
+	  }
 	| { kind: "dye"; dyeId: number; label: string; legendary: boolean }
 	| { kind: "lockbox"; lockboxId: number; count: number; label: string }
 	| { kind: "consumable"; consumableId: ConsumableId; count: number; label: string }
@@ -90,7 +101,7 @@ function pickRandom<T>(values: readonly T[]): T {
 	return values[Math.floor(Math.random() * values.length)];
 }
 
-/** `count` different values, so a pack promising "3 mounts" never rolls the same one twice. */
+/** `count` different values, so a pack promising "4 legendary dyes" never rolls the same one twice. */
 function pickDistinct<T>(values: readonly T[], count: number): T[] {
 	const pool = [...values];
 	for (let index = pool.length - 1; index > 0; index -= 1) {
@@ -100,8 +111,12 @@ function pickDistinct<T>(values: readonly T[], count: number): T[] {
 	return pool.slice(0, count);
 }
 
-function mountReward(mountId: number, exclusive: boolean): PackReward {
-	return { kind: "mount", mountId, exclusive, label: "Mount" };
+/**
+ * Random mounts are picked by the game server, from the live save, so a pack never hands out a
+ * mount the player already has. Rolling them here could not see what the character owns.
+ */
+function mountPickReward(fromIds: readonly number[], count: number, exclusive: boolean): PackReward {
+	return { kind: "mount", mountId: 0, exclusive, label: "Mount", pick: { fromIds: [...fromIds], count } };
 }
 
 function mountBundleReward(mountIds: number[], exclusive: boolean): PackReward {
@@ -132,7 +147,7 @@ export function buildPackRewards(pack: Pick<SponsorPack, "id">): PackReward[] {
 	switch (pack.id) {
 		case "sponsor":
 			return [
-				mountReward(pickRandom(NON_EXCLUSIVE_MOUNT_IDS), false),
+				mountPickReward(NON_EXCLUSIVE_MOUNT_IDS, 1, false),
 				{ kind: "gold", amount: 10_000 },
 			];
 		case "booster":
@@ -153,7 +168,7 @@ export function buildPackRewards(pack: Pick<SponsorPack, "id">): PackReward[] {
 			return [
 				{ kind: "keys", amount: 10 },
 				lockboxReward(10),
-				mountReward(pickRandom(EXCLUSIVE_MOUNT_IDS), true),
+				mountPickReward(EXCLUSIVE_MOUNT_IDS, 1, true),
 				{ kind: "sigils", amount: 250 },
 				...pickDistinct(LEGENDARY_DYE_IDS, 2).map((dyeId) => dyeReward(dyeId)),
 				consumableReward("exp", 2),
@@ -162,7 +177,7 @@ export function buildPackRewards(pack: Pick<SponsorPack, "id">): PackReward[] {
 			return [
 				{ kind: "keys", amount: 25 },
 				lockboxReward(25),
-				...pickDistinct(EXCLUSIVE_MOUNT_IDS, 3).map((mountId) => mountReward(mountId, true)),
+				mountPickReward(EXCLUSIVE_MOUNT_IDS, 3, true),
 				{ kind: "sigils", amount: 750 },
 				...pickDistinct(LEGENDARY_DYE_IDS, 4).map((dyeId) => dyeReward(dyeId)),
 				{ kind: "gold", amount: 100_000 },

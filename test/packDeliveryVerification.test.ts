@@ -98,6 +98,31 @@ assert.equal(potion.verified, `${potionField} 1 → 3`);
 // A refused reward fails, even though the request as a whole was answered.
 assert.equal(one(gold, result("gold", 5, 5, "insufficient")).status, "failed");
 
+// A mount pick is delivered as the mounts the game server chose from what the character lacked.
+const pick: PackReward = {
+	kind: "mount",
+	mountId: 0,
+	exclusive: true,
+	label: "Mount",
+	pick: { fromIds: [81, 82, 83, 84], count: 3 },
+};
+const picked = one(pick, { ...result("mounts", 0, 3), mountIds: [84, 82, 83] });
+assert.equal(picked.status, "delivered", JSON.stringify(picked));
+assert.equal(picked.verified, "mounts +84, 82, 83");
+assert.equal(picked.delivery.reward.kind === "mount" && picked.delivery.reward.mountId, 84);
+assert.deepEqual(picked.delivery.reward.kind === "mount" && picked.delivery.reward.mountIds, [84, 82, 83]);
+
+// Owning most of the pool gives what is left; owning all of it delivers nothing, and says why.
+const pickedShort = one(pick, { ...result("mounts", 0, 1), mountIds: [84] });
+assert.equal(pickedShort.status, "delivered", JSON.stringify(pickedShort));
+assert.equal(pickedShort.verified, "mounts +84 (1 of 3, owns the rest)");
+const pickedNone = one(pick, { ...result("mounts", 0, 0, "unchanged"), mountIds: [] });
+assert.equal(pickedNone.status, "failed", JSON.stringify(pickedNone));
+assert.match(String(pickedNone.error), /already owns every mount/);
+const pickedLost = one(pick, { ...result("mounts", 0, 1), mountIds: [84, 82] });
+assert.equal(pickedLost.status, "failed", JSON.stringify(pickedLost));
+assert.match(String(pickedLost.error), /did not land/);
+
 // Results line up with the rewards by position.
 const both = deliveryResultsFromGame([gold, keys], "Aiden", [result("gold", 0, 10_000), result("DragonKeys", 0, 0)]);
 assert.deepEqual(both.map((entry) => entry.status), ["delivered", "failed"]);
