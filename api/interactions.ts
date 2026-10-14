@@ -44,6 +44,7 @@ import {
   packsCharacterSelectComponent,
 } from "../src/commands/packs.js";
 import { reportBugCommand, reportBugModal } from "../src/commands/report-bug.js";
+import { diagnoseCommand } from "../src/commands/diagnose.js";
 import {
   grantAmountModal,
   grantCategorySelect,
@@ -96,6 +97,7 @@ const commandModules: CommandModule[] = [
   playerCommand,
   packsCommand,
   reportBugCommand,
+  diagnoseCommand,
 ];
 
 const componentModules: ComponentModule[] = [
