@@ -77,14 +77,16 @@ try {
 		formatRewardLine({ kind: "dye", dyeId: 4, legendary: true, label: "Legendary Dye" }),
 		"Emberdusk",
 	);
-	// An id the game server did not name keeps its readable fallback.
-	assert.equal(mountLabel(90), "Mount #90");
+	// An id the game server did not name keeps its bundled snapshot name...
+	assert.equal(mountLabel(90), "Dawnspire Dragon");
+	// ...and an id nobody knows keeps its readable fallback.
+	assert.equal(mountLabel(999), "Mount #999");
 
 	// A name pinned by hand outranks the game's report, while an id the game named
 	// itself is refreshed when the game renames it.
-	MOUNT_NAMES[90] = "Hand-pinned Mount";
-	assert.equal(applyItemNames({ mounts: [{ id: 90, name: "Renamed By Game" }] }), 0);
-	assert.equal(mountLabel(90), "Hand-pinned Mount");
+	MOUNT_NAMES[999] = "Hand-pinned Mount";
+	assert.equal(applyItemNames({ mounts: [{ id: 999, name: "Renamed By Game" }] }), 0);
+	assert.equal(mountLabel(999), "Hand-pinned Mount");
 	assert.equal(applyItemNames({ mounts: [{ id: 81, name: "Skybone Wyrm II" }] }), 1);
 	assert.equal(mountLabel(81), "Skybone Wyrm II");
 
@@ -109,7 +111,7 @@ try {
 	await ensureGameItemNames();
 	assert.equal(mountLabel(81), "Skybone Wyrm", "a failed load must not clear known names");
 	assert.equal(
-		mountLabel(90),
+		mountLabel(999),
 		"Hand-pinned Mount",
 		"a failed load must not clear a hand-pinned name",
 	);

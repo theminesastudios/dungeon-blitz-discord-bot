@@ -39,7 +39,7 @@ function one(reward: PackReward, answer: GameRewardResult | undefined, online = 
 // A mount that was added is delivered, and the detail names it.
 const mountAdded = one(mount, result("mounts", 0, 1));
 assert.equal(mountAdded.status, "delivered", JSON.stringify(mountAdded));
-assert.equal(mountAdded.verified, "mounts +81");
+assert.equal(mountAdded.verified, "mounts +Goldleaf Mare");
 assert.equal(mountAdded.delivery.characterName, "Aiden");
 
 // Already owning it is still a delivery: the player has the reward the pack promised.
@@ -58,13 +58,14 @@ assert.equal(one(mount, undefined).status, "failed");
 // The Champions' pack delivers its mounts as one bundle; every id has to be owned.
 const bundleAdded = one(bundle, result("mounts", 0, 3));
 assert.equal(bundleAdded.status, "delivered", JSON.stringify(bundleAdded));
-assert.equal(bundleAdded.verified, "mounts +81, 82, 83");
+assert.equal(bundleAdded.verified, "mounts +Goldleaf Mare, Nightloader Mojack, Morningpack Mojack");
 const bundlePartial = one(bundle, result("mounts", 0, 2));
 assert.equal(bundlePartial.status, "failed", JSON.stringify(bundlePartial));
 assert.match(String(bundlePartial.error), /2 of 3/);
 
 // Dyes land in OwnedDyes.
 assert.equal(one(dye, result("OwnedDyes", 0, 1)).status, "delivered");
+assert.equal(one(dye, result("OwnedDyes", 0, 1)).verified, "OwnedDyes +Onyx Shadesteel");
 assert.equal(one(dye, result("OwnedDyes", 0, 0)).status, "failed");
 
 // Currencies are checked as a gain, not an equality: another payment landing in between is fine.
@@ -108,14 +109,14 @@ const pick: PackReward = {
 };
 const picked = one(pick, { ...result("mounts", 0, 3), mountIds: [84, 82, 83] });
 assert.equal(picked.status, "delivered", JSON.stringify(picked));
-assert.equal(picked.verified, "mounts +84, 82, 83");
+assert.equal(picked.verified, "mounts +Duskfire Nightmare, Nightloader Mojack, Morningpack Mojack");
 assert.equal(picked.delivery.reward.kind === "mount" && picked.delivery.reward.mountId, 84);
 assert.deepEqual(picked.delivery.reward.kind === "mount" && picked.delivery.reward.mountIds, [84, 82, 83]);
 
 // Owning most of the pool gives what is left; owning all of it delivers nothing, and says why.
 const pickedShort = one(pick, { ...result("mounts", 0, 1), mountIds: [84] });
 assert.equal(pickedShort.status, "delivered", JSON.stringify(pickedShort));
-assert.equal(pickedShort.verified, "mounts +84 (1 of 3, owns the rest)");
+assert.equal(pickedShort.verified, "mounts +Duskfire Nightmare (1 of 3, owns the rest)");
 const pickedNone = one(pick, { ...result("mounts", 0, 0, "unchanged"), mountIds: [] });
 assert.equal(pickedNone.status, "failed", JSON.stringify(pickedNone));
 assert.match(String(pickedNone.error), /already owns every mount/);
