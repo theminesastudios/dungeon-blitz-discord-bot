@@ -18,7 +18,8 @@ import type {
 } from "@minesa-org/mini-interaction";
 import {
 	SPONSOR_PACKS,
-	formatUsd,
+	formatCredits,
+	CREDIT_EMOJI,
 	purchaseSponsorPack,
 	findSponsorPack,
 	getFreePackStatus,
@@ -61,7 +62,7 @@ const CONTAINER_EPHEMERAL_FLAGS =
 	(MessageFlags.IsComponentsV2 | InteractionFlags.Ephemeral) as MessageFlags;
 
 function packPriceLabel(pack: SponsorPack) {
-	return pack.priceCents === 0 ? "Free" : formatUsd(pack.priceCents);
+	return pack.priceCents === 0 ? "Free" : formatCredits(pack.priceCents);
 }
 
 /** Who a pack is for, in a few words: the pack list and the detail view both use it. */
@@ -70,7 +71,7 @@ function packTerms(pack: SponsorPack): string {
 	if (pack.requiredBoostDays !== undefined) {
 		return `After ${pack.requiredBoostDays} days of boosting · once per player`;
 	}
-	return "Paid from your donation credit";
+	return "Paid with credits";
 }
 
 function buildPackSelectRow(defaultId?: string) {
@@ -203,7 +204,7 @@ function buildPackContainer(
 				.setLabel(
 					pack.priceCents === 0
 						? "Claim for free"
-						: `Buy for ${formatUsd(pack.priceCents)}`,
+						: `Buy for ${formatCredits(pack.priceCents)}`,
 				)
 				.setStyle(ButtonStyle.Success)
 				.setDisabled(!canTake)
@@ -232,6 +233,7 @@ function buildShopContainer(): ContainerBuilder {
 			[
 				"## 🛍️ Pack Shop",
 				"-# Rewards go straight into the character you pick, the moment you buy.",
+				`-# ${CREDIT_EMOJI} Every $1 donated gives you 100 credits to spend here.`,
 			].join("\n"),
 		),
 	);
@@ -240,7 +242,7 @@ function buildShopContainer(): ContainerBuilder {
 		text(["### Free, once per player", ...free.map(line)].join("\n")),
 	);
 	container.addComponent(
-		text(["### Paid from your donation credit", ...paid.map(line)].join("\n")),
+		text([`### Paid with ${CREDIT_EMOJI} credits`, ...paid.map(line)].join("\n")),
 	);
 	container.addComponent(divider());
 	container.addComponent(buildPackSelectRow());
@@ -325,7 +327,7 @@ function buildPurchasedContainer(
 	const paidLine =
 		pack.priceCents === 0
 			? "-# Free claim"
-			: `-# Paid ${formatUsd(pack.priceCents)} · ${credit.balanceCents === null ? "balance unknown" : `${formatUsd(credit.balanceCents)} left`}`;
+			: `-# Paid ${formatCredits(pack.priceCents)} · ${credit.balanceCents === null ? "balance unknown" : `${formatCredits(credit.balanceCents)} left`}`;
 	container.addComponent(
 		text(
 			[
@@ -364,12 +366,12 @@ function reportPurchase(payload: GameLogPayload) {
 /** Pretty labels for the outcome states, so the log never shows a raw `missing-role`. */
 const PURCHASE_STATUS: Record<string, { emoji: string; label: string }> = {
 	ok: { emoji: "✅", label: "Delivered" },
-	insufficient: { emoji: "💸", label: "Not enough credit" },
+	insufficient: { emoji: "💸", label: "Not enough credits" },
 	"missing-role": { emoji: "🎟️", label: "Sponsor role required" },
 	"not-boosting": { emoji: "💎", label: "Not boosting long enough" },
 	"already-claimed": { emoji: "📦", label: "Already claimed" },
 	"no-character": { emoji: "❌", label: "Delivery failed — refunded" },
-	"credit-unknown": { emoji: "⚠️", label: "Credit could not be verified" },
+	"credit-unknown": { emoji: "⚠️", label: "Credits could not be verified" },
 	conflict: { emoji: "🔁", label: "Balance changed mid-purchase" },
 	"not-sponsor": { emoji: "🙅", label: "Not a sponsor" },
 	"no-profile": { emoji: "🔗", label: "Not linked" },
@@ -400,7 +402,7 @@ function purchaseLogCard(
 		});
 		fields.push({
 			name: "Price",
-			value: formatUsd(result.pack.priceCents),
+			value: formatCredits(result.pack.priceCents),
 			inline: true,
 		});
 	} else {
@@ -424,13 +426,13 @@ function purchaseLogCard(
 			value:
 				result.credit.balanceCents === null
 					? "unknown"
-					: formatUsd(result.credit.balanceCents),
+					: formatCredits(result.credit.balanceCents),
 			inline: true,
 		});
 		if (result.credit.bonusCents > 0) {
 			fields.push({
-				name: "Bonus credit",
-				value: formatUsd(result.credit.bonusCents),
+				name: "Bonus credits",
+				value: formatCredits(result.credit.bonusCents),
 				inline: true,
 			});
 		}
@@ -463,7 +465,7 @@ function purchaseLogCard(
 	} else if (result.status === "insufficient") {
 		fields.push({
 			name: "Balance",
-			value: formatUsd(result.balanceCents),
+			value: formatCredits(result.balanceCents),
 			inline: true,
 		});
 	} else if (result.status === "no-character") {
@@ -494,7 +496,7 @@ function buildPurchaseSummary(
 		`**Price:** ${packPriceLabel(pack)}`,
 		...(pack.requiredBoostDays !== undefined
 			? []
-			: [`**Remaining balance:** ${credit.balanceCents === null ? "Unknown" : formatUsd(credit.balanceCents)}`]),
+			: [`**Remaining balance:** ${credit.balanceCents === null ? "Unknown" : formatCredits(credit.balanceCents)}`]),
 		...buildDeliverySummary(deliveries),
 	].join("\n");
 }
@@ -550,7 +552,7 @@ async function respondWithPurchase(
 		case "no-profile":
 			return editReply({
 				content:
-					"Your Discord account has no linked GitHub account, so donation credit cannot be checked. Link GitHub through the account linking flow first.",
+					"Your Discord account has no linked GitHub account, so your credits cannot be checked. Link GitHub through the account linking flow first.",
 				flags: InteractionFlags.Ephemeral,
 			});
 		case "missing-role":
@@ -574,7 +576,7 @@ async function respondWithPurchase(
 		case "not-sponsor":
 			return editReply({
 				content:
-					"Only GitHub sponsors have donation credit to spend. Sponsor The Minesa Studios on GitHub Sponsors first!",
+					"Only GitHub sponsors have credits to spend. Sponsor The Minesa Studios on GitHub Sponsors first!",
 				flags: InteractionFlags.Ephemeral,
 			});
 		case "credit-unknown":
@@ -585,7 +587,7 @@ async function respondWithPurchase(
 			});
 		case "insufficient":
 			return editReply({
-				content: `You need ${formatUsd(result.pack.priceCents)} of donation credit for the **${result.pack.name}**, but your remaining balance is ${formatUsd(result.balanceCents)}.`,
+				content: `You need ${formatCredits(result.pack.priceCents)} for the **${result.pack.name}**, but your remaining balance is ${formatCredits(result.balanceCents)}.`,
 				flags: InteractionFlags.Ephemeral,
 			});
 		case "conflict":

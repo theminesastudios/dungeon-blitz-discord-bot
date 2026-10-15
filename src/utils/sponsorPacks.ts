@@ -349,8 +349,17 @@ export function findSponsorPack(packId: string): SponsorPack | null {
 	return SPONSOR_PACKS.find((pack) => pack.id === packId) ?? null;
 }
 
-export function formatUsd(cents: number): string {
-	return `$${(cents / 100).toFixed(2)}`;
+/** Shop currency icon. One credit is one cent of donation, so $1 donated is 100 credits. */
+export const CREDIT_EMOJI = "🪙";
+
+/** A credit amount as a bare number: `1,250`. Balances are stored in cents, one cent per credit. */
+export function formatCreditAmount(cents: number): string {
+	return cents.toLocaleString("en-US");
+}
+
+/** A credit amount for players: `🪙 1,250 credits`. */
+export function formatCredits(cents: number): string {
+	return `${CREDIT_EMOJI} ${formatCreditAmount(cents)} ${cents === 1 ? "credit" : "credits"}`;
 }
 
 /**

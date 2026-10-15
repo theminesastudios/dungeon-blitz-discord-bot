@@ -35,7 +35,7 @@ import { BAN_DURATION_CHOICES } from "../utils/gameModeration.js";
  *   /admin ban / unban   — take a player out of the game, or let them back in
  *   /admin maintenance   — start the in-game maintenance countdown
  *   /admin lobby-chat    — choose the Discord channel lobby chat is linked to
- *   /admin credits        — add shop credit for a donation
+ *   /admin credits        — add credits for a donation
  *   /admin idols          — add or subtract Mammoth Idols
  *   /admin rewards        — strip sponsor pack rewards from a save
  *   /admin grant          — give or remove a specific item (interactive panel)
@@ -132,7 +132,7 @@ export const adminCommand = {
     .addSubcommand((subcommand) =>
       subcommand
         .setName("credits")
-        .setDescription("Add shop credit equal to a player's donation")
+        .setDescription("Add credits for a player's donation (100 credits per $1)")
         .addStringOption((option) =>
           option
             .setName("player")
@@ -143,7 +143,7 @@ export const adminCommand = {
         .addNumberOption((option) =>
           option
             .setName("dollars")
-            .setDescription("Donated amount in USD to convert into shop credit")
+            .setDescription("Donated amount in USD (converted to 100 credits per $1)")
             .setMinValue(0.01)
             .setRequired(true),
         )
