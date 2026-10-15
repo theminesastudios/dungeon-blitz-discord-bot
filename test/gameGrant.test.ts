@@ -10,6 +10,7 @@ import {
 	formatGrantValue,
 	grantItemLabel,
 	grantOutcomeFromGame,
+	dyeLabel,
 	listGrantItems,
 	mountLabel,
 } from "../src/utils/gameGrant.js";
@@ -70,12 +71,18 @@ for (const category of GRANT_CATEGORIES) {
 assert.ok(listGrantItems("consumable").length > 1);
 assert.deepEqual(listGrantItems("lockbox").map((item) => item.key), ["1"]);
 
-// Names are optional: a named mount wins, an unnamed one falls back to its id.
-assert.equal(mountLabel(81), "Mount #81");
+// Every mount and dye starts named from the bundled game snapshot, and an id the
+// snapshot does not know falls back to its number.
+assert.equal(mountLabel(81), "Goldleaf Mare");
+assert.equal(mountLabel(999), "Mount #999");
+assert.equal(dyeLabel(999), "Legendary dye #999");
+for (const item of [...listGrantItems("mount"), ...listGrantItems("dye")]) {
+	assert.doesNotMatch(item.label, /#\d+$/, `grantable id ${item.key} has no name`);
+}
 MOUNT_NAMES[81] = "Skybone Wyrm";
 assert.equal(mountLabel(81), "Skybone Wyrm");
-assert.equal(grantItemLabel("mount", "82"), "Mount #82");
-assert.equal(grantItemLabel("dye", "4"), "Legendary dye #4");
+assert.equal(grantItemLabel("mount", "82"), "Nightloader Mojack");
+assert.equal(grantItemLabel("dye", "4"), "Onyx Shadesteel");
 DYE_NAMES[4] = "Emberdusk";
 assert.equal(grantItemLabel("dye", "4"), "Emberdusk");
 assert.equal(grantItemLabel("consumable", "gear"), "Gear potion");

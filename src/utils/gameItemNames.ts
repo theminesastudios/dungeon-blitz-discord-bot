@@ -6,11 +6,19 @@
  * the content, so the names are fetched from the game server by
  * `ensureGameItemNames()` in `gameContent.ts` and merged in here.
  *
+ * The tables start from `src/data/itemNames.ts`, a snapshot of the game's
+ * `MountTypes.xml` and `DyeTypes.json` (regenerate it with
+ * `scripts/export-item-names.ts`), so a grant or a pack names its mount even when
+ * the game server cannot be asked. The snapshot counts as game-reported: a live
+ * load refreshes it, so a rename in the game still reaches the bot.
+ *
  * The two tables stay the place to pin a name by hand. A hand-written entry wins
  * over whatever the game server reports; ids the game named itself are refreshed
  * on every load, so a rename in the game reaches the bot, and a failed load never
  * clears a name that is already known.
  * ------------------------------------------------------------------ */
+
+import { DYE_NAME_SNAPSHOT, MOUNT_NAME_SNAPSHOT } from "../data/itemNames.js";
 
 /** Mount display names, keyed by the game's mount id. */
 export const MOUNT_NAMES: Record<number, string> = {};
@@ -78,3 +86,12 @@ export function applyItemNames(input: {
     applyToTable(DYE_NAMES, GAME_NAMED_DYE_IDS, input.dyes)
   );
 }
+
+function snapshotEntries(table: Record<number, string>): GameItemNameEntry[] {
+  return Object.entries(table).map(([id, name]) => ({ id: Number(id), name }));
+}
+
+applyItemNames({
+  mounts: snapshotEntries(MOUNT_NAME_SNAPSHOT),
+  dyes: snapshotEntries(DYE_NAME_SNAPSHOT),
+});

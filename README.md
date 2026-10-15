@@ -48,18 +48,26 @@ Every player picker reads only live data: characters on a current `saves` docume
 
 ### Grant item names
 
-Mount and dye ids are the game's own content ids: a save stores `mounts: [81]`, and only the game knows that `81` is called *Skybone Wyrm*. So the bot asks the game server rather than keeping a copy of the content list:
+Mount and dye ids are the game's own content ids: a save stores `mounts: [81]`, and only the game knows that `81` is called *Goldleaf Mare*. The bot ships a snapshot of every mount and dye name in `src/data/itemNames.ts`, generated from the game's `MountTypes.xml` and `DyeTypes.json`, so `/grant`, `/packs` and the operator log name what they hand out even when the game server cannot be asked. Regenerate it when the game adds or renames mounts or dyes:
+
+```bash
+npx tsx scripts/export-item-names.ts \
+  ../private-dungeon-blitz-r/src/client/content/xml/MountTypes.xml \
+  ../private-dungeon-blitz-r/src/server/data/DyeTypes.json
+```
+
+On top of the snapshot, the bot asks the game server for the live list, so a rename reaches the bot without a redeploy:
 
 ```
 GET /api/admin/content          # same shared secret as the other admin routes
 { "ok": true,
-  "mounts": [{ "id": 81, "name": "Skybone Wyrm" }],
-  "dyes":   [{ "id": 4,  "name": "Emberdusk" }] }
+  "mounts": [{ "id": 81, "name": "Goldleaf Mare" }],
+  "dyes":   [{ "id": 4,  "name": "Onyx Shadesteel" }] }
 ```
 
-A plain `{ "81": "Skybone Wyrm" }` map works too, and names may sit under `items.mounts` / `items.dyes`. The answer is cached for five minutes and shared by every picker, shop confirmation and operator log line.
+A plain `{ "81": "Goldleaf Mare" }` map works too, and names may sit under `items.mounts` / `items.dyes`. The answer is cached for five minutes and shared by every picker, shop confirmation and operator log line.
 
-The read is deliberately fail-open: a game server that has not added the route yet, or one that is unreachable, logs a warning and the bot falls back to `Mount #<id>` / `Legendary dye #<id>` rather than blocking a grant or a purchase. Nothing already loaded is cleared by a failed refresh.
+The read is deliberately fail-open: a game server that has not added the route yet, or one that is unreachable, logs a warning and the bot keeps the snapshot names (and `Mount #<id>` / `Legendary dye #<id>` only for an id the snapshot does not know) rather than blocking a grant or a purchase. Nothing already loaded is cleared by a failed refresh.
 
 To pin or override a name by hand — or to name an id the game server reports differently — edit the tables in `src/utils/gameItemNames.ts`. Manual entries are never overwritten by a later load.
 

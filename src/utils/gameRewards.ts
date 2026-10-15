@@ -567,6 +567,11 @@ function fail(reward: PackReward, characterName: string, error: string, verified
 	};
 }
 
+/** Names the mounts or dyes a delivery added, so the log reads "+Goldleaf Mare" rather than "+81". */
+function listNames(reward: PackReward, ids: readonly number[]): string {
+	return ids.map(reward.kind === "dye" ? dyeLabel : mountLabel).join(", ");
+}
+
 function listIds(reward: PackReward): number[] | null {
 	if (reward.kind === "mount") return reward.mountIds ?? [reward.mountId];
 	if (reward.kind === "dye") return [reward.dyeId];
@@ -622,8 +627,8 @@ export function deliveryResultsFromGame(
 				delivery: { reward, characterName },
 				verified:
 					before >= ids.length
-						? `${result.field} already owned (${ids.join(", ")})${where}`
-						: `${result.field} +${ids.join(", ")}${where}`,
+						? `${result.field} already owned (${listNames(reward, ids)})${where}`
+						: `${result.field} +${listNames(reward, ids)}${where}`,
 			};
 		}
 
@@ -685,7 +690,7 @@ function pickedMountResult(
 	return {
 		status: "delivered",
 		delivery: { reward: chosen, characterName },
-		verified: `${result.field} +${picked.join(", ")}${short}${where}`,
+		verified: `${result.field} +${listNames(reward, picked)}${short}${where}`,
 	};
 }
 

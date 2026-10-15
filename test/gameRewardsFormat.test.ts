@@ -4,17 +4,17 @@ import type { PackReward } from "../src/utils/sponsorPacks.js";
 
 assert.equal(
 	formatRewardLine({ kind: "mount", mountId: 13, exclusive: false, label: "Mount" }),
-	"Mount #13",
+	"Brimstone Fangrasaur",
 );
 assert.equal(
 	formatRewardLine({ kind: "mount", mountId: 88, exclusive: true, label: "Mount" }),
-	"Mount #88 (exclusive)",
+	"Emberwing Dragon (exclusive)",
 );
 // A pick names the mounts the game chose; one it never reached reads as the promise.
 const pick = { fromIds: [81, 82, 83], count: 3 };
 assert.equal(
 	formatRewardLine({ kind: "mount", mountId: 81, mountIds: [81, 82, 83], exclusive: true, label: "Mount", pick }),
-	"Mount #81, Mount #82, Mount #83 (exclusive)",
+	"Goldleaf Mare, Nightloader Mojack, Morningpack Mojack (exclusive)",
 );
 assert.equal(
 	formatRewardLine({ kind: "mount", mountId: 0, exclusive: true, label: "Mount", pick }),
@@ -30,7 +30,7 @@ assert.equal(
 );
 assert.equal(
 	formatRewardLine({ kind: "dye", dyeId: 19, legendary: true, label: "Legendary Dye" }),
-	"Legendary dye #19",
+	"Elysium Pink",
 );
 assert.equal(
 	formatRewardLine({ kind: "lockbox", lockboxId: 1, count: 25, label: "Trove Chests" }),
