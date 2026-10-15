@@ -1,7 +1,7 @@
 import type { AutocompleteContext } from "@minesa-org/mini-interaction";
 import type { CommandInteraction } from "@minesa-org/mini-interaction";
 import { getPlayerProfile, searchPlayers } from "../utils/gameWallet.js";
-import { addCreditsToPlayer } from "../utils/sponsorPacks.js";
+import { addCreditsToPlayer, formatCredits, CREDIT_EMOJI } from "../utils/sponsorPacks.js";
 import { interactionDiscordId, isAdministrator } from "../utils/discordInteractions.js";
 
 /** `/admin credits` — grants shop credit equal to a donated dollar amount. */
@@ -63,16 +63,15 @@ export async function handleAddCredits(interaction: CommandInteraction) {
     }
 
     const dollarLabel = `$${(result.cents / 100).toFixed(2)}`;
-    const bonusLabel = `$${(result.totalBonusCents / 100).toFixed(2)}`;
     return interaction.editReply({
       embeds: [
         {
           color: 0x2ecc71,
-          title: "💳 Shop credit added",
+          title: `${CREDIT_EMOJI} Credits added`,
           fields: [
             { name: "Player", value: `<@${targetDiscordId}>`, inline: true },
-            { name: "Added", value: dollarLabel, inline: true },
-            { name: "New bonus balance", value: bonusLabel, inline: true },
+            { name: "Added", value: `${formatCredits(result.cents)} (${dollarLabel})`, inline: true },
+            { name: "New bonus balance", value: formatCredits(result.totalBonusCents), inline: true },
           ],
           footer: {
             text: "Stacks on top of their GitHub sponsor donations in the pack shop.",

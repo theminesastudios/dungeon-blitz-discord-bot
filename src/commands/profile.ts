@@ -7,7 +7,7 @@ import {
   type GameWalletSummary,
   type PlayerProfile,
 } from "../utils/gameWallet.js";
-import { getSponsorCredit, formatUsd } from "../utils/sponsorPacks.js";
+import { getSponsorCredit, formatCreditAmount, CREDIT_EMOJI } from "../utils/sponsorPacks.js";
 import { characterSubtitle } from "../utils/characterDisplay.js";
 import {
   COLORS,
@@ -77,11 +77,11 @@ export async function handleProfile(interaction: CommandInteraction) {
       try {
         const credit = await getSponsorCredit(profile.discordUserId);
         if (credit && (credit.isSponsor || credit.bonusCents > 0)) {
-          const bonus = credit.bonusCents > 0 ? ` · Bonus ${formatUsd(credit.bonusCents)}` : "";
+          const bonus = credit.bonusCents > 0 ? ` · bonus ${formatCreditAmount(credit.bonusCents)}` : "";
           creditLine =
             credit.balanceCents === null
-              ? `Shop credit: balance unknown · used ${formatUsd(credit.usedCents)}${bonus}`
-              : `Shop credit: **${formatUsd(credit.balanceCents)}** left · used ${formatUsd(credit.usedCents)} · sponsored ${formatUsd(credit.sponsoredCents ?? 0)}${bonus}`;
+              ? `${CREDIT_EMOJI} Credits: balance unknown · used ${formatCreditAmount(credit.usedCents)}${bonus}`
+              : `${CREDIT_EMOJI} Credits: **${formatCreditAmount(credit.balanceCents)}** left · used ${formatCreditAmount(credit.usedCents)} · sponsored ${formatCreditAmount(credit.sponsoredCents ?? 0)}${bonus}`;
         }
       } catch (error) {
         console.warn("[profile] Sponsor credit load failed:", error);
