@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import {
 	findGameWallet,
 	findLiveCharacter,
+	getAccountActivity,
+	getCharacterProgress,
 	getPlayerProfile,
 	searchGameWallets,
 	searchPlayers,
@@ -89,7 +91,25 @@ setWalletCollectionsForTests({
 			user_id: 14,
 			updatedAt: day(9),
 			characters: [
-				{ name: "MaxMage", class: "Mage", level: 50, MasterClass: 8, gold: 900, mammothIdols: 700 },
+				{
+					name: "MaxMage",
+					class: "Mage",
+					level: 50,
+					xp: 2_345_678,
+					MasterClass: 8,
+					gold: 900,
+					mammothIdols: 700,
+					// A duplicate row keeps its best rank; junk rows are dropped.
+					learnedAbilities: [
+						{ abilityID: 10, rank: 10 },
+						{ abilityID: 58, rank: 3 },
+						{ abilityID: 58, rank: 7 },
+						{ abilityID: 0, rank: 5 },
+						{ abilityID: 11, rank: 0 },
+					],
+					activeAbilities: [58, 10, 0, 11],
+					talentPoints: { "2": 50, "1": 12, "3": "x" },
+				},
 				{ name: "NewRogue", class: "Rogue", level: 3, gold: 5, mammothIdols: 700 },
 			],
 		},
@@ -110,7 +130,20 @@ setWalletCollectionsForTests({
 		{ _id: "77", user_id: 77, updatedAt: day(7), characters: [{ name: "MaxOrphan", level: 1 }] },
 	]),
 	accounts: collection([
-		{ _id: "user:14", user_id: 14, discordId: "111", discordUsername: "neo" },
+		{
+			_id: "user:14",
+			user_id: 14,
+			discordId: "111",
+			discordUsername: "neo",
+			gameStats: {
+				playtimeMs: 7_200_000,
+				runs: 40,
+				wins: 31,
+				kills: 1_234,
+				deaths: 9,
+				characterPlaytimeMs: { maxmage: 3_600_000, newrogue: -5 },
+			},
+		},
 		{ _id: "user:20", user_id: 20, discordId: "222", discordUsername: "" },
 		{ _id: "user:1", user_id: 1, email: "test@example.com" },
 	]),
@@ -159,6 +192,8 @@ try {
 	const profile = await getPlayerProfile("profile:111");
 	assert.equal(profile?.githubUsername, "neodevils");
 	assert.deepEqual(profile?.wallets.map((w) => w.characterName), ["MaxMage", "NewRogue"]);
+	// The save's total experience comes through; a character with no `xp` field reads as 0.
+	assert.deepEqual(profile?.wallets.map((w) => w.characterXp), [2_345_678, 0]);
 	const byWallet = await getPlayerProfile("wallet:saves:20:Maxine");
 	assert.equal(byWallet?.discordUserId, "222");
 	// A sponsor profile without a game account keeps its sponsor data (shop credit needs it) and no characters.
@@ -166,6 +201,33 @@ try {
 	assert.equal(sponsorOnly?.githubUsername, "stale-snapshot");
 	assert.deepEqual(sponsorOnly?.wallets, []);
 	assert.equal(await getPlayerProfile("profile:404"), null);
+
+	// The staff detail view reads abilities, hotbar and Class Tower research off the save, and
+	// fills in the owner so it can link back to the whole profile.
+	const progress = await getCharacterProgress("saves:14:MaxMage");
+	assert.equal(progress?.wallet.owner?.discordId, "111");
+	assert.deepEqual(progress?.abilities, [
+		{ id: 10, rank: 10 },
+		{ id: 58, rank: 7 },
+	]);
+	assert.deepEqual(progress?.activeAbilities, [58, 10, 11]);
+	assert.deepEqual(progress?.talentPoints, { "1": 12, "2": 50 });
+	const fresh = await getCharacterProgress("saves:14:NewRogue");
+	assert.deepEqual([fresh?.abilities, fresh?.activeAbilities, fresh?.talentPoints], [[], [], {}]);
+	assert.equal(await getCharacterProgress("saves:14:Nobody"), null);
+	assert.equal(await getCharacterProgress("MaxMage"), null);
+
+	// Account totals come from the game server's gameStats; an account without any reads null.
+	assert.deepEqual(await getAccountActivity(14), {
+		playtimeMs: 7_200_000,
+		runs: 40,
+		wins: 31,
+		kills: 1_234,
+		deaths: 9,
+		characterPlaytimeMs: { maxmage: 3_600_000 },
+	});
+	assert.equal(await getAccountActivity(20), null);
+	assert.equal(await getAccountActivity(0), null);
 
 	// Wallet selectors keep working for the idol tools.
 	assert.equal((await findGameWallet("saves:14:NewRogue"))?.characterLevel, 3);

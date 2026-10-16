@@ -36,6 +36,7 @@ import {
 } from "../src/commands/account.js";
 import { playerCommand, handlePlayerAutocomplete } from "../src/commands/player.js";
 import { adminCommand, handleAdminAutocomplete } from "../src/commands/admin.js";
+import { profileBackButton, profileInspectSelect } from "../src/commands/profile.js";
 import { authorizeCommand } from "../src/commands/authorize.js";
 import {
   packsCommand,
@@ -111,6 +112,8 @@ const componentModules: ComponentModule[] = [
   grantItemSelect,
   grantOperationButtons,
   grantStartButton,
+  profileInspectSelect,
+  profileBackButton,
   serverBranchSelectComponent,
   serverRestartComponent,
   serverRefreshComponent,

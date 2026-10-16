@@ -16,6 +16,8 @@ type RawSaveCharacter = Document & {
 	/** `MasterClassID` (1-9); 0 means the character has not chosen a discipline yet. */
 	MasterClass?: number;
 	level?: number;
+	/** Total experience earned; the game derives `level` from it. */
+	xp?: number;
 	gold?: number;
 	mammothIdols?: number;
 	DragonKeys?: number;
@@ -24,6 +26,12 @@ type RawSaveCharacter = Document & {
 	SilverSigils?: number;
 	RoyalSigils?: number;
 	missions?: Record<string, { state?: number } | null>;
+	/** One row per learned ability: `{ abilityID, rank }`. */
+	learnedAbilities?: unknown;
+	/** The (up to three) ability ids on the hotbar. */
+	activeAbilities?: unknown;
+	/** Class Tower research, keyed "1".."3" — one per discipline of the base class. */
+	talentPoints?: unknown;
 	/** Written by the game on every region change; its timestamp is when the character last played. */
 	LastRegionPosition?: { timestamp?: number } | null;
 };
@@ -42,6 +50,15 @@ type RawAccount = Document & {
 	discordUsername?: string;
 	discordGlobalName?: string;
 	discordDisplayName?: string;
+	/** Lifetime totals the game server keeps (`AccountGameStats` in its Database.ts). */
+	gameStats?: {
+		playtimeMs?: number;
+		runs?: number;
+		wins?: number;
+		kills?: number;
+		deaths?: number;
+		characterPlaytimeMs?: Record<string, number>;
+	};
 };
 
 type RawLinkedProfile = Document & {
@@ -90,6 +107,8 @@ export type GameWalletSummary = {
 	/** `MasterClassID` (1-9), 0 when no discipline has been chosen. */
 	characterMasterClass: number;
 	characterLevel: number;
+	/** Total experience the character has earned, as the save stores it. */
+	characterXp: number;
 	gold: number;
 	mammothIdols: number;
 	dragonKeys: number;
@@ -108,6 +127,30 @@ export type GameWalletSummary = {
 export type PlayerSearchResult = {
 	selector: string;
 	label: string;
+};
+
+/** What the game server has counted for one account since it started counting. */
+export type AccountActivity = {
+	playtimeMs: number;
+	/** Dungeon runs finished, won or lost. */
+	runs: number;
+	wins: number;
+	kills: number;
+	deaths: number;
+	/** Keyed by `characterPlaytimeKey` (utils/playtime.ts). */
+	characterPlaytimeMs: Record<string, number>;
+};
+
+export type LearnedAbility = { id: number; rank: number };
+
+/** The parts of a character only the staff detail view needs. */
+export type CharacterProgress = {
+	wallet: GameWalletSummary;
+	abilities: LearnedAbility[];
+	/** Ability ids on the hotbar. */
+	activeAbilities: number[];
+	/** Class Tower talent points researched per discipline, keyed "1".."3". */
+	talentPoints: Record<string, number>;
 };
 
 export type PlayerProfile = {
@@ -158,6 +201,33 @@ function normalizeMissions(value: unknown): Record<string, number> {
 	return missions;
 }
 
+function normalizeAbilities(value: unknown): LearnedAbility[] {
+	if (!Array.isArray(value)) return [];
+	const ranks = new Map<number, number>();
+	for (const entry of value) {
+		const id = Number((entry as { abilityID?: unknown } | null)?.abilityID);
+		const rank = Number((entry as { rank?: unknown } | null)?.rank);
+		if (!Number.isSafeInteger(id) || id <= 0 || !Number.isFinite(rank) || rank <= 0) continue;
+		ranks.set(id, Math.max(ranks.get(id) ?? 0, Math.round(rank)));
+	}
+	return [...ranks].sort(([a], [b]) => a - b).map(([id, rank]) => ({ id, rank }));
+}
+
+function normalizeIds(value: unknown): number[] {
+	if (!Array.isArray(value)) return [];
+	return value.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0);
+}
+
+function normalizeCounters(value: unknown): Record<string, number> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const counters: Record<string, number> = {};
+	for (const [key, amount] of Object.entries(value as Record<string, unknown>)) {
+		const number = Number(amount);
+		if (Number.isFinite(number) && number > 0) counters[key] = Math.round(number);
+	}
+	return counters;
+}
+
 function escapeRegex(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -194,6 +264,7 @@ function toSaveSummary(
 		characterClass: String(character.class ?? "").trim(),
 		characterMasterClass: normalizeMasterClass(character.MasterClass),
 		characterLevel: normalizeLevel(character.level),
+		characterXp: normalizeBalance(character.xp),
 		gold: normalizeBalance(character.gold),
 		mammothIdols: normalizeBalance(character.mammothIdols),
 		dragonKeys: normalizeBalance(character.DragonKeys),
@@ -468,6 +539,51 @@ export async function findLiveCharacter(name: string): Promise<GameWalletSummary
 		normalizeBalance(save.user_id),
 	);
 	return owner ? toSaveSummary(save, character, owner) : null;
+}
+
+/**
+ * One character's abilities and talent research, for the staff detail view. Takes a wallet
+ * selector (`saves:<id>:<name>`) and fills in the owner, since the detail view links back to
+ * the owner's whole profile.
+ */
+export async function getCharacterProgress(selector: string): Promise<CharacterProgress | null> {
+	const parsed = parseSelector(selector.trim());
+	if (!parsed) return null;
+	const { saves } = await getGameCollections();
+	const save = await saves.findOne({ _id: parsed.id } as Filter<RawSave>);
+	const character = save ? findSaveCharacter(save, parsed.characterName) : null;
+	if (!save || !character) return null;
+	const userId = normalizeBalance(save.user_id);
+	const owner = (await loadOwners([userId])).get(userId) ?? null;
+	return {
+		wallet: toSaveSummary(save, character, owner),
+		abilities: normalizeAbilities(character.learnedAbilities),
+		activeAbilities: normalizeIds(character.activeAbilities).slice(0, 3),
+		talentPoints: normalizeCounters(character.talentPoints),
+	};
+}
+
+/**
+ * The account's lifetime totals, or null when the game server has never recorded any. The
+ * counters only started when the server began keeping them, so older accounts read low.
+ */
+export async function getAccountActivity(gameUserId: number): Promise<AccountActivity | null> {
+	const userId = normalizeBalance(gameUserId);
+	if (userId <= 0) return null;
+	const { accounts } = await getGameCollections();
+	const account = await accounts.findOne({ user_id: userId } as Filter<RawAccount>, {
+		projection: { gameStats: 1 },
+	});
+	const stats = account?.gameStats;
+	if (!stats || typeof stats !== "object") return null;
+	return {
+		playtimeMs: normalizeBalance(stats.playtimeMs),
+		runs: normalizeBalance(stats.runs),
+		wins: normalizeBalance(stats.wins),
+		kills: normalizeBalance(stats.kills),
+		deaths: normalizeBalance(stats.deaths),
+		characterPlaytimeMs: normalizeCounters(stats.characterPlaytimeMs),
+	};
 }
 
 export async function findGameWallet(selector: string): Promise<GameWalletSummary | null> {
