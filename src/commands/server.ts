@@ -59,7 +59,13 @@ const CONTAINER_EPHEMERAL_FLAGS = (
 	MessageFlags.IsComponentsV2 | InteractionFlags.Ephemeral
 ) as MessageFlags;
 
-export const DEFAULT_RESTART_SECONDS = 60;
+// How long players are warned before a /server restart: long enough to finish a fight and log out.
+export const DEFAULT_RESTART_SECONDS = 300;
+
+/** "5 min" for whole minutes, "45s" otherwise. */
+function describeRestartDelay(seconds: number): string {
+	return seconds >= 60 && seconds % 60 === 0 ? `${seconds / 60} min` : `${seconds}s`;
+}
 
 export type ServerPanelView = {
 	state: GameServerState | null;
@@ -157,7 +163,7 @@ function buildButtonRow(
 ): ActionRowBuilder<MessageActionRowComponent> {
 	// Discord caps button labels at 80 characters and branch names can run to 120.
 	const restartWarned = new ButtonBuilder()
-		.setLabel(`Restart to ${selectedBranch} in ${DEFAULT_RESTART_SECONDS}s`.slice(0, 80))
+		.setLabel(`Restart to ${selectedBranch} in ${describeRestartDelay(DEFAULT_RESTART_SECONDS)}`.slice(0, 80))
 		.setStyle(ButtonStyle.Primary)
 		.setCustomId(`${RESTART_BUTTON_PREFIX}${DEFAULT_RESTART_SECONDS}:${selectedBranch}`)
 		.setDisabled(!canRestart);

@@ -151,11 +151,11 @@ function testRestartButtons(): void {
 	const buttons = findButtons(componentsOf(container));
 	const ids = buttons.map((button) => button.custom_id);
 	assert.deepEqual(ids, [
-		"server:restart:60:fix/mob-random-deaths",
+		"server:restart:300:fix/mob-random-deaths",
 		"server:restart:0:fix/mob-random-deaths",
 		"server:refresh:fix/mob-random-deaths",
 	]);
-	assert.match(String(buttons[0]!.label), /Restart to fix\/mob-random-deaths in 60s/);
+	assert.match(String(buttons[0]!.label), /Restart to fix\/mob-random-deaths in 5 min/);
 	assert.equal(buttons[1]!.style, 4, "an immediate restart is the dangerous one");
 	assert.equal(
 		buttons.some((button) => button.custom_id === "server:cancel"),
