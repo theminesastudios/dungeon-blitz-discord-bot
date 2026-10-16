@@ -115,10 +115,10 @@ async function listSaveCharactersForUser(userId: number): Promise<GameCharacterO
 /**
  * The buyer's save document, resolved once per operation.
  *
- * Every Mongo read in this module goes through this handle, and so does the one write left
- * (`stripPackRewards`). Matching on `user_id` alone would let a second document that carries
- * the same `user_id` — a legacy or duplicate save — answer instead. Rewards themselves are
- * paid through the game server (`applyPackRewardsToSave`), never written here.
+ * Every Mongo read in this module goes through this handle. Matching on `user_id` alone would
+ * let a second document that carries the same `user_id` — a legacy or duplicate save — answer
+ * instead. Nothing here writes a save: rewards are paid (`applyPackRewardsToSave`) and taken
+ * back (`stripPackRewards`) through the game server.
  */
 type SaveDocumentHandle = {
 	id: RewardDocument["_id"];
@@ -232,10 +232,11 @@ export async function findDefaultGameSaveCharacter(
 
 export type PackRewardStripCharacter = {
 	name: string;
+	/** Read from the game server's answer: only ids the character actually lost. */
 	removedDyes: number[];
 	removedMounts: number[];
-	remainingDyes: number[];
-	remainingMounts: number[];
+	/** Why the game server did not take (all of) the removal; what is listed above did go. */
+	error?: string;
 };
 
 export type PackRewardStripResult = {
@@ -243,96 +244,90 @@ export type PackRewardStripResult = {
 	characters: PackRewardStripCharacter[];
 };
 
-function toNumberArray(value: unknown): number[] {
-	return Array.isArray(value)
-		? value.map((entry) => Number(entry)).filter((entry) => Number.isFinite(entry))
-		: [];
-}
+/** `/api/admin/rewards` takes at most this many rewards in one request. */
+const MAX_REWARDS_PER_GAME_REQUEST = 100;
 
-function characterInventory(character: unknown, field: "OwnedDyes" | "mounts"): number[] {
-	const record = character as { OwnedDyes?: unknown; mounts?: unknown } | null;
-	if (!record) return [];
-	return toNumberArray(field === "OwnedDyes" ? record.OwnedDyes : record.mounts);
+/**
+ * One removal per id the pack shop can grant, so the game server's answer says which ids the
+ * character held. Read here rather than at module scope: this module and `sponsorPacks` import
+ * each other, so a top-level read runs while that module is still evaluating and would spread
+ * `undefined`.
+ */
+function packRewardRemovals(): GameRewardChange[] {
+	return [
+		...LEGENDARY_DYE_IDS.map((dyeId): GameRewardChange => ({ kind: "dye", dyeId, operation: "remove" })),
+		...[...NON_EXCLUSIVE_MOUNT_IDS, ...EXCLUSIVE_MOUNT_IDS].map(
+			(mountId): GameRewardChange => ({ kind: "mount", mountIds: [mountId], operation: "remove" }),
+		),
+	];
 }
 
 /**
- * Removes the mounts and legendary dyes the pack shop can grant from a save
- * (`applyPackRewardsToSave`), so a test purchase can be undone. It removes every id
- * in the pack pools whether the shop wrote it or not: the pools cover every
- * idol-buyable mount and every legendary dye, so a mount the player bought with
- * idols goes too. Only mounts that cannot be bought stay.
+ * Removes the mounts and legendary dyes the pack shop can grant from one character, through the
+ * game server like every grant (`requestGameRewards`), so a test purchase can be undone.
  *
- * Returns the ids that were actually removed, read back from the save, or null
- * when the Discord account has no game account/save.
+ * This used to `$pull` them from Mongo's `saves`. The game keeps its local save as the live copy
+ * and writes it over Mongo's `characters` on every backup, so the removal was thrown away and the
+ * character kept the pack. The game server changes the live character when the player is in game
+ * and the stored save otherwise. A removal has no packet of its own, so an online client shows it
+ * after its next zone change.
+ *
+ * It removes every id in the pack pools whether the shop gave it or not: the pools cover every
+ * idol-buyable mount and every legendary dye, so a mount the player bought with idols goes too.
+ * Only mounts that cannot be bought stay. A locked character is changed as well (staff tool).
+ */
+export async function stripPackRewardsFromCharacter(
+	userId: number,
+	characterName: string,
+	requestedBy = "pack-rewards",
+): Promise<PackRewardStripCharacter> {
+	const strip: PackRewardStripCharacter = { name: characterName, removedDyes: [], removedMounts: [] };
+	const removals = packRewardRemovals();
+	for (let start = 0; start < removals.length; start += MAX_REWARDS_PER_GAME_REQUEST) {
+		const chunk = removals.slice(start, start + MAX_REWARDS_PER_GAME_REQUEST);
+		const outcome = await requestGameRewards({
+			userId,
+			characterName,
+			rewards: chunk,
+			requestedBy,
+			allowLocked: true,
+		});
+		if (!outcome.ok) {
+			strip.error = outcome.message;
+			return strip;
+		}
+		strip.name = outcome.characterName;
+		chunk.forEach((change, index) => {
+			// `applied` on a removal: the character held the id and no longer does.
+			if (outcome.results[index]?.status !== "applied") return;
+			if (change.kind === "dye") strip.removedDyes.push(change.dyeId);
+			else if (change.kind === "mount" && "mountIds" in change) strip.removedMounts.push(...change.mountIds);
+		});
+	}
+	return strip;
+}
+
+/**
+ * `stripPackRewardsFromCharacter` for the named character, or for every character on the
+ * Discord account's save. Null when the Discord account has no game account.
  */
 export async function stripPackRewards(
 	discordId: string,
 	characterName?: string,
 ): Promise<PackRewardStripResult | null> {
-	// Read the pack id pools here rather than at module scope: this module and
-	// `sponsorPacks` import each other, so a top-level read runs while that
-	// module is still evaluating and would spread `undefined`.
-	const packDyeIds: number[] = [...LEGENDARY_DYE_IDS];
-	const packMountIds: number[] = [
-		...NON_EXCLUSIVE_MOUNT_IDS,
-		...EXCLUSIVE_MOUNT_IDS,
-	];
-
 	const userId = await findGameUserIdForDiscord(discordId);
 	if (!userId) return null;
 
-	const saves = await getSavesCollection();
-	const save = await resolveSaveDocument(saves, userId);
-	const before = save?.characters ?? [];
-	if (!save || before.length === 0) return { userId, characters: [] };
-
-	const wanted = characterName?.trim().toLowerCase();
-	const names = before
-		.map((character) => String((character as { name?: unknown } | null)?.name ?? "").trim())
-		.filter((name) => name.length > 0 && (!wanted || name.toLowerCase() === wanted));
-	if (names.length === 0) return { userId, characters: [] };
-
-	for (const name of names) {
-		await saves.updateOne(
-			{ _id: save.id, "characters.name": name } as Filter<RewardDocument>,
-			{
-				$pull: {
-					"characters.$[char].OwnedDyes": { $in: packDyeIds },
-					"characters.$[char].mounts": { $in: packMountIds },
-				},
-				$set: { updatedAt: new Date() },
-			} as never,
-			{ arrayFilters: [{ "char.name": name }] } as never,
-		);
-	}
+	// Only the names come from Mongo; the game server answers for the save itself.
+	const wanted = characterName?.trim();
+	const names = wanted
+		? [wanted]
+		: (await listSaveCharactersForUser(userId)).map((character) => character.name);
 
 	const characters: PackRewardStripCharacter[] = [];
 	for (const name of names) {
-		const beforeDyes = characterInventory(
-			before.find(
-				(character) =>
-					String((character as { name?: unknown } | null)?.name ?? "").trim() === name,
-			),
-			"OwnedDyes",
-		);
-		const beforeMounts = characterInventory(
-			before.find(
-				(character) =>
-					String((character as { name?: unknown } | null)?.name ?? "").trim() === name,
-			),
-			"mounts",
-		);
-		const remainingDyes = beforeDyes.filter((id) => !packDyeIds.includes(id));
-		const remainingMounts = beforeMounts.filter((id) => !packMountIds.includes(id));
-		characters.push({
-			name,
-			removedDyes: beforeDyes.filter((id) => !remainingDyes.includes(id)),
-			removedMounts: beforeMounts.filter((id) => !remainingMounts.includes(id)),
-			remainingDyes,
-			remainingMounts,
-		});
+		characters.push(await stripPackRewardsFromCharacter(userId, name));
 	}
-
 	return { userId, characters };
 }
 
