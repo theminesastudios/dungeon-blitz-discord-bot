@@ -89,7 +89,7 @@ setWalletCollectionsForTests({
 			user_id: 14,
 			updatedAt: day(9),
 			characters: [
-				{ name: "MaxMage", class: "Mage", level: 50, MasterClass: 8, gold: 900, mammothIdols: 700 },
+				{ name: "MaxMage", class: "Mage", level: 50, xp: 2_345_678, MasterClass: 8, gold: 900, mammothIdols: 700 },
 				{ name: "NewRogue", class: "Rogue", level: 3, gold: 5, mammothIdols: 700 },
 			],
 		},
@@ -159,6 +159,8 @@ try {
 	const profile = await getPlayerProfile("profile:111");
 	assert.equal(profile?.githubUsername, "neodevils");
 	assert.deepEqual(profile?.wallets.map((w) => w.characterName), ["MaxMage", "NewRogue"]);
+	// The save's total experience comes through; a character with no `xp` field reads as 0.
+	assert.deepEqual(profile?.wallets.map((w) => w.characterXp), [2_345_678, 0]);
 	const byWallet = await getPlayerProfile("wallet:saves:20:Maxine");
 	assert.equal(byWallet?.discordUserId, "222");
 	// A sponsor profile without a game account keeps its sponsor data (shop credit needs it) and no characters.

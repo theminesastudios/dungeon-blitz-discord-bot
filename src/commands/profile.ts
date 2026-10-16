@@ -7,8 +7,7 @@ import {
   type GameWalletSummary,
   type PlayerProfile,
 } from "../utils/gameWallet.js";
-import { getSponsorCredit, formatCreditAmount, CREDIT_EMOJI } from "../utils/sponsorPacks.js";
-import { characterSubtitle } from "../utils/characterDisplay.js";
+import { disciplineName } from "../utils/characterDisplay.js";
 import {
   COLORS,
   divider,
@@ -20,22 +19,31 @@ import {
   thumbnail,
   v2,
 } from "../ui/containers.js";
-import { classEmoji, emoji } from "../ui/emojis.js";
+import { classEmoji, disciplineEmoji, emoji } from "../ui/emojis.js";
 
-/** One compact balance block per character. */
+/**
+ * `-# ⭐ Level 50 · 1,234,567 XP · Paladin · ⚖️ Justicar`. Unlike the shared subtitle it leaves
+ * out the class icon (the name line already has it): eight characters on one save have to fit
+ * in Discord's 4,000-character message limit, and every custom emoji costs ~35 characters.
+ */
+function profileSubtitle(wallet: GameWalletSummary): string {
+  const parts = [`${emoji("ui_level")} Level ${wallet.characterLevel}`, `${formatNumber(wallet.characterXp)} XP`];
+  if (wallet.characterClass) parts.push(wallet.characterClass);
+  const discipline = disciplineName(wallet);
+  parts.push(discipline ? `${disciplineEmoji(wallet.characterMasterClass)} ${discipline}`.trim() : "No discipline yet");
+  return `-# ${parts.join(" · ")}`;
+}
+
+/** One compact block per character: level, total experience and balances. */
 function walletLines(wallet: GameWalletSummary): string {
   return [
     `${classEmoji(wallet.characterClass)} **${wallet.characterName}**`,
-    characterSubtitle(wallet),
+    profileSubtitle(wallet),
     `${emoji("cur_gold")} ${formatNumber(wallet.gold)} · ${emoji("cur_idol")} ${formatNumber(wallet.mammothIdols)} · ${emoji("cur_dragon_key")} ${formatNumber(wallet.dragonKeys)} · ${emoji("cur_dragon_ore")} ${formatNumber(wallet.dragonOre)} · ${emoji("cur_silver_sigil")} ${formatNumber(wallet.silverSigils)} · ${emoji("cur_royal_sigil")} ${formatNumber(wallet.royalSigils)}`,
   ].join("\n");
 }
 
-function yesNo(value: boolean | null, yes = "Yes"): string {
-  return value === null ? "Unknown" : value ? yes : "No";
-}
-
-export function buildStaffProfile(profile: PlayerProfile, creditLine: string | null): ContainerBuilder {
+export function buildStaffProfile(profile: PlayerProfile): ContainerBuilder {
   const wallets = [...profile.wallets].sort((a, b) => b.lastPlayedMs - a.lastPlayedMs);
   const latest = wallets[0] ?? null;
   const owner = latest?.owner;
@@ -43,8 +51,6 @@ export function buildStaffProfile(profile: PlayerProfile, creditLine: string | n
   const identity = [
     `## ${title}`,
     `-# Discord ${profile.discordUserId ? `<@${profile.discordUserId}>` : "not linked"} · GitHub ${profile.githubUsername ?? "not linked"}${latest ? ` · Game user ${latest.gameUserId}` : ""}`,
-    `Sponsor **${yesNo(profile.isSponsor, profile.sponsorTarget ? `Yes (${profile.sponsorTarget})` : "Yes")}** · Contributor **${yesNo(profile.isContributor)}**`,
-    ...(creditLine ? [creditLine] : []),
   ].join("\n");
   const portrait = buildPortraitUrl(latest);
   const container = new ContainerBuilder()
@@ -59,8 +65,8 @@ export function buildStaffProfile(profile: PlayerProfile, creditLine: string | n
 }
 
 /**
- * `/admin profile` — the staff view of a player: identity, sponsor state, shop credit and every
- * live character's balances. Players see their own data on `/account view` and anyone's
+ * `/admin profile` — the staff view of a player: who they are and every live character's level,
+ * experience and balances. Players see their own data on `/account view` and anyone's
  * public card on `/player`; this is the only place one player's balances are shown to another.
  */
 export async function handleProfile(interaction: CommandInteraction) {
@@ -71,23 +77,7 @@ export async function handleProfile(interaction: CommandInteraction) {
     if (!profile) {
       return interaction.editReply(v2(notice(COLORS.muted, "Player not found", "No live account matches that player.")));
     }
-
-    let creditLine: string | null = null;
-    if (profile.discordUserId) {
-      try {
-        const credit = await getSponsorCredit(profile.discordUserId);
-        if (credit && (credit.isSponsor || credit.bonusCents > 0)) {
-          const bonus = credit.bonusCents > 0 ? ` · bonus ${formatCreditAmount(credit.bonusCents)}` : "";
-          creditLine =
-            credit.balanceCents === null
-              ? `${CREDIT_EMOJI} Credits: balance unknown · used ${formatCreditAmount(credit.usedCents)}${bonus}`
-              : `${CREDIT_EMOJI} Credits: **${formatCreditAmount(credit.balanceCents)}** left · used ${formatCreditAmount(credit.usedCents)} · sponsored ${formatCreditAmount(credit.sponsoredCents ?? 0)}${bonus}`;
-        }
-      } catch (error) {
-        console.warn("[profile] Sponsor credit load failed:", error);
-      }
-    }
-    return interaction.editReply(v2(buildStaffProfile(profile, creditLine)));
+    return interaction.editReply(v2(buildStaffProfile(profile)));
   } catch (error) {
     console.error("[profile] Failed to load player profile:", error);
     return interaction.editReply(errorNotice("The player profile could not be loaded."));

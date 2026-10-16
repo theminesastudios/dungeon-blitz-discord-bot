@@ -29,6 +29,7 @@ function character(overrides: Partial<GameWalletSummary>): GameWalletSummary {
 		characterClass: "Mage",
 		characterMasterClass: 8,
 		characterLevel: 50,
+		characterXp: 0,
 		gold: 12_345,
 		mammothIdols: 700,
 		dragonKeys: 3,

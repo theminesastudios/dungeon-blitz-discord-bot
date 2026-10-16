@@ -16,6 +16,8 @@ type RawSaveCharacter = Document & {
 	/** `MasterClassID` (1-9); 0 means the character has not chosen a discipline yet. */
 	MasterClass?: number;
 	level?: number;
+	/** Total experience earned; the game derives `level` from it. */
+	xp?: number;
 	gold?: number;
 	mammothIdols?: number;
 	DragonKeys?: number;
@@ -90,6 +92,8 @@ export type GameWalletSummary = {
 	/** `MasterClassID` (1-9), 0 when no discipline has been chosen. */
 	characterMasterClass: number;
 	characterLevel: number;
+	/** Total experience the character has earned, as the save stores it. */
+	characterXp: number;
 	gold: number;
 	mammothIdols: number;
 	dragonKeys: number;
@@ -194,6 +198,7 @@ function toSaveSummary(
 		characterClass: String(character.class ?? "").trim(),
 		characterMasterClass: normalizeMasterClass(character.MasterClass),
 		characterLevel: normalizeLevel(character.level),
+		characterXp: normalizeBalance(character.xp),
 		gold: normalizeBalance(character.gold),
 		mammothIdols: normalizeBalance(character.mammothIdols),
 		dragonKeys: normalizeBalance(character.DragonKeys),

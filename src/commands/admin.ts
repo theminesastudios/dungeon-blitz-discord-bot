@@ -31,7 +31,7 @@ import { BAN_DURATION_CHOICES } from "../utils/gameModeration.js";
  * The staff toolbox, grouped under one command so the command list stays short and the
  * tools that act on a player's save or the live server sit together:
  *
- *   /admin profile       — a player's identity, sponsor state, credit and balances
+ *   /admin profile       — a player's identity and every character's level, XP and balances
  *   /admin ban / unban   — take a player out of the game, or let them back in
  *   /admin maintenance   — start the in-game maintenance countdown
  *   /admin lobby-chat    — choose the Discord channel lobby chat is linked to
@@ -51,7 +51,7 @@ export const adminCommand = {
     .addSubcommand((subcommand) =>
       subcommand
         .setName("profile")
-        .setDescription("Show a player's account, sponsor state and balances")
+        .setDescription("Show a player's characters with their level, XP and balances")
         .addStringOption((option) =>
           option
             .setName("player")
