@@ -12,10 +12,10 @@ import { isAdministrator } from "../utils/discordInteractions.js";
 
 /**
  * `/admin rewards` — undoes sponsor pack deliveries on a player's save. The shop grants
- * mounts and legendary dyes straight into the save, so testing a pack means removing
- * exactly those entries again; `reset-credit` also releases the pack purchase history so
- * a pack (including a one-time claim) can be bought again. Writes land on the offline save
- * like the shop's own grants do, so run it while the target character is out of game.
+ * mounts and legendary dyes, so testing a pack means removing exactly those entries again;
+ * `reset-credit` also releases the pack purchase history so a pack (including a one-time
+ * claim) can be bought again. The removal goes through the game server like the shop's own
+ * grants, so it reaches a character in game too; its client shows it after a zone change.
  */
 export async function handlePackRewards(interaction: CommandInteraction) {
 	if (!isAdministrator(interaction)) {
@@ -63,6 +63,7 @@ export async function handlePackRewards(interaction: CommandInteraction) {
 			value: [
 				`-# 🎨 Dyes removed: ${entry.removedDyes.length > 0 ? entry.removedDyes.join(", ") : "none"}`,
 				`-# 🐴 Mounts removed: ${entry.removedMounts.length > 0 ? entry.removedMounts.join(", ") : "none"}`,
+				...(entry.error ? [`-# ⚠️ Not finished: ${entry.error}`] : []),
 			].join("\n"),
 		}));
 
