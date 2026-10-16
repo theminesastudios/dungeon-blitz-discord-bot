@@ -2,6 +2,7 @@ import {
 	getPackLedger,
 	getPlayerProfile,
 	grantBonusCredit,
+	removeBonusCredit,
 	recordPackPurchase,
 	refundPackPurchase,
 	hasPackClaim,
@@ -480,6 +481,38 @@ export async function addCreditsToPlayer(input: {
 
 	const ledger = await getPackLedger(profile.discordUserId);
 	return { status: "ok", cents, totalBonusCents: ledger.bonusCents };
+}
+
+/**
+ * Takes back bonus credit an admin granted with `addCreditsToPlayer`, e.g. one entered by
+ * mistake. Only bonus credit can be removed — what GitHub reports for a sponsorship is not
+ * the bot's to change — and never more than the player holds, so the answer for too large
+ * an amount says how much there is. Credits already spent on packs stay spent: removing
+ * them leaves the player's spendable balance at zero until new credit covers the gap.
+ */
+export async function removeCreditsFromPlayer(input: {
+	discordId: string;
+	/** Dollar amount to take back, e.g. 12.5 for $12.50 (1,250 credits). */
+	dollars: number;
+	removedByDiscordId: string;
+	note?: string;
+}): Promise<
+	| { status: "ok"; cents: number; totalBonusCents: number }
+	| { status: "insufficient"; cents: number; totalBonusCents: number }
+	| { status: "no-profile" }
+> {
+	const cents = Math.round(input.dollars * 100);
+	if (!Number.isFinite(input.dollars) || cents <= 0) {
+		throw new Error("Credit amount must be a positive dollar amount");
+	}
+	const removed = await removeBonusCredit(
+		input.discordId,
+		cents,
+		input.removedByDiscordId,
+		input.note,
+	);
+	if (removed.status === "no-profile") return removed;
+	return { status: removed.status, cents, totalBonusCents: removed.bonusCents };
 }
 
 /**

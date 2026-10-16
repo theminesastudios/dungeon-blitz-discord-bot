@@ -64,7 +64,7 @@ export type PackPurchase = {
 	purchasedAtMs: number;
 };
 
-/** Audit entry for one admin-granted bonus credit. */
+/** Audit entry for one admin change to bonus credit: positive when added, negative when removed. */
 export type CreditGrant = {
 	cents: number;
 	grantedByDiscordId: string;
@@ -706,6 +706,53 @@ export async function grantBonusCredit(
 		} as never,
 	);
 	return updated !== null;
+}
+
+/**
+ * Atomically takes admin-granted bonus credit back from a linked player's profile. The
+ * filter only matches while the profile holds at least `cents` of bonus, so two removals
+ * racing each other can never push it below zero. The removal is appended to
+ * `creditGrants` as a negative entry, next to the grants it undoes.
+ */
+export async function removeBonusCredit(
+	discordId: string,
+	cents: number,
+	removedByDiscordId: string,
+	note?: string,
+): Promise<
+	| { status: "ok"; bonusCents: number }
+	| { status: "insufficient"; bonusCents: number }
+	| { status: "no-profile" }
+> {
+	if (!Number.isSafeInteger(cents) || cents <= 0) {
+		throw new Error("Bonus credit to remove must be a positive whole number of cents");
+	}
+	const normalized = discordId.trim();
+	if (!normalized) return { status: "no-profile" };
+	const profiles = await getLinkedProfileCollection();
+	const owner = { $or: [{ _id: normalized }, { userId: normalized }] };
+	const entry: CreditGrant = {
+		cents: -cents,
+		grantedByDiscordId: removedByDiscordId.trim(),
+		grantedAtMs: Date.now(),
+		...(note ? { note } : {}),
+	};
+	const updated = await profiles.findOneAndUpdate(
+		{ $and: [owner, { bonusCreditCents: { $gte: cents } }] } as Filter<RawLinkedProfile>,
+		{
+			$inc: { bonusCreditCents: -cents },
+			// MongoDB's $push typing is overly strict on Document intersections.
+			$push: { creditGrants: entry },
+		} as never,
+		{ returnDocument: "after", projection: { bonusCreditCents: 1 } },
+	);
+	if (updated) return { status: "ok", bonusCents: normalizeBalance(updated.bonusCreditCents) };
+
+	const current = await profiles.findOne(owner as Filter<RawLinkedProfile>, {
+		projection: { bonusCreditCents: 1 },
+	});
+	if (!current) return { status: "no-profile" };
+	return { status: "insufficient", bonusCents: normalizeBalance(current.bonusCreditCents) };
 }
 
 /**
