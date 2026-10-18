@@ -44,9 +44,9 @@ const RESTART_PAYLOAD = {
 	ok: true,
 	branch: "main",
 	commit: "b2e0728c89b9c899679ae1bc81712afd0ece1578",
-	seconds: 60,
+	seconds: 300,
 	requestedAt: "2026-09-25T03:00:00.000Z",
-	restartAt: "2026-09-25T03:01:00.000Z",
+	restartAt: "2026-09-25T03:05:00.000Z",
 	recipients: 4,
 	hold: false,
 	dryRun: false,
@@ -121,17 +121,17 @@ try {
 	assert.equal(viaCron.status, 200, JSON.stringify(viaCron.body));
 	assert.equal(viaCron.body?.ok, true);
 	assert.equal(viaCron.body?.branch, "main");
-	assert.equal(viaCron.body?.seconds, 60);
+	assert.equal(viaCron.body?.seconds, 300);
 	assert.equal(viaCron.body?.recipients, 4);
 	assert.equal(viaCron.body?.dryRun, false);
-	assert.match(String(viaCron.body?.summary), /Restart to main scheduled in 60s/);
+	assert.match(String(viaCron.body?.summary), /Restart to main scheduled in 300s/);
 
 	assert.equal(calls.length, 2, "one restart request, one log message");
 	assert.equal(calls[0]!.url, "https://game.example.com/api/admin/server/restart");
 	assert.equal(calls[0]!.method, "POST");
 	assert.equal(calls[0]!.headers.Authorization, "Bearer maintenance-secret");
 	assert.deepEqual(calls[0]!.body, {
-		seconds: 60,
+		seconds: 300,
 		requestedBy: "scheduled-daily-restart",
 	});
 	assert.match(calls[1]!.url, /channels\/1551118889503432765\/messages$/);
@@ -142,11 +142,11 @@ try {
 	assert.equal(calls[1]!.body.embeds[0].fields[0].value, "`main`");
 
 	// A warning length is configurable; the VM secret and query secrets both authenticate.
-	process.env.DAILY_RESTART_WARNING_SECONDS = "300";
+	process.env.DAILY_RESTART_WARNING_SECONDS = "60";
 	const viaHealthSecret = await request({ query: { secret: "health-secret" } });
 	assert.equal(viaHealthSecret.status, 200);
-	assert.equal(calls.at(-2)!.body.seconds, 300);
-	process.env.DAILY_RESTART_WARNING_SECONDS = "60";
+	assert.equal(calls.at(-2)!.body.seconds, 60);
+	delete process.env.DAILY_RESTART_WARNING_SECONDS;
 
 	const viaMaintenanceSecret = await request({
 		headers: { authorization: "Bearer maintenance-secret" },

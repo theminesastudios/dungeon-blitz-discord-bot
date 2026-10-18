@@ -23,6 +23,7 @@ import {
 	fetchGameServerBranches,
 	fetchGameServerState,
 	cancelGameServerRestart,
+	isRequestTimeout,
 	restartGameServer,
 	type CloudBranch,
 	type GameServerState,
@@ -33,12 +34,18 @@ import {
  *
  * One container holds everything an administrator needs to decide: what is running and how
  * long it has been up, every branch the VM can pull, and the two ways to restart onto the
- * selected one (with the one-minute player warning, or immediately). The branch menu is the
+ * selected one (with the five-minute player warning, or immediately). The branch menu is the
  * point of the command: switching the deployed branch used to be an ssh session and a
  * memorised pm2 incantation, and the branch names were whatever the operator happened to
  * remember.
  *
  * The panel is ephemeral and administrator-only, because restarting disconnects everyone.
+ *
+ * Every button and the menu acknowledge Discord first (deferUpdate) and edit the panel when the
+ * game server has answered. They used to answer only after it: a restart is a POST plus a
+ * panel reload, each with a `git ls-remote` on the VM, which on a busy server is far past
+ * Discord's 3 s limit. Discord then showed the click as failed while the VM had already
+ * warned every player and scheduled the restart.
  */
 
 const BRANCH_SELECT_ID = "server:branch";
@@ -55,6 +62,12 @@ const PANEL_ERROR_ACCENT = 0xe74c3c;
 const PANEL_WARN_ACCENT = 0xf39c12;
 
 const CONTAINER_FLAGS = MessageFlags.IsComponentsV2;
+/**
+ * The reload after a restart or cancel shares the interaction function's 30 s (vercel.json)
+ * with the write before it, so it gets a shorter budget. A read that misses it shows its
+ * error in the panel; the notice still says what the write did.
+ */
+const AFTER_WRITE_READ_TIMEOUT_MS = 8_000;
 const CONTAINER_EPHEMERAL_FLAGS = (
 	MessageFlags.IsComponentsV2 | InteractionFlags.Ephemeral
 ) as MessageFlags;
@@ -261,12 +274,12 @@ export function buildServerControlContainer(
 	return container;
 }
 
-async function loadServerPanelView(): Promise<ServerPanelView> {
+async function loadServerPanelView(timeoutMs?: number): Promise<ServerPanelView> {
 	// Both calls are independent and both are allowed to fail on their own: a dead game server
 	// must still render a panel that says so, not an error message with no context.
 	const [stateResult, branchesResult] = await Promise.allSettled([
-		fetchGameServerState(),
-		fetchGameServerBranches(),
+		fetchGameServerState(timeoutMs),
+		fetchGameServerBranches(timeoutMs),
 	]);
 
 	const view: ServerPanelView = {
@@ -308,12 +321,13 @@ async function handleOpen(
 	}
 }
 
-async function renderPanel(
+/** Re-renders the panel of an interaction that has already been acknowledged with deferUpdate. */
+async function renderDeferredPanel(
 	interaction: MessageComponentInteraction,
-	options: { selectedBranch?: string; notice?: string } = {},
+	options: { selectedBranch?: string; notice?: string; readTimeoutMs?: number } = {},
 ): Promise<unknown> {
-	const view = await loadServerPanelView();
-	return interaction.update({
+	const view = await loadServerPanelView(options.readTimeoutMs);
+	return interaction.editReply({
 		components: [buildServerControlContainer(view, options.selectedBranch, options.notice)],
 		flags: CONTAINER_FLAGS,
 	});
@@ -342,6 +356,7 @@ async function handleRestart(
 		});
 	}
 
+	interaction.deferUpdate();
 	const discordId = interactionDiscordId(interaction) || "unknown";
 	const elapsed = startTimer();
 	try {
@@ -365,17 +380,28 @@ async function handleRestart(
 			user: discordId,
 			ms: elapsed(),
 		});
-		return renderPanel(interaction, { selectedBranch: branch, notice });
+		return renderDeferredPanel(interaction, {
+			selectedBranch: branch,
+			notice,
+			readTimeoutMs: AFTER_WRITE_READ_TIMEOUT_MS,
+		});
 	} catch (error) {
-		logWarn("server", "restart_failed", {
+		const timedOut = isRequestTimeout(error);
+		logWarn("server", timedOut ? "restart_unanswered" : "restart_failed", {
 			branch,
 			user: discordId,
 			ms: elapsed(),
 			error: errorMessage(error),
 		});
-		return renderPanel(interaction, {
+		// No answer is not a refusal: the VM may have scheduled it and been slow to say so.
+		// The panel below reads the server again, and its pending-restart line is the truth.
+		const notice = timedOut
+			? `⏱️ **The game server did not answer in time.** The restart to \`${branch}\` may still have been scheduled — check the panel below before pressing again.`
+			: `⚠️ **The restart was refused:** ${errorMessage(error)}`;
+		return renderDeferredPanel(interaction, {
 			selectedBranch: branch,
-			notice: `⚠️ **The restart was refused:** ${errorMessage(error)}`,
+			notice,
+			readTimeoutMs: AFTER_WRITE_READ_TIMEOUT_MS,
 		});
 	}
 }
@@ -388,18 +414,23 @@ async function handleCancel(interaction: MessageComponentInteraction): Promise<u
 		});
 	}
 
+	interaction.deferUpdate();
 	try {
 		const cancelled = await cancelGameServerRestart();
 		logInfo("server", "restart_cancelled", {
 			branch: cancelled.branch,
 			user: interactionDiscordId(interaction),
 		});
-		return renderPanel(interaction, {
+		return renderDeferredPanel(interaction, {
 			notice: `↩️ Cancelled the scheduled restart to \`${cancelled.branch}\`.`,
+			readTimeoutMs: AFTER_WRITE_READ_TIMEOUT_MS,
 		});
 	} catch (error) {
 		logWarn("server", "cancel_failed", { error: errorMessage(error) });
-		return renderPanel(interaction, { notice: `⚠️ **Nothing was cancelled:** ${errorMessage(error)}` });
+		return renderDeferredPanel(interaction, {
+			notice: `⚠️ **Nothing was cancelled:** ${errorMessage(error)}`,
+			readTimeoutMs: AFTER_WRITE_READ_TIMEOUT_MS,
+		});
 	}
 }
 
@@ -421,7 +452,8 @@ export const serverBranchSelectComponent = {
 				flags: InteractionFlags.Ephemeral,
 			});
 		}
-		return renderPanel(interaction, { selectedBranch: selected });
+		interaction.deferUpdate();
+		return renderDeferredPanel(interaction, { selectedBranch: selected });
 	},
 };
 
@@ -442,8 +474,12 @@ export const serverRestartComponent = {
 
 export const serverRefreshComponent = {
 	customId: `${REFRESH_BUTTON_PREFIX}*`,
-	handler: (interaction: MessageComponentInteraction) =>
-		renderPanel(interaction, { selectedBranch: interaction.data.custom_id.slice(REFRESH_BUTTON_PREFIX.length) }),
+	handler: (interaction: MessageComponentInteraction) => {
+		interaction.deferUpdate();
+		return renderDeferredPanel(interaction, {
+			selectedBranch: interaction.data.custom_id.slice(REFRESH_BUTTON_PREFIX.length),
+		});
+	},
 };
 
 export const serverCancelComponent = {

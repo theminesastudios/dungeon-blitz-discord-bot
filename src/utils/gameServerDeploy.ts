@@ -74,20 +74,32 @@ export type RestartResult = {
 
 /** `git ls-remote` reaches GitHub, so both reads get more room than a plain API call. */
 const DEPLOY_READ_TIMEOUT_MS = 20_000;
+/**
+ * The restart route checks the branch with `git ls-remote` before it answers, on a server
+ * that is often the one under load. The admin default of 10 s gave up while the VM went on
+ * to schedule the restart, so the panel said "refused" over a restart that happened.
+ */
+export const RESTART_REQUEST_TIMEOUT_MS = 20_000;
 
-export function fetchGameServerState(): Promise<GameServerState> {
+/** True for the error `fetch` throws when an AbortSignal timeout fires. */
+export function isRequestTimeout(error: unknown): boolean {
+	const name = (error as { name?: unknown } | null)?.name;
+	return name === "TimeoutError" || name === "AbortError";
+}
+
+export function fetchGameServerState(timeoutMs = DEPLOY_READ_TIMEOUT_MS): Promise<GameServerState> {
 	return fetchGameServerAdmin<GameServerState>(
 		"/api/admin/server/state",
 		"the game server's deploy state",
-		DEPLOY_READ_TIMEOUT_MS,
+		timeoutMs,
 	);
 }
 
-export function fetchGameServerBranches(): Promise<GameServerBranches> {
+export function fetchGameServerBranches(timeoutMs = DEPLOY_READ_TIMEOUT_MS): Promise<GameServerBranches> {
 	return fetchGameServerAdmin<GameServerBranches>(
 		"/api/admin/server/branches",
 		"the game server's cloud branches",
-		DEPLOY_READ_TIMEOUT_MS,
+		timeoutMs,
 	);
 }
 
@@ -108,6 +120,7 @@ export function restartGameServer(options: {
 			...(options.requestedBy ? { requestedBy: options.requestedBy } : {}),
 		},
 		options.branch ? `the restart to ${options.branch}` : "the server restart",
+		RESTART_REQUEST_TIMEOUT_MS,
 	);
 }
 
