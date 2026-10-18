@@ -130,8 +130,9 @@ export async function requestGameServerAdmin<T>(
 	path: string,
 	body: Record<string, unknown>,
 	action: string,
+	timeoutMs?: number,
 ): Promise<T> {
-	const { status, payload, rawBody } = await postGameServerAdmin(path, body);
+	const { status, payload, rawBody } = await postGameServerAdmin(path, body, timeoutMs);
 	const answer = payload as Record<string, unknown> | null;
 	if (status < 200 || status >= 300 || !answer || answer.ok !== true) {
 		throw new GameServerAdminError(rejectionMessage(action, status, payload, rawBody), status);

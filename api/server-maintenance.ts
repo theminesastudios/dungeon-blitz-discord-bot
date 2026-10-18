@@ -7,7 +7,7 @@ import { errorMessage, logError, logInfo, startTimer } from "../src/utils/logger
  * The scheduled restart of the live game server — `0 3 * * *` in vercel.json.
  *
  * It does two things and neither of them blocks: it asks the game server for a restart onto
- * the branch that is already deployed, with the one-minute warning every player receives in
+ * the branch that is already deployed, with the five-minute warning every player receives in
  * game, and it records the decision in the operator log channel. The waiting and the pm2
  * restart happen on the VM, which can hold a timer across the restart; a serverless function
  * cannot, and a function that tried would either time out before the restart or be killed by
@@ -66,10 +66,14 @@ function dailyRestartEnabled(): boolean {
 	return !(raw === "false" || raw === "0" || raw === "off" || raw === "no");
 }
 
+// Five minutes, the same warning `/server` gives: one was not enough to finish a room or get
+// out of a dungeon before the restart.
+const DEFAULT_WARNING_SECONDS = 300;
+
 function warningSeconds(query: Record<string, string>, body: Record<string, unknown>): number {
-	const raw = query.seconds ?? body.seconds ?? process.env.DAILY_RESTART_WARNING_SECONDS ?? "60";
+	const raw = query.seconds ?? body.seconds ?? process.env.DAILY_RESTART_WARNING_SECONDS ?? String(DEFAULT_WARNING_SECONDS);
 	const parsed = Number(raw);
-	return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : 60;
+	return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : DEFAULT_WARNING_SECONDS;
 }
 
 /** `?dryRun=1`, `?run=now` and `?force=yes` are all what a human types; only the words that
