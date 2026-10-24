@@ -46,6 +46,7 @@ import {
 } from "../src/commands/packs.js";
 import { reportBugCommand, reportBugModal } from "../src/commands/report-bug.js";
 import { diagnoseCommand } from "../src/commands/diagnose.js";
+import { envCommand } from "../src/commands/env.js";
 import {
   grantAmountModal,
   grantCategorySelect,
@@ -99,6 +100,7 @@ const commandModules: CommandModule[] = [
   packsCommand,
   reportBugCommand,
   diagnoseCommand,
+  envCommand,
 ];
 
 const componentModules: ComponentModule[] = [

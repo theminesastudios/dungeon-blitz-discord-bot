@@ -53,6 +53,18 @@ const RESTART_BUTTON_PREFIX = "server:restart:";
 const REFRESH_BUTTON_PREFIX = "server:refresh:";
 const CANCEL_BUTTON_ID = "server:cancel";
 
+/**
+ * The restart and refresh button ids, for other panels that offer the same buttons (`/env`
+ * offers the restart a .env change needs). The handlers below own them, admin check included.
+ */
+export function serverRestartButtonId(seconds: number, branch: string): string {
+	return `${RESTART_BUTTON_PREFIX}${seconds}:${branch}`;
+}
+
+export function serverPanelButtonId(branch: string): string {
+	return `${REFRESH_BUTTON_PREFIX}${branch}`;
+}
+
 /** Discord allows 25 options in one select menu; more branches need a second page, not a bug. */
 const MAX_BRANCH_OPTIONS = 25;
 /** A select option's label and value both cap at 100 characters — git refs do not. */
@@ -178,17 +190,17 @@ function buildButtonRow(
 	const restartWarned = new ButtonBuilder()
 		.setLabel(`Restart to ${selectedBranch} in ${describeRestartDelay(DEFAULT_RESTART_SECONDS)}`.slice(0, 80))
 		.setStyle(ButtonStyle.Primary)
-		.setCustomId(`${RESTART_BUTTON_PREFIX}${DEFAULT_RESTART_SECONDS}:${selectedBranch}`)
+		.setCustomId(serverRestartButtonId(DEFAULT_RESTART_SECONDS, selectedBranch))
 		.setDisabled(!canRestart);
 	const restartNow = new ButtonBuilder()
 		.setLabel("Restart now")
 		.setStyle(ButtonStyle.Danger)
-		.setCustomId(`${RESTART_BUTTON_PREFIX}0:${selectedBranch}`)
+		.setCustomId(serverRestartButtonId(0, selectedBranch))
 		.setDisabled(!canRestart);
 	const refresh = new ButtonBuilder()
 		.setLabel("Refresh")
 		.setStyle(ButtonStyle.Secondary)
-		.setCustomId(`${REFRESH_BUTTON_PREFIX}${selectedBranch}`);
+		.setCustomId(serverPanelButtonId(selectedBranch));
 
 	const row = new ActionRowBuilder<MessageActionRowComponent>().addComponents(
 		restartWarned,
