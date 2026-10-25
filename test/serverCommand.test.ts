@@ -239,7 +239,7 @@ function testUnreachableServerStillRenders(): void {
 		state: null,
 		branches: [],
 		branchCount: 0,
-		stateError: "Game server rejected the game server's deploy state (503): Discord admin API is not configured",
+		stateError: "Game server rejected the deploy state request (503): Discord admin API is not configured",
 		branchesError: "fetch failed",
 	});
 	const components = componentsOf(container);

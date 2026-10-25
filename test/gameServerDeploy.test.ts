@@ -159,6 +159,18 @@ try {
 	assert.match(refusal, /Game server rejected the restart to main \(409\)/);
 	assert.match(refusal, /maintenance hold is set/);
 
+	// An empty 502 is the proxy saying the game process is down, not a refusal from the game.
+	globalThis.fetch = (async () => new Response("", { status: 502 })) as any;
+	let unreachable = "";
+	try {
+		await fetchGameServerState();
+	} catch (error) {
+		unreachable = error instanceof Error ? error.message : String(error);
+	}
+	assert.match(unreachable, /could not be reached for the deploy state request \(502\)/);
+	assert.match(unreachable, /restarting or stopped/);
+	assert.doesNotMatch(unreachable, /rejected|invalid response/);
+
 	// Without the shared secret nothing is sent, and the reason names what to set.
 	delete process.env.DISCORD_MAINTENANCE_API_SECRET;
 	let calledFetch = false;
