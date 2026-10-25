@@ -90,7 +90,7 @@ export function isRequestTimeout(error: unknown): boolean {
 export function fetchGameServerState(timeoutMs = DEPLOY_READ_TIMEOUT_MS): Promise<GameServerState> {
 	return fetchGameServerAdmin<GameServerState>(
 		"/api/admin/server/state",
-		"the game server's deploy state",
+		"the deploy state request",
 		timeoutMs,
 	);
 }
@@ -98,7 +98,7 @@ export function fetchGameServerState(timeoutMs = DEPLOY_READ_TIMEOUT_MS): Promis
 export function fetchGameServerBranches(timeoutMs = DEPLOY_READ_TIMEOUT_MS): Promise<GameServerBranches> {
 	return fetchGameServerAdmin<GameServerBranches>(
 		"/api/admin/server/branches",
-		"the game server's cloud branches",
+		"the branch list request",
 		timeoutMs,
 	);
 }
