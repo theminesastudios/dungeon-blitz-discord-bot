@@ -77,8 +77,10 @@ function parseResponseBody(raw: string): unknown {
 }
 
 /**
- * Statuses the web proxy in front of the game server (Caddy) answers with itself when the
- * Node process behind it is not listening, typically during a pm2 restart or after a crash.
+ * Statuses the web proxy in front of the game server (Caddy) answers with itself when it
+ * cannot hand the request to the Node process: during a pm2 restart or after a crash, but
+ * also when the process is up and its event loop is too busy to accept new connections
+ * (Caddy logs `dial tcp 127.0.0.1:8090: i/o timeout` while the listen queue is full).
  */
 const PROXY_UNREACHABLE_STATUSES = new Set([502, 503, 504]);
 
@@ -86,9 +88,9 @@ const PROXY_UNREACHABLE_STATUSES = new Set([502, 503, 504]);
 function rejectionMessage(action: string, status: number, payload: unknown, rawBody = ""): string {
 	const hasErrorField = Boolean(payload && typeof payload === "object" && "error" in payload);
 	// Without the game's own `{ error }` body, a 502/503/504 came from the proxy, not the game:
-	// nothing refused the request, the process just was not there to answer it.
+	// nothing refused the request, the process just did not take it.
 	if (!hasErrorField && PROXY_UNREACHABLE_STATUSES.has(status)) {
-		return `Game server could not be reached for ${action} (${status}): its web proxy is up but the game process behind it is not answering, so it is most likely restarting or stopped. Try again in a minute; if it keeps failing, check pm2 on the VM.`;
+		return `Game server could not be reached for ${action} (${status}): its web proxy is up but the game process behind it did not accept the connection. It is restarting, stopped, or too busy under load to take new requests. Try again in a minute; if it keeps failing, check pm2 and the Caddy log on the VM.`;
 	}
 	const detail =
 		payload && typeof payload === "object" && "error" in payload
