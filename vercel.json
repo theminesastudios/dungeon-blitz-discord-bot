@@ -25,7 +25,7 @@
 			"includeFiles": "pages/verify.html"
 		},
 		"api/interactions.ts": {
-			"maxDuration": 30,
+			"maxDuration": 60,
 			"includeFiles": "{src/commands/**,src/components/**,src/utils/**}"
 		},
 		"api/discord-oauth-callback.ts": {

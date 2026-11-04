@@ -202,16 +202,17 @@ The issue body records the reporter as **Discord username followed by the user I
 
 Reports are labelled `from-discord` so Discord filings are filterable. The title carries no `[Discord]` prefix: the label already records provenance, and a prefix only spends the title budget restating it. A label that does not exist yet makes GitHub reject the whole request with a `422`, so the bot retries once without labels — the command works on a fresh tracker with no manual setup.
 
-### Screenshots
+### Screenshots and videos
 
-The modal offers an optional upload of up to 3 files, which render inline in the issue body. Images become `![name](url)` and anything else (a log, a save) a plain bullet link.
+The modal offers an optional upload of up to 3 files, **10 MB each**. Images render inline in the issue body; anything else (a video, a log, a save) becomes a bullet link with its size.
 
-**GitHub's issues API cannot accept an uploaded file.** `POST /repos/{owner}/{repo}/issues` takes only `title`, `body`, `labels`, `assignees` and `milestone`; the attachment upload in GitHub's own issue editor is a separate web-only endpoint. So the file stays on Discord's CDN and the body links it there instead.
+**The file is copied into the tracker repository, not linked on Discord.** A modal upload lives at a Discord `ephemeral-attachments/…?ex=…&is=…&hm=…` URL whose signature expires within about a day. GitHub's image proxy only caches images, and only once someone opens the issue; a video is a plain link nothing caches, so by the time staff clicked it Discord answered "This content is no longer available". GitHub's issues API has no attachment field either (the upload in GitHub's own editor is a web-only endpoint), so on submit the bot:
 
-The link is Discord's own signed CDN URL — `...?ex=…&is=…&hm=…` — used exactly as the interaction supplies it. Since December 2023 the bare `/attachments/<channel>/<id>/<file>` path answers `404 This content is no longer available`; only the signed form resolves. Rebuilding the URL from its parts, which strips the signature, is what used to leave every screenshot broken in the ticket. Two consequences worth knowing:
+1. downloads each file from Discord, refusing anything over 10 MB (the stream is counted, not just `Content-Length`);
+2. commits all of the report's files in **one commit** to a dedicated branch of the tracker repo — `bug-report-attachments` by default, created as an orphan the first time so it carries none of the code — under `reports/<date>/<discordId>-<ms>/<file>`;
+3. links those files in the issue: `blob/…?raw=true` for images (renders inline), the `blob/…` page for everything else (view or download).
 
-- The link is **unguessable, not private**. Anyone who obtains the URL can fetch the image, so a player screenshotting something sensitive should not upload it here.
-- The signature has a preset expiry. In practice GitHub's image proxy downloads and caches the bytes the first time it renders the issue, which usually outlives the link; a ticket nobody opens before the signature lapses will show a broken image. The text of the report is unaffected.
+The files sit behind the private repository's permissions, so only people who can read the issue can open them. A file over the cap, or one that could not be archived (most likely a missing permission — see below), keeps its Discord link with a note in the issue that it expires; the report itself is always filed. A player whose file was too large is told so in the confirmation.
 
 Each submitted attachment id is resolved against the interaction's resolved attachments before it is used, so an id the bot cannot vouch for — or one whose URL is missing or not HTTPS — is dropped rather than linked blindly. The destination is wrapped in `<>`, so a file named `a)b.png` cannot close the Markdown link early. Non-HTTPS URLs are dropped outright, so a crafted value cannot smuggle a `javascript:` or `data:` link into a ticket staff read.
 
@@ -229,7 +230,7 @@ Creating the app:
 
 1. Settings → Developer settings → **GitHub Apps** → New GitHub App
 2. Any name and description; set the Homepage URL to `https://dungeonblitzr.theminesa.studio`
-3. Under **Repository permissions**, set **Issues → Read and write**. Nothing else is needed.
+3. Under **Repository permissions**, set **Issues → Read and write** and **Contents → Read and write** (Contents is what stores uploaded screenshots and videos on the attachment branch). Changing permissions on an existing app needs the new permission **accepted on the installation** (Settings → Integrations → GitHub Apps → Review request) before it takes effect.
 4. Under **Where can this app be installed?**, choose *Only on repositories owned by* `theminesastudios`
 5. Create the app, then **Generate a private key** and download the `.pem`
 6. **Install App** on `private-dungeon-blitz-r`, and copy the installation ID from the URL
@@ -243,7 +244,8 @@ This is deliberately separate from `GITHUB_TOKEN`, which backs the sponsor and c
 - `GITHUB_APP_PRIVATE_KEY` — the downloaded `.pem` contents. A dashboard field is one line, so paste it with `\n` escapes (or real newlines); the bot normalises both, and strips stray wrapping quotes. A key it cannot parse is reported as a setup error rather than failing silently.
 - `GITHUB_ISSUES_REPO_OWNER` / `GITHUB_ISSUES_REPO_NAME` — optional, default `theminesastudios` / `private-dungeon-blitz-r`.
 - `BUG_REPORT_COOLDOWN_MS` — optional, default 10 minutes. A malformed or negative value falls back to the default rather than disabling the guard; set `0` deliberately to lift it.
-- `BUG_REPORT_ALLOW_UPLOADS` — optional, default on. Set `false` to drop the screenshot upload from the modal; see [Screenshots](#screenshots) for why the escape hatch exists.
+- `BUG_REPORT_ALLOW_UPLOADS` — optional, default on. Set `false` to drop the screenshot upload from the modal; see [Screenshots and videos](#screenshots-and-videos) for why the escape hatch exists.
+- `BUG_REPORT_ATTACHMENT_BRANCH` — optional, default `bug-report-attachments`. The tracker branch uploaded files are committed to.
 
 Missing or unusable app credentials make the command reply "Bug reporting is not set up on the bot right now". A `404` from the token endpoint almost always means the app is not installed on the repository, or the installation ID is stale after a reinstall.
 

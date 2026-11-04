@@ -247,15 +247,22 @@ export function normalizeIssueTitle(raw: string): string {
  * One uploaded file, already resolved to the pieces the body needs.
  *
  * GitHub's issues API has no attachment field — `POST /repos/{owner}/{repo}/issues`
- * accepts only title, body, labels, assignees and milestone — so a screenshot
- * cannot be uploaded into the tracker the way the web editor does. What survives
- * is a link to the Discord CDN copy, which GitHub renders inline. The URL is
- * unguessable rather than private: anyone holding it can fetch the image.
+ * accepts only title, body, labels, assignees and milestone — so the file is first
+ * copied into the tracker repository (see `bugAttachments.ts`) and `url` then
+ * points there. When that copy could not be made, `url` is still the Discord CDN
+ * link, which expires within about a day, and `archived` is false so the body can
+ * say so.
  */
 export type ReportAttachment = {
 	url: string;
 	filename: string;
 	isImage: boolean;
+	/** Bytes, when Discord or the download reported it. */
+	size?: number;
+	/** True once the file lives in the tracker repository; undefined when never attempted. */
+	archived?: boolean;
+	/** Set when the file was refused for being over the size cap. */
+	tooLarge?: boolean;
 };
 
 /** A body link is only ever rendered when it points at HTTPS, so a crafted value
@@ -267,8 +274,13 @@ function escapeMarkdownLabel(value: string): string {
 	return value.replace(/[\\[\]]/g, "\\$&");
 }
 
+function formatSize(bytes: number): string {
+	if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 /**
- * Images render inline; anything else (a log, a save file) stays a plain link.
+ * Images render inline; anything else (a video, a log, a save) stays a plain link.
  *
  * The destination is wrapped in angle brackets — the CommonMark form for a URL
  * that may contain parentheses. `encodeURIComponent` leaves `(` and `)` alone,
@@ -278,7 +290,20 @@ function escapeMarkdownLabel(value: string): string {
 function renderAttachment(attachment: ReportAttachment): string {
 	const name = escapeMarkdownLabel(attachment.filename.trim() || "attachment");
 	const url = `<${attachment.url}>`;
-	return attachment.isImage ? `![${name}](${url})` : `- [${name}](${url})`;
+	const size = typeof attachment.size === "number" && attachment.size > 0 ? ` (${formatSize(attachment.size)})` : "";
+
+	let note = "";
+	if (attachment.archived === false) {
+		note = attachment.tooLarge
+			? " — over the 10 MB limit, so it was not saved; this Discord link expires within a day"
+			: " — could not be saved; this Discord link expires within a day";
+	}
+
+	if (attachment.isImage) {
+		const image = `![${name}](${url})`;
+		return note ? `${image}\n_${name}${note.replace(/^ — /, ": ")}_` : image;
+	}
+	return `- [${name}](${url})${size}${note}`;
 }
 
 /**
