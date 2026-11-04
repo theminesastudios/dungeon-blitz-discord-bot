@@ -12,12 +12,15 @@ import type { APIAttachment } from "discord-api-types/v10";
 import {
 	buildIssueBody,
 	createBugReportIssue,
+	getInstallationToken,
+	getIssueRepo,
 	getReportCooldownRemainingMs,
 	normalizeIssueTitle,
 	recordBugReport,
 	type IssueFailureReason,
 	type ReportAttachment,
 } from "../utils/githubIssues.js";
+import { archiveAttachments, MAX_ATTACHMENT_BYTES } from "../utils/bugAttachments.js";
 import { interactionDiscordId, interactionUsername } from "../utils/discordInteractions.js";
 import { errorMessage, logError, logWarn } from "../utils/logger.js";
 
@@ -115,16 +118,11 @@ export function uploadsAllowed(): boolean {
  * id is dropped rather than turned into a link we cannot vouch for.
  *
  * The URL is Discord's own `url`, signature and all, and never a path rebuilt
- * from the channel, id and filename. Since December 2023 an attachment CDN URL is
- * signed (`?ex=&is=&hm=`): fetching the same `/attachments/<channel>/<id>/<file>`
- * without those parameters answers `404 This content is no longer available`, so
- * rebuilding it — as this once did — put a permanently broken image in the ticket.
- *
- * The signature is what makes the screenshot fetchable at all, and it expires. In
- * practice GitHub's image proxy downloads and re-caches the bytes the first time
- * it renders the issue, which is what keeps the image alive past the link's own
- * expiry; there is no way to upload the file to the tracker itself (the issues API
- * has no attachment field), so a link is the whole mechanism.
+ * from the channel, id and filename: the bare path answers 404. Even signed, a
+ * modal upload sits under `ephemeral-attachments/` and expires within about a
+ * day, so this URL is only where the bot downloads the file from — the submit
+ * handler then copies it into the tracker (`archiveAttachments`) and the issue
+ * links that copy instead.
  */
 export function resolveUploadedAttachments(input: {
 	attachmentIds: string[];
@@ -147,6 +145,7 @@ export function resolveUploadedAttachments(input: {
 			url,
 			filename,
 			isImage: (resolved.content_type ?? "").startsWith("image/"),
+			...(typeof resolved.size === "number" ? { size: resolved.size } : {}),
 		});
 	}
 
@@ -196,8 +195,10 @@ function reportModal() {
 	if (uploadsAllowed()) {
 		labels.push(
 			new LabelBuilder()
-				.setLabel("Screenshot (optional)")
-				.setDescription(`Up to ${MAX_ATTACHMENTS} images. Attached to the report.`)
+				.setLabel("Screenshot or video (optional)")
+				.setDescription(
+					`Up to ${MAX_ATTACHMENTS} files, ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB each. Attached to the report.`,
+				)
 				.setComponent(
 					new FileUploadBuilder()
 						.setCustomId(UPLOAD_INPUT_ID)
@@ -267,14 +268,33 @@ async function handleReportBugSubmit(interaction: ModalSubmitInteraction) {
 
 	const username = interactionUsername(interaction);
 
-	// The CDN copies are already hosted by Discord, so attaching an upload costs no
-	// extra round trip — the issue simply links the signed URLs Discord resolved.
-	const attachments = resolveUploadedAttachments({
+	const uploads = resolveUploadedAttachments({
 		attachmentIds: interaction.getFileUploadValues(UPLOAD_INPUT_ID),
 		resolved: interaction.data.resolved?.attachments,
 	});
 
 	try {
+		// Discord's copy of a modal upload expires within a day, so it is copied into
+		// the tracker before the issue is written. Without a token there is nothing
+		// to archive with, and createBugReportIssue reports that failure below.
+		let attachments = uploads;
+		let tooLarge: string[] = [];
+		if (uploads.length > 0) {
+			const auth = await getInstallationToken();
+			if (auth.ok) {
+				const { owner, repo } = getIssueRepo();
+				const archived = await archiveAttachments({
+					attachments: uploads,
+					token: auth.token,
+					owner,
+					repo,
+					discordId,
+				});
+				attachments = archived.attachments;
+				tooLarge = archived.tooLarge;
+			}
+		}
+
 		const issueTitle = normalizeIssueTitle(title);
 		const result = await createBugReportIssue({
 			title: issueTitle,
@@ -312,8 +332,12 @@ async function handleReportBugSubmit(interaction: ModalSubmitInteraction) {
 
 		// The number rather than the link: the tracker is private, so a player following
 		// the URL would only meet a 403.
+		const sizeNote =
+			tooLarge.length > 0
+				? `\n-# ${tooLarge.join(", ")} ${tooLarge.length === 1 ? "was" : "were"} over ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB and could not be kept. Trim or compress it and post it when you follow up.`
+				: "";
 		return interaction.editReply({
-			content: `Thanks — logged as **#${result.number}**. The team will take a look. Quote that number if you follow up.`,
+			content: `Thanks — logged as **#${result.number}**. The team will take a look. Quote that number if you follow up.${sizeNote}`,
 		});
 	} catch (error) {
 		logError("report-bug", "Unexpected failure while filing a report", {
