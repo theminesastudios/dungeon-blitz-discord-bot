@@ -14,7 +14,7 @@ const fixedNow = new Date("2026-09-19T12:00:00.000Z");
 
 function okProbes() {
 	return {
-		resolve4: async () => ["35.241.250.170"],
+		resolve4: async () => ["2.31.166.155"],
 		fetchPage: async () => ({ status: 200 }),
 		fetchHttpsPage: async () => ({ status: 200 }),
 		inspectTls: async () => ({
@@ -193,6 +193,12 @@ async function main() {
 		assert.match(sent[1]!, /recovered/);
 		const stored = store.records.get(recovered.hostname);
 		assert.equal(stored?.alertOpen, false);
+		assert.equal(stored?.firstUnhealthyAt, undefined);
+
+		const laterNow = new Date(fixedNow.getTime() + 48 * 60 * 60_000);
+		const downAgain = await checkGameHealth({ now: laterNow, ...okProbes(), resolve4: async () => [] });
+		await maybeAlertOnGameHealth(downAgain, { store, deliver: deliverer, now: laterNow });
+		assert.equal(store.records.get(recovered.hostname)?.firstUnhealthyAt, laterNow.toISOString());
 	}
 
 	// Healthy with no open alert: silent.

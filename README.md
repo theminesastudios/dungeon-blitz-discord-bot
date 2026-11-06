@@ -317,7 +317,7 @@ To receive the alerts, set exactly one of these in the bot deployment:
 - `GAME_HEALTH_WEBHOOK_URL` — a Discord webhook URL; or
 - `GAME_HEALTH_ALERT_DISCORD_ID` — your Discord user ID (the bot DMs you; requires `DISCORD_BOT_TOKEN`, already set).
 
-Optional: `GAME_HEALTH_EXPECTED_IP` overrides the expected VM address (default `35.241.250.170`, the reserved IP attached to `dungeon-blitz-eu`), and `GAME_HEALTH_REMINDER_MINUTES` caps the reminder cadence.
+Optional: `GAME_HEALTH_EXPECTED_IP` overrides the expected VM address (default `2.31.166.155`, the Hetzner game host), and `GAME_HEALTH_REMINDER_MINUTES` caps the reminder cadence.
 
 And set the same secret value as the game server's `HEALTH_PING_SECRET` in the bot's `HEALTH_CHECK_SECRET`.
 

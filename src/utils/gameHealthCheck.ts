@@ -21,12 +21,12 @@ import * as tls from "node:tls";
 import { MongoClient } from "mongodb";
 
 const DEFAULT_HOSTNAME = "dungeonblitzr.theminesa.studio";
-// The address the VM actually answers from — the GCP reserved external IP
-// (dungeon-blitz-eu-ip) attached to the dungeon-blitz-eu instance. Override
-// with GAME_HEALTH_EXPECTED_IP when the VM moves. 35.185.71.109 is a reserved
+// The address the game host answers from — the Hetzner server (Falkenstein)
+// since 2026-11-01; before that the GCP IP 35.241.250.170. Override with
+// GAME_HEALTH_EXPECTED_IP when the host moves. 35.185.71.109 is a reserved
 // but idle address in the same project; it is never the right answer, and the
 // stale default here made every check read as a DNS mismatch (2026-09-20).
-const DEFAULT_EXPECTED_IP = "35.241.250.170";
+const DEFAULT_EXPECTED_IP = "2.31.166.155";
 const DEFAULT_PAGE_PATH = "/api/auth/discord/config";
 const DEFAULT_REMINDER_MINUTES = 60;
 const CONNECT_TIMEOUT_MS = 5_000;
@@ -538,7 +538,7 @@ export async function maybeAlertOnGameHealth(
 			await persist({
 				_id: report.hostname,
 				alertOpen: !result.sent,
-				firstUnhealthyAt: previous.firstUnhealthyAt,
+				...(result.sent ? {} : { firstUnhealthyAt: previous.firstUnhealthyAt }),
 				lastUnhealthyAt: previous.lastUnhealthyAt,
 				lastHealthyAt: now.toISOString(),
 				lastAlertAt: previous.lastAlertAt,
@@ -561,7 +561,6 @@ export async function maybeAlertOnGameHealth(
 			await persist({
 				_id: report.hostname,
 				alertOpen: false,
-				...(previous?.firstUnhealthyAt ? { firstUnhealthyAt: previous.firstUnhealthyAt } : {}),
 				...(previous?.lastAlertAt ? { lastAlertAt: previous.lastAlertAt } : {}),
 				lastHealthyAt: now.toISOString(),
 				lastSummary: "healthy",
@@ -578,7 +577,6 @@ export async function maybeAlertOnGameHealth(
 			await persist({
 				_id: report.hostname,
 				alertOpen: false,
-				...(previous?.firstUnhealthyAt ? { firstUnhealthyAt: previous.firstUnhealthyAt } : {}),
 				...(previous?.lastAlertAt ? { lastAlertAt: previous.lastAlertAt } : {}),
 				lastHealthyAt: now.toISOString(),
 				lastSummary: "healthy",
@@ -590,7 +588,6 @@ export async function maybeAlertOnGameHealth(
 		await persist({
 			_id: report.hostname,
 			alertOpen: false,
-			...(previous?.firstUnhealthyAt ? { firstUnhealthyAt: previous.firstUnhealthyAt } : {}),
 			...(previous?.lastAlertAt ? { lastAlertAt: previous.lastAlertAt } : {}),
 			lastHealthyAt: now.toISOString(),
 			lastSummary: "healthy",
@@ -667,7 +664,7 @@ export function getGameHealthStateStore(env: NodeJS.ProcessEnv = process.env): P
 						return (await collection.findOne(query)) as GameHealthStateRecord | null;
 					},
 					async upsert(record) {
-						await collection.updateOne({ _id: record._id }, { $set: record }, { upsert: true });
+						await collection.replaceOne({ _id: record._id }, record, { upsert: true });
 					},
 				};
 			} catch {
