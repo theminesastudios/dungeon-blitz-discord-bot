@@ -14,7 +14,7 @@ const fixedNow = new Date("2026-09-19T12:00:00.000Z");
 
 function okProbes() {
 	return {
-		resolve4: async () => ["35.241.250.170"],
+		resolve4: async () => ["2.31.166.155"],
 		fetchPage: async () => ({ status: 200 }),
 		fetchHttpsPage: async () => ({ status: 200 }),
 		inspectTls: async () => ({

@@ -7,7 +7,7 @@
  * in the same GCP project — the same finding `gameHealthCheck.ts` already records
  * against that IP. Nothing game-related listens there, so every admin call
  * went to an address that cannot answer, while the site itself lives at
- * `dungeonblitzr.theminesa.studio` (35.241.250.170). Prefer setting
+ * `dungeonblitzr.theminesa.studio` (2.31.166.155). Prefer setting
  * GAME_SERVER_BASE_URL per deployment; this default just has to be right when
  * it is not set.
  */
