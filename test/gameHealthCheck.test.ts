@@ -193,6 +193,12 @@ async function main() {
 		assert.match(sent[1]!, /recovered/);
 		const stored = store.records.get(recovered.hostname);
 		assert.equal(stored?.alertOpen, false);
+		assert.equal(stored?.firstUnhealthyAt, undefined);
+
+		const laterNow = new Date(fixedNow.getTime() + 48 * 60 * 60_000);
+		const downAgain = await checkGameHealth({ now: laterNow, ...okProbes(), resolve4: async () => [] });
+		await maybeAlertOnGameHealth(downAgain, { store, deliver: deliverer, now: laterNow });
+		assert.equal(store.records.get(recovered.hostname)?.firstUnhealthyAt, laterNow.toISOString());
 	}
 
 	// Healthy with no open alert: silent.

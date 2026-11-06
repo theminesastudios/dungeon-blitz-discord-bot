@@ -538,7 +538,7 @@ export async function maybeAlertOnGameHealth(
 			await persist({
 				_id: report.hostname,
 				alertOpen: !result.sent,
-				firstUnhealthyAt: previous.firstUnhealthyAt,
+				...(result.sent ? {} : { firstUnhealthyAt: previous.firstUnhealthyAt }),
 				lastUnhealthyAt: previous.lastUnhealthyAt,
 				lastHealthyAt: now.toISOString(),
 				lastAlertAt: previous.lastAlertAt,
@@ -561,7 +561,6 @@ export async function maybeAlertOnGameHealth(
 			await persist({
 				_id: report.hostname,
 				alertOpen: false,
-				...(previous?.firstUnhealthyAt ? { firstUnhealthyAt: previous.firstUnhealthyAt } : {}),
 				...(previous?.lastAlertAt ? { lastAlertAt: previous.lastAlertAt } : {}),
 				lastHealthyAt: now.toISOString(),
 				lastSummary: "healthy",
@@ -578,7 +577,6 @@ export async function maybeAlertOnGameHealth(
 			await persist({
 				_id: report.hostname,
 				alertOpen: false,
-				...(previous?.firstUnhealthyAt ? { firstUnhealthyAt: previous.firstUnhealthyAt } : {}),
 				...(previous?.lastAlertAt ? { lastAlertAt: previous.lastAlertAt } : {}),
 				lastHealthyAt: now.toISOString(),
 				lastSummary: "healthy",
@@ -590,7 +588,6 @@ export async function maybeAlertOnGameHealth(
 		await persist({
 			_id: report.hostname,
 			alertOpen: false,
-			...(previous?.firstUnhealthyAt ? { firstUnhealthyAt: previous.firstUnhealthyAt } : {}),
 			...(previous?.lastAlertAt ? { lastAlertAt: previous.lastAlertAt } : {}),
 			lastHealthyAt: now.toISOString(),
 			lastSummary: "healthy",
@@ -667,7 +664,7 @@ export function getGameHealthStateStore(env: NodeJS.ProcessEnv = process.env): P
 						return (await collection.findOne(query)) as GameHealthStateRecord | null;
 					},
 					async upsert(record) {
-						await collection.updateOne({ _id: record._id }, { $set: record }, { upsert: true });
+						await collection.replaceOne({ _id: record._id }, record, { upsert: true });
 					},
 				};
 			} catch {
