@@ -47,6 +47,7 @@ import {
 import { reportBugCommand, reportBugModal } from "../src/commands/report-bug.js";
 import { diagnoseCommand } from "../src/commands/diagnose.js";
 import { envCommand } from "../src/commands/env.js";
+import { mailboxCommand, mailboxModalHandler } from "../src/commands/mailbox.js";
 import {
   grantAmountModal,
   grantCategorySelect,
@@ -101,6 +102,7 @@ const commandModules: CommandModule[] = [
   reportBugCommand,
   diagnoseCommand,
   envCommand,
+  mailboxCommand,
 ];
 
 const componentModules: ComponentModule[] = [
@@ -126,6 +128,7 @@ const modalModules: ModalModule[] = [
   ...accountModals,
   grantAmountModal,
   reportBugModal,
+  mailboxModalHandler,
 ];
 
 const autocompleteModules: AutocompleteModule[] = [
