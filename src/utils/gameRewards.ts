@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { MongoClient, type Collection, type Filter } from "mongodb";
+import { requestCached } from "./requestScope.js";
 import type { PackReward, PackRewardDeliveryResult } from "./sponsorPacks.js";
 import {
 	CONSUMABLE_ID_BY_KIND,
@@ -139,7 +140,10 @@ async function resolveSaveDocument(
 	};
 }
 
-let clientPromise: Promise<MongoClient> | null = null;
+const clientCache = requestCached(
+	() => connectClient(),
+	(client) => client.close(),
+);
 
 /** Kept well inside the interaction function's time budget so a stalled DB surfaces as an error. */
 const MONGO_SERVER_SELECTION_TIMEOUT_MS = 5_000;
@@ -156,25 +160,22 @@ function getMongoUri(): string {
 	return uri;
 }
 
-async function getClient(): Promise<MongoClient> {
-	if (clientPromise) return clientPromise;
-	clientPromise = (async () => {
-		const client = new MongoClient(getMongoUri(), {
-			ignoreUndefined: true,
-			// Delivery must fail fast when the save DB is unreachable: an unbounded
-			// wait outlives the Discord interaction and hides the error behind a
-			// permanent "thinking…" state.
-			serverSelectionTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
-			connectTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
-			socketTimeoutMS: MONGO_SOCKET_TIMEOUT_MS,
-		});
-		await client.connect();
-		return client;
-	})().catch((error) => {
-		clientPromise = null;
-		throw error;
+async function connectClient(): Promise<MongoClient> {
+	const client = new MongoClient(getMongoUri(), {
+		ignoreUndefined: true,
+		// Delivery must fail fast when the save DB is unreachable: an unbounded
+		// wait outlives the Discord interaction and hides the error behind a
+		// permanent "thinking…" state.
+		serverSelectionTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
+		connectTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
+		socketTimeoutMS: MONGO_SOCKET_TIMEOUT_MS,
 	});
-	return clientPromise;
+	await client.connect();
+	return client;
+}
+
+function getClient(): Promise<MongoClient> {
+	return clientCache.get();
 }
 
 async function getAccountsCollection(): Promise<Collection<AccountDocument>> {

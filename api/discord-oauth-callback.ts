@@ -1,8 +1,8 @@
 import {
 	getOAuthTokens,
-	MiniDatabase,
 } from "@minesa-org/mini-interaction";
-import { waitUntil } from "@vercel/functions";
+import { waitUntil } from "../src/utils/requestScope.js";
+import { requestScopedMiniDatabase } from "../src/utils/miniDatabase.js";
 import { mini } from "./interactions.js";
 import { updateDiscordMetadata } from "../src/utils/database.js";
 import { discordOAuthConfig } from "../src/utils/oauthConfig.js";
@@ -33,7 +33,7 @@ import {
 	parseAuthorizeOAuthState,
 } from "../src/utils/discordConnections.js";
 
-const database = MiniDatabase.fromEnv();
+const database = requestScopedMiniDatabase();
 const failedPage = mini.failedOAuthPage("pages/failed.html");
 
 // Dungeon Blitz game logins reuse this registered redirect URI. The game

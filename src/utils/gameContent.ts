@@ -1,4 +1,4 @@
-import { waitUntil } from "@vercel/functions";
+import { waitUntil } from "./requestScope.js";
 import { applyItemNames, type GameItemNameEntry } from "./gameItemNames.js";
 import { fetchGameServerAdmin } from "./gameMaintenance.js";
 

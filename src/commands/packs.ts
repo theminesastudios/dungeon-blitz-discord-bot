@@ -49,7 +49,7 @@ import {
 	type GameLogField,
 	type GameLogPayload,
 } from "../utils/gameLogChannel.js";
-import { waitUntil } from "@vercel/functions";
+import { waitUntil } from "../utils/requestScope.js";
 import { formatSponsorHistory } from "../utils/sponsorHistory.js";
 import { buttonRow, COLORS, divider, text } from "../ui/containers.js";
 import { classComponentEmoji, componentEmoji, emoji, type EmojiName } from "../ui/emojis.js";

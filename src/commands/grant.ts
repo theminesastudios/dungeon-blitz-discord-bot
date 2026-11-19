@@ -21,7 +21,7 @@ import type {
   MessageComponentInteraction,
   ModalSubmitInteraction,
 } from "@minesa-org/mini-interaction";
-import { waitUntil } from "@vercel/functions";
+import { waitUntil } from "../utils/requestScope.js";
 import { componentEmoji, emoji } from "../ui/emojis.js";
 import {
   applyGrant,

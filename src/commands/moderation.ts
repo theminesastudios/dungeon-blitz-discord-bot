@@ -1,5 +1,5 @@
 import type { CommandInteraction } from "@minesa-org/mini-interaction";
-import { waitUntil } from "@vercel/functions";
+import { waitUntil } from "../utils/requestScope.js";
 import {
   canManageGuild,
   interactionActorLabel,

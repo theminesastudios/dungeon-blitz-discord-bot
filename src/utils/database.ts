@@ -1,5 +1,4 @@
 import {
-	MiniDatabase,
 	refreshAccessToken,
 	type OAuthTokens,
 } from "@minesa-org/mini-interaction";
@@ -9,11 +8,12 @@ import {
 	getContributorMatch,
 } from "./githubSponsors.js";
 import { getDirectSponsorMatch } from "./githubSponsorDirect.js";
+import { requestScopedMiniDatabase } from "./miniDatabase.js";
 
 /**
  * Shared database instance for the application.
  */
-export const db = MiniDatabase.fromEnv();
+export const db = requestScopedMiniDatabase();
 
 const MINI_DB_RESERVED_FIELDS = new Set(["createdAt"]);
 

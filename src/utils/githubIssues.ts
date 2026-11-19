@@ -1,5 +1,6 @@
 import { createSign } from "node:crypto";
 import { MongoClient, type Collection } from "mongodb";
+import { requestCached } from "./requestScope.js";
 import { errorMessage, logError, logWarn } from "./logger.js";
 
 /**
@@ -476,27 +477,27 @@ type RawBugReportDocument = {
 	reports?: BugReportEntry[];
 };
 
-let clientPromise: Promise<MongoClient> | null = null;
+const clientCache = requestCached(
+	() => connectClient(),
+	(client) => client.close(),
+);
 
-async function getClient(): Promise<MongoClient> {
-	if (clientPromise) return clientPromise;
+async function connectClient(): Promise<MongoClient> {
 	const uri = process.env.GAME_MONGODB_URI?.trim() || process.env.MONGODB_URI?.trim();
 	if (!uri) throw new Error("GAME_MONGODB_URI or MONGODB_URI is required");
 
-	clientPromise = (async () => {
-		const client = new MongoClient(uri, {
-			ignoreUndefined: true,
-			serverSelectionTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
-			connectTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
-			socketTimeoutMS: MONGO_SOCKET_TIMEOUT_MS,
-		});
-		await client.connect();
-		return client;
-	})().catch((error) => {
-		clientPromise = null;
-		throw error;
+	const client = new MongoClient(uri, {
+		ignoreUndefined: true,
+		serverSelectionTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
+		connectTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
+		socketTimeoutMS: MONGO_SOCKET_TIMEOUT_MS,
 	});
-	return clientPromise;
+	await client.connect();
+	return client;
+}
+
+function getClient(): Promise<MongoClient> {
+	return clientCache.get();
 }
 
 async function getReportsCollection(): Promise<Collection<RawBugReportDocument>> {

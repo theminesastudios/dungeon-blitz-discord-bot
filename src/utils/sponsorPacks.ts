@@ -254,15 +254,15 @@ export type SponsorPack = {
 };
 
 /**
- * Pack banners ship with the bot (`assets/packs/<id>.png`) and Vercel serves them as
- * static files. Always the production host: a preview deployment sits behind Vercel's
- * login wall, where Discord's media proxy cannot fetch the image.
+ * Pack banners ship with the bot (`assets/packs/<id>.png`) and the Worker serves them as
+ * static assets. Always the production host (PUBLIC_HOST), so Discord's media proxy can
+ * fetch the image.
  */
 const PRODUCTION_HOST = "discord-github-assistant-bot.vercel.app";
 
 function packImageUrl(packId: string): string {
 	const host =
-		process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim().replace(/^https?:\/\//, "").replace(/\/$/, "") ||
+		(process.env.PUBLIC_HOST || process.env.VERCEL_PROJECT_PRODUCTION_URL)?.trim().replace(/^https?:\/\//, "").replace(/\/$/, "") ||
 		PRODUCTION_HOST;
 	return `https://${host}/assets/packs/${packId}.png`;
 }

@@ -21,7 +21,7 @@ import {
   type APIInteraction,
   type APIInteractionResponse,
 } from "discord-api-types/v10";
-import { waitUntil } from "@vercel/functions";
+import { waitUntil } from "../src/utils/requestScope.js";
 import {
   serverCommand,
   serverBranchSelectComponent,
@@ -59,6 +59,7 @@ import {
   grantUserSelect,
 } from "../src/commands/grant.js";
 import { errorMessage, logError, logInfo, startTimer } from "../src/utils/logger.js";
+import { bundledHtmlPage } from "../src/utils/htmlPages.js";
 
 const applicationId = process.env.DISCORD_APPLICATION_ID?.trim();
 const botToken = process.env.DISCORD_BOT_TOKEN?.trim();
@@ -77,6 +78,8 @@ export const rest = new DiscordRestClient({ token: botToken, applicationId });
  * used by the other /api routes.
  */
 export const mini = new MiniInteraction();
+const loadHtmlFile = (mini as any).loadHtmlFile.bind(mini);
+(mini as any).loadHtmlFile = async (file: string) => bundledHtmlPage(file) ?? loadHtmlFile(file);
 
 type CommandHandler = (interaction: CommandInteraction) => Promise<unknown>;
 type ComponentHandler = (
@@ -449,11 +452,7 @@ export default async function handler(request: any, response: any) {
   ]);
 
   if (settled.kind === "committed") {
-    try {
-      waitUntil(dispatchPromise);
-    } catch {
-      // Vercel-only helper; the promise keeps running regardless.
-    }
+    waitUntil(dispatchPromise);
     logHandled(dispatchError === null ? "deferred" : "failed", dispatchError);
     return;
   }

@@ -12,6 +12,26 @@ Developer documentation follows.
 
 This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord server. It handles integrations with GitHub and game stuffs.
 
+## Deployment (Cloudflare Workers)
+
+The bot runs as one Worker (`wrangler.jsonc`, entry `src/worker.ts`). The handlers in `api/` keep their
+`(req, res)` shape; `src/worker.ts` routes each path to them, serves `assets/` (pack banners stay at
+`/assets/packs/<id>.png`) and runs the two crons (`0 12 * * *` game health, `0 3 * * *` daily restart).
+MongoDB clients are opened per request and closed when the request's background work ends, because a
+Worker cannot reuse a socket across requests.
+
+```sh
+npx wrangler login
+npx wrangler secret bulk .env.production   # every variable from the Vercel project
+npx wrangler deploy
+npm run build                              # register slash commands
+```
+
+Set `PUBLIC_HOST` to the Worker's host (for pack banner URLs and the OAuth redirect fallback), set
+`CRON_SECRET` (or `HEALTH_CHECK_SECRET`) so the crons are authenticated, then point the Discord
+application's Interactions Endpoint URL, OAuth redirect and Linked Roles Verification URL at the new
+host. For local runs put the variables in `.dev.vars` and use `npm run dev`.
+
 ## Commands
 
 Commands are registered on the community server only (`DISCORD_GUILD_ID`); there are no global commands, so nothing is offered in DMs or other servers. `npm run build` (run on every production deploy) overwrites the guild's commands and clears any global ones — see [Command registration](#command-registration).
@@ -119,8 +139,8 @@ How the bot reads the POST's answer:
 | no answer within 20 s | Unknown: the server may have linked the lobby after the bot stopped waiting | Run `/admin lobby-chat` with no channel to see which channel is in use |
 
 `409` and `502` are not retried: they need a person to fix the server or the channel, and the server
-rate-limits this route (10 changes per window). The interactions function is allowed 30 s
-(`vercel.json`) so the 20 s wait for the server fits inside it.
+rate-limits this route (10 changes per window). The Worker acknowledges the interaction
+first and keeps the 20 s wait running in the background (`waitUntil`).
 
 #### Can a channel be restricted to lobby players?
 
@@ -310,7 +330,7 @@ Account OAuth state is HMAC-signed with `ACCOUNT_OAUTH_STATE_SECRET`, or with `D
 
 ## Game health monitoring
 
-The bot exposes an independent health check for the game host at `/api/game-health`. It resolves the game hostname, fetches a site page over **both HTTP and HTTPS**, inspects the TLS certificate on :443, and probes both game sockets (843 policy server, 8080 game protocol) **from Vercel's network** — a vantage point that catches DNS and routing outages that look perfectly healthy from the server itself. The 2026-09 outage, where the `dungeonblitzr` A record went missing during a DNS migration and nobody noticed for hours, is what this guards against; the HTTPS/TLS checks cover the 2026-09-20 addition of Caddy on 443 — a dead Caddy, a closed 443, or an unrenewed certificate all alert.
+The bot exposes an independent health check for the game host at `/api/game-health`. It resolves the game hostname, fetches a site page over **both HTTP and HTTPS**, inspects the TLS certificate on :443, and probes both game sockets (843 policy server, 8080 game protocol) **from Cloudflare's network** — a vantage point that catches DNS and routing outages that look perfectly healthy from the server itself. The 2026-09 outage, where the `dungeonblitzr` A record went missing during a DNS migration and nobody noticed for hours, is what this guards against; the HTTPS/TLS checks cover the 2026-09-20 addition of Caddy on 443 — a dead Caddy, a closed 443, or an unrenewed certificate all alert.
 
 Verdicts:
 
@@ -321,7 +341,7 @@ Verdicts:
 A summary JSON is returned to any caller; alerting is only evaluated for authenticated requests:
 
 - On a down/degraded verdict it sends one alert, repeats hourly (`GAME_HEALTH_REMINDER_MINUTES`), and sends one recovery message when the host is healthy again. Alert state is deduped in MongoDB (`game_health_state` collection).
-- The game server pings the endpoint every 5 minutes (`HEALTH_PING_URL`/`HEALTH_PING_SECRET` in the game server's `.env`), and a Vercel cron hits it daily as a VM-independent fallback. Requests authenticated with `HEALTH_CHECK_SECRET` (or `CRON_SECRET`, which Vercel cron presents) arm alerting.
+- The game server pings the endpoint every 5 minutes (`HEALTH_PING_URL`/`HEALTH_PING_SECRET` in the game server's `.env`), and a Worker cron hits it daily as a VM-independent fallback. Requests authenticated with `HEALTH_CHECK_SECRET` (or `CRON_SECRET`, which the Worker cron presents) arm alerting.
 
 To receive the alerts, set exactly one of these in the bot deployment:
 
@@ -359,8 +379,8 @@ is set (release it with `--release`, or `force`), `404` for a branch `origin` do
 
 ### Daily restart at 03:00 UTC
 
-`vercel.json` schedules `GET /api/server-maintenance` at `0 3 * * *` (Vercel presents
-`CRON_SECRET`). It asks the game server for exactly what `/server` asks for: the one-minute
+`wrangler.jsonc` schedules `GET /api/server-maintenance` at `0 3 * * *` (the Worker presents
+`CRON_SECRET`, or `HEALTH_CHECK_SECRET` when that is unset). It asks the game server for exactly what `/server` asks for: the one-minute
 warning every connected player sees in game, then a restart onto the branch that is already
 deployed. That is what keeps the running build from silently drifting behind the branch.
 
@@ -497,7 +517,7 @@ Clearing `not-enabled` is a Developer Portal step (agree to the Social SDK Terms
 
 - `DISCORD_APPLICATION_ID` (or `DISCORD_CLIENT_ID`) and `DISCORD_BOT_TOKEN` — required; the bot token needs no extra permission for this API.
 - `GAME_SERVER_BASE_URL` — the game server's public base URL (`http://dungeonblitzr.theminesa.studio`). Without it, no portrait URL is sent and the image field falls back.
-- `GAME_STATS_SYNC_SECRET` — shared secret for the sync endpoint. `CRON_SECRET` is accepted as a fallback, which is the variable Vercel Cron sends automatically.
+- `GAME_STATS_SYNC_SECRET` — shared secret for the sync endpoint. `CRON_SECRET` is accepted as a fallback, which is what the Worker's cron presents.
 - `GAME_STATS_SEASON` — optional, sent as `season` for every player.
 
 ### Running the sync
@@ -519,11 +539,7 @@ curl -s -X POST https://<deployment>/api/game-stats/sync \
 
 Responses are JSON: a single-player call returns that player's `result` (`created`, `updated`, `dry-run`, `no-linked-account`, `no-characters`, `needs-authorization` or `error`), while a batch returns `attempted`, `stopReason` (`complete`, `limit` or `deadline`) and a per-player `results` list. `stopReason: "deadline"` means "call me again", not failure. A missing secret answers `503` rather than `401`, matching the game server's admin endpoints.
 
-Call it from a scheduler when profiles should stay current, for example Vercel Cron in `vercel.json` (Hobby plans only allow one run per day; Pro allows tighter schedules):
-
-```json
-{ "crons": [{ "path": "/api/game-stats/sync?limit=100", "schedule": "*/15 * * * *" }] }
-```
+Call it from a scheduler when profiles should stay current, for example a Worker cron: add the expression to `triggers.crons` in `wrangler.jsonc` and map it to `/api/game-stats/sync?limit=100` in the `crons` table in `src/worker.ts`.
 
 The sync also records its outcome on the account document as `gameStats.syncedAt`, `gameStats.state`, `gameStats.providerIssuedUserId` and `gameStats.error`, so "who is up to date" is answerable from MongoDB.
 

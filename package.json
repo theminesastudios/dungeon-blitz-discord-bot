@@ -6,7 +6,9 @@
 	"scripts": {
 		"mi-latest": "npm i @minesa-org/mini-interaction@latest",
 		"build": "tsx scripts/register.ts",
-		"production": "vercel --prod"
+		"production": "wrangler deploy && npm run build",
+		"dev": "wrangler dev",
+		"typecheck": "tsc --noEmit -p ."
 	},
 	"keywords": [
 		"discord",
@@ -20,11 +22,11 @@
 	"devDependencies": {
 		"@types/node": "^22.8.1",
 		"tsx": "^4.22.4",
-		"typescript": "^5.9.3"
+		"typescript": "^5.9.3",
+		"wrangler": "^4.165.0"
 	},
 	"dependencies": {
 		"@minesa-org/mini-interaction": "^0.9.0",
-		"@vercel/functions": "^1.6.0",
 		"dotenv": "^17.2.3",
 		"mongodb": "^7.0.0"
 	}

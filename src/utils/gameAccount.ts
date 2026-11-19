@@ -1,5 +1,6 @@
 import * as crypto from "node:crypto";
 import { MongoClient, type Collection, type Document } from "mongodb";
+import { requestCached } from "./requestScope.js";
 
 const PASSWORD_PARAMS = {
 	N: 16384,
@@ -94,7 +95,10 @@ export class GameAccountConflictError extends Error {
 	}
 }
 
-let clientPromise: Promise<MongoClient> | null = null;
+const clientCache = requestCached(
+	() => connectClient(),
+	(client) => client.close(),
+);
 let indexesPromise: Promise<void> | null = null;
 
 function normalizeEmail(value: unknown): string {
@@ -141,17 +145,14 @@ function getMongoUri(): string {
 	return uri;
 }
 
-async function getClient(): Promise<MongoClient> {
-	if (clientPromise) return clientPromise;
-	clientPromise = (async () => {
-		const client = new MongoClient(getMongoUri(), { ignoreUndefined: true });
-		await client.connect();
-		return client;
-	})().catch((error) => {
-		clientPromise = null;
-		throw error;
-	});
-	return clientPromise;
+async function connectClient(): Promise<MongoClient> {
+	const client = new MongoClient(getMongoUri(), { ignoreUndefined: true });
+	await client.connect();
+	return client;
+}
+
+function getClient(): Promise<MongoClient> {
+	return clientCache.get();
 }
 
 async function getCollections(): Promise<{

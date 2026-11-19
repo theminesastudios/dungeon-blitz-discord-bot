@@ -1,4 +1,5 @@
 import { MiniDatabase } from "@minesa-org/mini-interaction";
+import { requestScopedMiniDatabase } from "./miniDatabase.js";
 
 const DEFAULT_TARGETS = ["theminesastudios"];
 const MANUAL_PAST_SPONSORS = [
@@ -345,7 +346,8 @@ function getSponsorSnapshotDb() {
 	}
 
 	try {
-		sponsorSnapshotDb = MiniDatabase.fromEnv();
+		MiniDatabase.fromEnv();
+		sponsorSnapshotDb = requestScopedMiniDatabase();
 		return sponsorSnapshotDb;
 	} catch (error) {
 		console.warn(

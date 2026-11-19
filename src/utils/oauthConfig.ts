@@ -25,7 +25,8 @@ function buildRedirectUriFromHost(host: string): string {
 }
 
 function getDefaultRedirectUri(): string {
-	const productionHost = cleanEnvValue(process.env.VERCEL_PROJECT_PRODUCTION_URL);
+	const productionHost =
+		cleanEnvValue(process.env.PUBLIC_HOST) || cleanEnvValue(process.env.VERCEL_PROJECT_PRODUCTION_URL);
 	if (productionHost) {
 		return buildRedirectUriFromHost(productionHost);
 	}
@@ -68,7 +69,7 @@ function resolveRedirectUri(): string {
 	const source =
 		configuredRedirectUri && !configuredRedirectUri.includes("localhost")
 			? "configured"
-			: "Vercel-derived fallback";
+			: "host-derived fallback";
 	const redirectUri =
 		source === "configured" ? configuredRedirectUri : getDefaultRedirectUri();
 

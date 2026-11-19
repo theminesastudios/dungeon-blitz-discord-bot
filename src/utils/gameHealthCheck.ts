@@ -19,6 +19,7 @@ import * as dns from "node:dns";
 import * as net from "node:net";
 import * as tls from "node:tls";
 import { MongoClient } from "mongodb";
+import { requestCached } from "./requestScope.js";
 
 const DEFAULT_HOSTNAME = "dungeonblitzr.theminesa.studio";
 // The address the game host answers from — the Hetzner server (Falkenstein)
@@ -636,41 +637,49 @@ export async function maybeAlertOnGameHealth(
 	return result;
 }
 
-let storePromise: Promise<GameHealthStateStore | null> | null = null;
+type CachedStore = { store: GameHealthStateStore | null; client: MongoClient | null };
 
-/**
- * MongoDB-backed dedupe store, cached per serverless instance. Returns null
- * when Mongo is unavailable so alerting still happens (unduplicated) rather
- * than being silenced by a state-store outage.
- */
-export function getGameHealthStateStore(env: NodeJS.ProcessEnv = process.env): Promise<GameHealthStateStore | null> {
-	if (!storePromise) {
-		storePromise = (async (): Promise<GameHealthStateStore | null> => {
-			const uri = env.GAME_MONGODB_URI?.trim() || env.MONGODB_URI?.trim();
-			if (!uri) return null;
-			try {
-				const client = new MongoClient(uri, { ignoreUndefined: true });
-				const db = client.db(
-					env.GAME_HEALTH_MONGODB_DB_NAME?.trim() ||
-						env.GAME_MONGODB_DB_NAME?.trim() ||
-						env.MONGODB_DB_NAME?.trim() ||
-						"minidb",
-				);
-				const collection = db.collection<GameHealthStateRecord>(
-					env.GAME_HEALTH_STATE_COLLECTION?.trim() || "game_health_state",
-				);
-				return {
+let storeEnv: NodeJS.ProcessEnv = process.env;
+const storeCache = requestCached(
+	async (): Promise<CachedStore> => {
+		const env = storeEnv;
+		const uri = env.GAME_MONGODB_URI?.trim() || env.MONGODB_URI?.trim();
+		if (!uri) return { store: null, client: null };
+		try {
+			const client = new MongoClient(uri, { ignoreUndefined: true });
+			const db = client.db(
+				env.GAME_HEALTH_MONGODB_DB_NAME?.trim() ||
+					env.GAME_MONGODB_DB_NAME?.trim() ||
+					env.MONGODB_DB_NAME?.trim() ||
+					"minidb",
+			);
+			const collection = db.collection<GameHealthStateRecord>(
+				env.GAME_HEALTH_STATE_COLLECTION?.trim() || "game_health_state",
+			);
+			return {
+				client,
+				store: {
 					async findOne(query) {
 						return (await collection.findOne(query)) as GameHealthStateRecord | null;
 					},
 					async upsert(record) {
 						await collection.replaceOne({ _id: record._id }, record, { upsert: true });
 					},
-				};
-			} catch {
-				return null;
-			}
-		})();
-	}
-	return storePromise;
+				},
+			};
+		} catch {
+			return { store: null, client: null };
+		}
+	},
+	(cached) => cached.client?.close(),
+);
+
+/**
+ * MongoDB-backed dedupe store, cached per request. Returns null
+ * when Mongo is unavailable so alerting still happens (unduplicated) rather
+ * than being silenced by a state-store outage.
+ */
+export function getGameHealthStateStore(env: NodeJS.ProcessEnv = process.env): Promise<GameHealthStateStore | null> {
+	storeEnv = env;
+	return storeCache.get().then((cached) => cached.store);
 }

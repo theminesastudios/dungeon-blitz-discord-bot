@@ -9,3 +9,5 @@ node_modules
 # it must never reach the repository or a deployment build.
 *.pem
 *.key
+.dev.vars
+.wrangler

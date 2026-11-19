@@ -1,4 +1,5 @@
 import { MongoClient, type Collection, type Document, type Filter } from "mongodb";
+import { requestCached } from "./requestScope.js";
 import { adjustGameMammothIdols } from "./gameMaintenance.js";
 import type { SponsorHistory } from "./sponsorHistory.js";
 
@@ -164,7 +165,10 @@ export type PlayerProfile = {
 	wallets: GameWalletSummary[];
 };
 
-let clientPromise: Promise<MongoClient> | null = null;
+const clientCache = requestCached(
+	() => connectClient(),
+	(client) => client.close(),
+);
 
 /** Kept well inside the interaction function's time budget so a stalled DB surfaces as an error. */
 const MONGO_SERVER_SELECTION_TIMEOUT_MS = 5_000;
@@ -328,29 +332,26 @@ function toTimestampMs(value: unknown): number {
 	return Number.isFinite(ms) ? ms : 0;
 }
 
-async function getClient(): Promise<MongoClient> {
-	if (clientPromise) return clientPromise;
+async function connectClient(): Promise<MongoClient> {
 	const uri = process.env.GAME_MONGODB_URI?.trim() || process.env.MONGODB_URI?.trim();
 	if (!uri) throw new Error("GAME_MONGODB_URI or MONGODB_URI is required");
 
-	clientPromise = (async () => {
-		const client = new MongoClient(uri, {
-			ignoreUndefined: true,
-			// A dead or unreachable database must fail fast. Without a bounded
-			// server selection the driver stalls for its 30s default, which is
-			// longer than a Discord interaction lives, so the player would be left
-			// on an endless "thinking…" state instead of a readable error.
-			serverSelectionTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
-			connectTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
-			socketTimeoutMS: MONGO_SOCKET_TIMEOUT_MS,
-		});
-		await client.connect();
-		return client;
-	})().catch((error) => {
-		clientPromise = null;
-		throw error;
+	const client = new MongoClient(uri, {
+		ignoreUndefined: true,
+		// A dead or unreachable database must fail fast. Without a bounded
+		// server selection the driver stalls for its 30s default, which is
+		// longer than a Discord interaction lives, so the player would be left
+		// on an endless "thinking…" state instead of a readable error.
+		serverSelectionTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
+		connectTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
+		socketTimeoutMS: MONGO_SOCKET_TIMEOUT_MS,
 	});
-	return clientPromise;
+	await client.connect();
+	return client;
+}
+
+function getClient(): Promise<MongoClient> {
+	return clientCache.get();
 }
 
 function getGameDatabaseName(): string {
