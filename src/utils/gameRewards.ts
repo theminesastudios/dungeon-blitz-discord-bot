@@ -8,7 +8,7 @@ import {
 	NON_EXCLUSIVE_MOUNT_IDS,
 } from "./sponsorPacks.js";
 import { dyeLabel, mountLabel } from "./gameItemNames.js";
-import { postGameServerAdmin, type GameServerAdminResponse } from "./gameMaintenance.js";
+import { adjustGameMammothIdols, postGameServerAdmin, type GameServerAdminResponse } from "./gameMaintenance.js";
 
 type RewardDocument = Document & {
 	_id: string;
@@ -371,6 +371,8 @@ export function formatRewardLine(reward: PackReward): string {
 			return `${reward.amount.toLocaleString()} Silver Sigils`;
 		case "keys":
 			return `${reward.amount.toLocaleString()}× Trove Key`;
+		case "idols":
+			return `${reward.amount.toLocaleString()} Mammoth Idols`;
 	}
 }
 
@@ -473,8 +475,8 @@ const KNOWN_REFUSALS = new Set<GameRewardsRefusal>([
 /** First try, then one retry after a timeout: the retry carries the same requestId, so it pays once. */
 const REWARD_TIMEOUTS_MS = [8_000, 6_000];
 
-/** A pack reward in the shape the game server reads. */
-export function toGameRewardChange(reward: PackReward): GameRewardChange {
+/** A pack reward in the shape the game server's rewards route reads. Idols go through `/api/admin/idols`. */
+export function toGameRewardChange(reward: Exclude<PackReward, { kind: "idols" }>): GameRewardChange {
 	switch (reward.kind) {
 		case "mount":
 			return reward.pick
@@ -575,7 +577,7 @@ function listIds(reward: PackReward): number[] | null {
 
 function rewardAmount(reward: PackReward): number {
 	if (reward.kind === "lockbox" || reward.kind === "consumable") return reward.count;
-	if (reward.kind === "gold" || reward.kind === "sigils" || reward.kind === "keys") return reward.amount;
+	if (reward.kind === "gold" || reward.kind === "sigils" || reward.kind === "keys" || reward.kind === "idols") return reward.amount;
 	return 0;
 }
 
@@ -713,17 +715,46 @@ export async function applyPackRewardsToSave(
 	rewards: PackReward[],
 	requestedBy = "pack-shop",
 ): Promise<PackRewardDeliveryResult[]> {
-	const outcome = await requestGameRewards({
-		userId,
-		characterName,
-		rewards: rewards.map(toGameRewardChange),
-		requestedBy,
-	});
-	if (!outcome.ok) {
-		if (outcome.refusal === "locked") throw new LockedCharacterError(characterName);
-		const reason = REFUSAL_REASONS[outcome.refusal](characterName);
-		const detail = outcome.refusal === "unavailable" ? outcome.message : reason;
-		return rewards.map((reward) => fail(reward, characterName, detail));
+	const itemRewards = rewards.filter(
+		(reward): reward is Exclude<PackReward, { kind: "idols" }> => reward.kind !== "idols",
+	);
+	const results = new Map<PackReward, PackRewardDeliveryResult>();
+	let deliveredTo = characterName;
+	if (itemRewards.length > 0) {
+		const outcome = await requestGameRewards({
+			userId,
+			characterName,
+			rewards: itemRewards.map(toGameRewardChange),
+			requestedBy,
+		});
+		if (!outcome.ok) {
+			if (outcome.refusal === "locked") throw new LockedCharacterError(characterName);
+			const reason = REFUSAL_REASONS[outcome.refusal](characterName);
+			const detail = outcome.refusal === "unavailable" ? outcome.message : reason;
+			// Nothing was paid: idols are not paid either, so the whole pack is refunded.
+			return rewards.map((reward) => fail(reward, characterName, detail));
+		}
+		deliveredTo = outcome.characterName;
+		const delivered = deliveryResultsFromGame(itemRewards, outcome.characterName, outcome.results, outcome.online);
+		itemRewards.forEach((reward, index) => results.set(reward, delivered[index]!));
 	}
-	return deliveryResultsFromGame(rewards, outcome.characterName, outcome.results, outcome.online);
+	for (const reward of rewards) {
+		if (reward.kind !== "idols") continue;
+		try {
+			const outcome = await adjustGameMammothIdols(userId, deliveredTo, "add", reward.amount);
+			results.set(
+				reward,
+				outcome.after >= outcome.before + reward.amount
+					? {
+							status: "delivered",
+							delivery: { reward, characterName: outcome.characterName || deliveredTo },
+							verified: `mammothIdols ${outcome.before.toLocaleString()} → ${outcome.after.toLocaleString()}`,
+						}
+					: fail(reward, deliveredTo, "Mammoth Idols did not go up after the delivery."),
+			);
+		} catch (error) {
+			results.set(reward, fail(reward, deliveredTo, error instanceof Error ? error.message : String(error)));
+		}
+	}
+	return rewards.map((reward) => results.get(reward)!);
 }

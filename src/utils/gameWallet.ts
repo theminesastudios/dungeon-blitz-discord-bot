@@ -1,5 +1,6 @@
 import { MongoClient, type Collection, type Document, type Filter } from "mongodb";
 import { adjustGameMammothIdols } from "./gameMaintenance.js";
+import type { SponsorHistory } from "./sponsorHistory.js";
 
 /**
  * Only the live game data is read: one `saves` document per game user, owned by an account
@@ -72,6 +73,7 @@ type RawLinkedProfile = Document & {
 	packPurchases?: PackPurchase[];
 	bonusCreditCents?: number;
 	creditGrants?: CreditGrant[];
+	sponsorHistory?: SponsorHistory;
 };
 
 export type PackPurchase = {
@@ -1070,4 +1072,27 @@ export async function hasPackClaim(discordId: string, packId: string): Promise<b
 	if (!normalized) return false;
 	const claims = await getPackClaimCollection();
 	return (await claims.countDocuments({ _id: packClaimId(packId, normalized) }, { limit: 1 })) > 0;
+}
+
+/** The donation history last read for this player, so a GitHub or Patreon outage does not zero their sigils. */
+export async function getStoredSponsorHistory(discordId: string): Promise<SponsorHistory | null> {
+	const normalized = discordId.trim();
+	if (!normalized) return null;
+	const profiles = await getLinkedProfileCollection();
+	const profile = await profiles.findOne(
+		{ $or: [{ _id: normalized }, { userId: normalized }] } as Filter<RawLinkedProfile>,
+		{ projection: { sponsorHistory: 1 } },
+	);
+	const history = profile?.sponsorHistory;
+	return history && Array.isArray(history.events) ? history : null;
+}
+
+export async function saveSponsorHistory(discordId: string, history: SponsorHistory): Promise<void> {
+	const normalized = discordId.trim();
+	if (!normalized) return;
+	const profiles = await getLinkedProfileCollection();
+	await profiles.updateOne(
+		{ $or: [{ _id: normalized }, { userId: normalized }] } as Filter<RawLinkedProfile>,
+		{ $set: { sponsorHistory: history } } as never,
+	);
 }

@@ -43,6 +43,7 @@ import {
   packsBuyComponent,
   packsSelectComponent,
   packsCharacterSelectComponent,
+  packsHistoryComponent,
 } from "../src/commands/packs.js";
 import { reportBugCommand, reportBugModal } from "../src/commands/report-bug.js";
 import { diagnoseCommand } from "../src/commands/diagnose.js";
@@ -110,6 +111,7 @@ const componentModules: ComponentModule[] = [
   packsBuyComponent,
   packsSelectComponent,
   packsCharacterSelectComponent,
+  packsHistoryComponent,
   grantUserSelect,
   grantCharacterSelect,
   grantCategorySelect,
