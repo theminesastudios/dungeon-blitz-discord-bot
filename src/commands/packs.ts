@@ -18,9 +18,11 @@ import type {
 } from "@minesa-org/mini-interaction";
 import {
 	SPONSOR_PACKS,
+	formatCreditAmount,
 	formatCredits,
 	purchaseSponsorPack,
 	findSponsorPack,
+	getSponsorCredit,
 	getFreePackStatus,
 	type ConsumableId,
 	type FreePackStatus,
@@ -48,11 +50,13 @@ import {
 	type GameLogPayload,
 } from "../utils/gameLogChannel.js";
 import { waitUntil } from "@vercel/functions";
+import { formatSponsorHistory } from "../utils/sponsorHistory.js";
 import { buttonRow, COLORS, divider, text } from "../ui/containers.js";
 import { classComponentEmoji, componentEmoji, emoji, type EmojiName } from "../ui/emojis.js";
 
 const BUY_BUTTON_PREFIX = "packs:buy:";
 const PACK_SELECT_ID = "packs:view";
+const HISTORY_BUTTON_ID = "packs:history";
 const CHARACTER_SELECT_PREFIX = "packs:char:";
 
 // Components V2 messages require the IsComponentsV2 flag; shop views are ephemeral.
@@ -70,7 +74,7 @@ function packTerms(pack: SponsorPack): string {
 	if (pack.requiredBoostDays !== undefined) {
 		return `After ${pack.requiredBoostDays} days of boosting · once per player`;
 	}
-	return "Paid with credits";
+	return "Paid with Royal Sigils";
 }
 
 function buildPackSelectRow(defaultId?: string) {
@@ -82,7 +86,7 @@ function buildPackSelectRow(defaultId?: string) {
 		.setOptions(
 			SPONSOR_PACKS.map((pack) =>
 				new StringSelectMenuOptionBuilder()
-					.setLabel(`${pack.name} · ${packPriceLabel(pack)}`)
+					.setLabel(`${pack.name} · ${pack.priceCents === 0 ? "Free" : `${formatCreditAmount(pack.priceCents)} Royal Sigils`}`)
 					.setValue(pack.id)
 					.setEmoji(componentEmoji(pack.emoji))
 					.setDescription(packTerms(pack))
@@ -203,7 +207,7 @@ function buildPackContainer(
 				.setLabel(
 					pack.priceCents === 0
 						? "Claim for free"
-						: `Buy for ${formatCredits(pack.priceCents)}`,
+						: `Buy for ${formatCreditAmount(pack.priceCents)} Royal Sigils`,
 				)
 				.setStyle(ButtonStyle.Success)
 				.setDisabled(!canTake)
@@ -225,14 +229,17 @@ function buildShopContainer(): ContainerBuilder {
 	const line = (pack: SponsorPack) =>
 		`${emoji(pack.emoji)} **${pack.name}** · ${pack.priceCents === 0 ? packTerms(pack).replace(" · once per player", "") : packPriceLabel(pack)}`;
 	const free = SPONSOR_PACKS.filter((pack) => pack.priceCents === 0);
-	const paid = SPONSOR_PACKS.filter((pack) => pack.priceCents > 0);
+	const paid = SPONSOR_PACKS.filter((pack) => pack.priceCents > 0 && !pack.group);
+	const tierLine = (pack: SponsorPack) => `${pack.items.join(" + ")} · ${packPriceLabel(pack)}`;
+	const kit = SPONSOR_PACKS.filter((pack) => pack.group === "kit");
+	const keyChest = SPONSOR_PACKS.filter((pack) => pack.group === "key-chest");
 
 	container.addComponent(
 		text(
 			[
 				"## Pack Shop",
 				"-# Rewards go straight into the character you pick, the moment you buy.",
-				`-# Every $1 donated gives you 100 credits to spend here.`,
+				"-# Every $1 paid on GitHub Sponsors or Patreon, monthly or one-time, gives you 100 Royal Sigils to spend here.",
 			].join("\n"),
 		),
 	);
@@ -241,7 +248,22 @@ function buildShopContainer(): ContainerBuilder {
 		text(["### Free, once per player", ...free.map(line)].join("\n")),
 	);
 	container.addComponent(
-		text(["### Paid with credits", ...paid.map(line)].join("\n")),
+		text(["### Paid with Royal Sigils", ...paid.map(line)].join("\n")),
+	);
+	container.addComponent(
+		text([`### ${emoji("item_mammoth_idol")} Kit Packs`, ...kit.map(tierLine)].join("\n")),
+	);
+	container.addComponent(
+		text([`### ${emoji("item_trove_chest")} Key & Chest Packs`, ...keyChest.map(tierLine)].join("\n")),
+	);
+	container.addComponent(
+		buttonRow(
+			new ButtonBuilder()
+				.setCustomId(HISTORY_BUTTON_ID)
+				.setLabel("My Royal Sigils")
+				.setEmoji(componentEmoji("item_royal_sigil"))
+				.setStyle(ButtonStyle.Secondary),
+		),
 	);
 	container.addComponent(divider());
 	container.addComponent(buildPackSelectRow());
@@ -271,6 +293,8 @@ function rewardIcon(reward: PackReward): string {
 			return emoji("item_trove_chest");
 		case "consumable":
 			return emoji(POTION_EMOJI[reward.consumableId]);
+		case "idols":
+			return emoji("item_mammoth_idol");
 	}
 }
 
@@ -365,12 +389,12 @@ function reportPurchase(payload: GameLogPayload) {
 /** Pretty labels for the outcome states, so the log never shows a raw `missing-role`. */
 const PURCHASE_STATUS: Record<string, string> = {
 	ok: "Delivered",
-	insufficient: "Not enough credits",
+	insufficient: "Not enough Royal Sigils",
 	"missing-role": "Sponsor role required",
 	"not-boosting": "Not boosting long enough",
 	"already-claimed": "Already claimed",
 	"no-character": "Delivery failed — refunded",
-	"credit-unknown": "Credits could not be verified",
+	"credit-unknown": "Royal Sigils could not be verified",
 	conflict: "Balance changed mid-purchase",
 	"not-sponsor": "Not a sponsor",
 	"no-profile": "Not linked",
@@ -427,7 +451,7 @@ function purchaseLogCard(
 		});
 		if (result.credit.bonusCents > 0) {
 			fields.push({
-				name: "Bonus credits",
+				name: "Bonus Royal Sigils",
 				value: formatCredits(result.credit.bonusCents),
 				inline: true,
 			});
@@ -548,7 +572,7 @@ async function respondWithPurchase(
 		case "no-profile":
 			return editReply({
 				content:
-					"Your Discord account has no linked GitHub account, so your credits cannot be checked. Link GitHub through the account linking flow first.",
+					"Your Discord account is not linked yet, so your Royal Sigils cannot be checked. Link your account first.",
 				flags: InteractionFlags.Ephemeral,
 			});
 		case "missing-role":
@@ -572,7 +596,7 @@ async function respondWithPurchase(
 		case "not-sponsor":
 			return editReply({
 				content:
-					"Only GitHub sponsors have credits to spend. Sponsor The Minesa Studios on GitHub Sponsors first!",
+					"Royal Sigils come from donations. Sponsor The Minesa Studios on GitHub Sponsors or Patreon first!",
 				flags: InteractionFlags.Ephemeral,
 			});
 		case "credit-unknown":
@@ -748,6 +772,37 @@ export const packsSelectComponent = {
 	customId: PACK_SELECT_ID,
 	handler: (interaction: MessageComponentInteraction) =>
 		handlePackView(interaction),
+};
+
+/** The player's own Royal Sigils: balance and every donation behind it, month by month. */
+async function handleHistory(interaction: MessageComponentInteraction) {
+	const discordId = interactionDiscordId(interaction);
+	if (!discordId) {
+		return interaction.reply({ content: "Your Discord account could not be verified.", flags: InteractionFlags.Ephemeral });
+	}
+	await interaction.deferReply({ flags: InteractionFlags.Ephemeral });
+	const credit = await getSponsorCredit(discordId).catch(() => null);
+	if (!credit) {
+		return interaction.editReply({ content: "Your Discord account is not linked yet, so there are no Royal Sigils to show." });
+	}
+	const container = new ContainerBuilder().setAccentColor(COLORS.warning);
+	container.addComponent(
+		text(
+			[
+				`## ${emoji("item_royal_sigil")} Your Royal Sigils`,
+				`**Balance:** ${credit.balanceCents === null ? "unknown" : formatCredits(credit.balanceCents)}`,
+				`-# Donated ${credit.sponsoredCents === null ? "unknown" : formatCredits(credit.sponsoredCents)}${credit.bonusCents > 0 ? ` · bonus ${formatCredits(credit.bonusCents)}` : ""} · spent ${formatCredits(credit.usedCents)}`,
+			].join("\n"),
+		),
+	);
+	container.addComponent(divider());
+	container.addComponent(text((credit.history ? formatSponsorHistory(credit.history) : ["Donation history is not available right now."]).join("\n").slice(0, 3800)));
+	return interaction.editReply({ components: [container], flags: CONTAINER_EPHEMERAL_FLAGS } as never);
+}
+
+export const packsHistoryComponent = {
+	customId: HISTORY_BUTTON_ID,
+	handler: (interaction: MessageComponentInteraction) => handleHistory(interaction),
 };
 
 export const packsCharacterSelectComponent = {

@@ -116,15 +116,26 @@ function tally(rewards: PackReward[]) {
 		sigils: sum("sigils"),
 		gold: sum("gold"),
 		potions: sum("consumable"),
+		idols: sum("idols"),
 	};
 }
+const none = { keys: 0, chests: 0, mounts: 0, dyes: 0, sigils: 0, gold: 0, potions: 0, idols: 0 };
 const expected: Record<string, ReturnType<typeof tally>> = {
-	sponsor: { keys: 0, chests: 0, mounts: 1, dyes: 0, sigils: 0, gold: 10_000, potions: 0 },
-	booster: { keys: 2, chests: 2, mounts: 0, dyes: 0, sigils: 0, gold: 10_000, potions: 1 },
-	supporter: { keys: 3, chests: 3, mounts: 0, dyes: 1, sigils: 0, gold: 25_000, potions: 0 },
-	adventurer: { keys: 10, chests: 10, mounts: 1, dyes: 2, sigils: 250, gold: 0, potions: 2 },
-	hero: { keys: 25, chests: 25, mounts: 3, dyes: 4, sigils: 750, gold: 100_000, potions: 8 },
+	sponsor: { ...none, mounts: 1, gold: 10_000 },
+	booster: { ...none, keys: 2, chests: 2, gold: 10_000, potions: 1 },
+	supporter: { ...none, keys: 3, chests: 3, dyes: 1, gold: 25_000 },
+	adventurer: { ...none, keys: 10, chests: 10, mounts: 1, dyes: 2, sigils: 250, potions: 2 },
+	hero: { ...none, keys: 25, chests: 25, mounts: 3, dyes: 4, sigils: 750, gold: 100_000, potions: 8 },
+	"kit-5": { ...none, idols: 5, gold: 15_000 },
+	"kit-12": { ...none, idols: 12, gold: 35_000 },
+	"kit-25": { ...none, idols: 25, gold: 60_000 },
+	"kit-50": { ...none, idols: 50, gold: 120_000 },
+	"key-chest-1": { ...none, keys: 1, chests: 1 },
+	"key-chest-3": { ...none, keys: 3, chests: 3 },
+	"key-chest-8": { ...none, keys: 8, chests: 8 },
+	"key-chest-15": { ...none, keys: 15, chests: 15 },
 	champions: {
+		...none,
 		keys: 50,
 		chests: 50,
 		mounts: EXCLUSIVE_MOUNT_IDS.length,
@@ -147,11 +158,18 @@ for (let roll = 0; roll < 50; roll += 1) {
 	}
 }
 
-// Banners are served from the bot's own production host, one file per pack.
+// Banners are served from the bot's own production host, one file per pack (tiers share their group's).
 for (const pack of SPONSOR_PACKS) {
-	assert.ok(existsSync(`assets/packs/${pack.id}.png`), `assets/packs/${pack.id}.png exists`);
-	assert.match(pack.imageUrl, new RegExp(`^https://[^/]+/assets/packs/${pack.id}\\.png$`));
+	const file = pack.group ?? pack.id;
+	assert.ok(existsSync(`assets/packs/${file}.png`), `assets/packs/${file}.png exists`);
+	assert.match(pack.imageUrl, new RegExp(`^https://[^/]+/assets/packs/${file}\\.png$`));
 }
+
+// Kit and Key & Chest prices match their banners.
+assert.deepEqual(
+	SPONSOR_PACKS.filter((pack) => pack.group).map((pack) => [pack.id, pack.priceCents]),
+	[["kit-5", 50], ["kit-12", 100], ["kit-25", 180], ["kit-50", 300], ["key-chest-1", 50], ["key-chest-3", 100], ["key-chest-8", 160], ["key-chest-15", 280]],
+);
 
 // The Booster Pack is free and gated on boosting for BOOSTER_PACK_DAYS days.
 const booster = findSponsorPack("booster")!;

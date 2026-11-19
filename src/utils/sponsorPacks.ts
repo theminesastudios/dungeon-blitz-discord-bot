@@ -1,6 +1,8 @@
 import {
 	getPackLedger,
 	getPlayerProfile,
+	getStoredSponsorHistory,
+	saveSponsorHistory,
 	grantBonusCredit,
 	removeBonusCredit,
 	recordPackPurchase,
@@ -18,8 +20,12 @@ import {
 	listGameSaveCharacters,
 	type GameSaveCharacterRef,
 } from "./gameRewards.js";
-import type { EmojiName } from "../ui/emojis.js";
-import { getSponsorDonationInfo, type SponsorDonationInfo } from "./githubSponsors.js";
+import { emoji, type EmojiName } from "../ui/emojis.js";
+import {
+	buildSponsorHistory,
+	loadSponsorHistory,
+	type SponsorHistory,
+} from "./sponsorHistory.js";
 
 export type { GameCharacterOption } from "./gameRewards.js";
 
@@ -61,7 +67,9 @@ export type PackReward =
 	| { kind: "gold"; amount: number }
 	| { kind: "sigils"; amount: number }
 	/** Trove keys: the character's `DragonKeys` balance, which opens trove chests. */
-	| { kind: "keys"; amount: number };
+	| { kind: "keys"; amount: number }
+	/** Mammoth Idols: an account balance, paid through the game server's idol route. */
+	| { kind: "idols"; amount: number };
 
 /** Reward pools the game maintains. Mount/dye IDs must match live game content. */
 /*
@@ -202,10 +210,31 @@ export function buildPackRewards(pack: Pick<SponsorPack, "id">): PackReward[] {
 				consumableReward("gold", 5),
 				consumableReward("material", 5),
 			];
-		default:
+		default: {
+			const kit = KIT_PACKS.find((tier) => `kit-${tier.idols}` === pack.id);
+			if (kit) return [{ kind: "idols", amount: kit.idols }, { kind: "gold", amount: kit.gold }];
+			const keyChest = KEY_CHEST_PACKS.find((tier) => `key-chest-${tier.count}` === pack.id);
+			if (keyChest) return [lockboxReward(keyChest.count), { kind: "keys", amount: keyChest.count }];
 			return [];
+		}
 	}
 }
+
+/** Kit Packs: Mammoth Idols and gold, paid in Royal Sigils. */
+const KIT_PACKS = [
+	{ idols: 5, gold: 15_000, price: 50 },
+	{ idols: 12, gold: 35_000, price: 100 },
+	{ idols: 25, gold: 60_000, price: 180 },
+	{ idols: 50, gold: 120_000, price: 300 },
+] as const;
+
+/** Key & Chest Packs: as many trove chests as keys to open them, paid in Royal Sigils. */
+const KEY_CHEST_PACKS = [
+	{ count: 1, price: 50 },
+	{ count: 3, price: 100 },
+	{ count: 8, price: 160 },
+	{ count: 15, price: 280 },
+] as const;
 
 export type SponsorPack = {
 	id: string;
@@ -220,6 +249,8 @@ export type SponsorPack = {
 	requiredRoleId?: string;
 	/** When set, only members who have boosted the server for this many days can claim it. */
 	requiredBoostDays?: number;
+	/** Small packs sold in tiers are listed together in the shop. */
+	group?: "kit" | "key-chest";
 };
 
 /**
@@ -347,6 +378,32 @@ export const SPONSOR_PACKS: SponsorPack[] = [
 	},
 ];
 
+SPONSOR_PACKS.push(
+	...KIT_PACKS.map((tier): SponsorPack => ({
+		id: `kit-${tier.idols}`,
+		name: `Kit Pack · ${tier.idols} idols`,
+		priceCents: tier.price,
+		emoji: "item_mammoth_idol",
+		color: 0x3b82f6,
+		items: [`${tier.idols} mammoth idols`, `${tier.gold.toLocaleString("en-US")} golds`],
+		imageUrl: packImageUrl("kit"),
+		group: "kit",
+	})),
+	...KEY_CHEST_PACKS.map((tier): SponsorPack => ({
+		id: `key-chest-${tier.count}`,
+		name: `Key & Chest Pack · ${tier.count}`,
+		priceCents: tier.price,
+		emoji: "item_trove_chest",
+		color: 0xf5c518,
+		items: [
+			`${tier.count} trove ${tier.count === 1 ? "chest" : "chests"}`,
+			`${tier.count} trove chest ${tier.count === 1 ? "key" : "keys"}`,
+		],
+		imageUrl: packImageUrl("key-chest"),
+		group: "key-chest",
+	})),
+);
+
 export function findSponsorPack(packId: string): SponsorPack | null {
 	return SPONSOR_PACKS.find((pack) => pack.id === packId) ?? null;
 }
@@ -356,40 +413,21 @@ export function formatCreditAmount(cents: number): string {
 	return cents.toLocaleString("en-US");
 }
 
-/** A credit amount for players: `1,250 credits`. One credit is one cent of donation. */
+/** A Royal Sigil amount for players: `1,250 Royal Sigils`. $1 paid is 100 Royal Sigils. */
 export function formatCredits(cents: number): string {
-	return `${formatCreditAmount(cents)} ${cents === 1 ? "credit" : "credits"}`;
-}
-
-/**
- * What a GitHub sponsorship record is worth as spendable credit: the current tier
- * price while the sponsorship is active, nothing once it is cancelled, and `null`
- * when GitHub would not say (no sponsorship record, or a tier whose price is not
- * visible) so the balance reads as unknown rather than as a misleading zero.
- *
- * Deliberately not `estimatedTotalInCents`. That figure multiplies the monthly price
- * by the months elapsed since the sponsorship started, so a $3/month tier reported
- * $3, then $6, then $9 as the calendar advanced without anyone paying more — and it
- * never shrank on cancel, because `estimateSponsorTotal` ignores `isActive`. It is a
- * display-only projection for `/admin sponsor`, not money received.
- */
-export function sponsorCreditCentsFromDonation(
-	donation: Pick<SponsorDonationInfo, "isActive" | "amountInCents"> | null,
-): number | null {
-	if (!donation) return null;
-	if (!donation.isActive) return 0;
-	return donation.amountInCents;
+	const icon = emoji("item_royal_sigil");
+	return `${icon ? `${icon} ` : ""}${formatCreditAmount(cents)} ${cents === 1 ? "Royal Sigil" : "Royal Sigils"}`;
 }
 
 export type SponsorCredit = {
 	githubUsername: string;
 	isSponsor: boolean;
 	/**
-	 * What the linked GitHub sponsorship is worth right now, or `null` when GitHub
-	 * would not say. Zero means a sponsorship exists but is cancelled, or that the
-	 * active tier costs nothing.
+	 * Everything the player has paid on GitHub Sponsors and Patreon, one cent per Royal Sigil,
+	 * or `null` when neither could be read and nothing was stored before.
 	 */
 	sponsoredCents: number | null;
+	history?: SponsorHistory;
 	/** Admin-granted bonus credit that is added on top of the donation total. */
 	bonusCents: number;
 	usedCents: number;
@@ -398,40 +436,45 @@ export type SponsorCredit = {
 };
 
 /**
- * A player's spendable credit is what their currently active GitHub sponsorship tier
- * is worth, plus any admin-granted bonus credit, minus whatever they have already
- * spent on packs. A cancelled sponsorship contributes no GitHub credit, so a
- * sponsor who stops paying sees their balance drop to whatever bonus credit remains.
+ * A player's Royal Sigils: 100 for every $1 they have paid on GitHub Sponsors (monthly and
+ * one-time) and Patreon, plus admin-granted bonus, minus what they have spent on packs. The
+ * history is stored on the profile each time it is read, and a source that cannot be reached
+ * falls back to its stored events, so an outage never empties a balance.
  */
 export async function getSponsorCredit(
 	discordId: string,
 ): Promise<SponsorCredit | null> {
-	const profile = await getPlayerProfile(`profile:${discordId.trim()}`);
-	if (!profile?.githubUsername) return null;
+	const normalized = discordId.trim();
+	const profile = await getPlayerProfile(`profile:${normalized}`);
+	if (!profile?.discordUserId) return null;
 
-	const ledger = await getPackLedger(discordId.trim());
-	let sponsoredCents: number | null = null;
-	if (profile.isSponsor) {
-		try {
-			const donation = await getSponsorDonationInfo(profile.githubUsername);
-			sponsoredCents = sponsorCreditCentsFromDonation(donation);
-		} catch (error) {
-			console.warn(
-				`[sponsorPacks] Donation total unavailable for "${profile.githubUsername}": ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-			);
-		}
+	const [ledger, loaded, stored] = await Promise.all([
+		getPackLedger(normalized),
+		loadSponsorHistory({ discordId: normalized, githubUsername: profile.githubUsername }),
+		getStoredSponsorHistory(normalized).catch(() => null),
+	]);
+	let history: SponsorHistory | null = loaded.history;
+	if (loaded.errors.length > 0) {
+		console.warn(`[sponsorPacks] Donation history incomplete for ${normalized}: ${loaded.errors.join("; ")}`);
+		const failed = new Set(loaded.errors.map((error) => (error.startsWith("GitHub") ? "github" : "patreon")));
+		const kept = loaded.history.events.filter((event) => !failed.has(event.source));
+		const fallback = (stored?.events ?? []).filter((event) => failed.has(event.source));
+		history = stored || kept.length > 0 ? buildSponsorHistory([...kept, ...fallback], loaded.history.fetchedAtMs) : null;
+	} else {
+		await saveSponsorHistory(normalized, loaded.history).catch((error) =>
+			console.warn(`[sponsorPacks] Could not store donation history for ${normalized}:`, error),
+		);
 	}
 
+	const sponsoredCents = history ? history.totalCents : null;
 	return {
-		githubUsername: profile.githubUsername,
-		isSponsor: profile.isSponsor === true,
+		githubUsername: profile.githubUsername ?? "",
+		isSponsor: profile.isSponsor === true || (sponsoredCents ?? 0) > 0,
 		sponsoredCents,
+		...(history ? { history } : {}),
 		bonusCents: ledger.bonusCents,
 		usedCents: ledger.usedCents,
-		// Unknown donations only hide the GitHub-reported part; bonus credit is
-		// always spendable, so the balance stays computable when bonus > 0.
+		// Unknown donations only hide the donated part; bonus is always spendable.
 		balanceCents:
 			sponsoredCents === null
 				? (ledger.bonusCents > 0

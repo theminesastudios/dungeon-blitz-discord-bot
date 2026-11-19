@@ -1,8 +1,9 @@
 import type { CommandInteraction } from "@minesa-org/mini-interaction";
 import { getSponsorDonationInfo } from "../utils/githubSponsors.js";
+import { buildSponsorHistory, fetchGithubSponsorEvents, formatSponsorHistory } from "../utils/sponsorHistory.js";
 import { isAdministrator } from "../utils/discordInteractions.js";
 
-/** `/admin sponsor` — shows a GitHub sponsor's visible tier, status and estimated total. */
+/** `/admin sponsor` — shows a GitHub sponsor's tier, status, Royal Sigils and month-by-month history. */
 export async function handleSponsorInfo(interaction: CommandInteraction) {
   if (!isAdministrator(interaction)) {
     return interaction.reply({
@@ -14,7 +15,14 @@ export async function handleSponsorInfo(interaction: CommandInteraction) {
   interaction.deferReply({ flags: 64 });
 
   try {
-    const sponsorship = await getSponsorDonationInfo(githubUsername);
+    const [sponsorship, events] = await Promise.all([
+      getSponsorDonationInfo(githubUsername),
+      fetchGithubSponsorEvents(githubUsername).catch((error) => {
+        console.warn("[sponsor-info] Sponsor activity unavailable:", error);
+        return null;
+      }),
+    ]);
+    const history = events ? buildSponsorHistory(events, Date.now()) : null;
     if (!sponsorship) {
       return interaction.editReply({
         content: `No GitHub sponsorship information was found for **${githubUsername}**.`,
@@ -30,22 +38,12 @@ export async function handleSponsorInfo(interaction: CommandInteraction) {
     const startedAt = Math.floor(
       new Date(sponsorship.createdAt).getTime() / 1000,
     );
-    const estimatedTotal =
-      sponsorship.estimatedTotalInCents === null
-        ? "Not visible"
-        : `$${(sponsorship.estimatedTotalInCents / 100).toFixed(2)} USD`;
-    const totalLabel =
-      sponsorship.totalEstimateScope === "current-tier"
-        ? "Estimated total (current tier only)"
-        : sponsorship.totalEstimateScope === "one-time"
-          ? "Total donation"
-          : "Estimated total";
-
     return interaction.editReply({
       embeds: [
         {
           color: sponsorship.isActive ? 0x2da44e : 0x6e7781,
           title: `${sponsorship.githubUsername}'s sponsorship`,
+          description: (history ? formatSponsorHistory(history, 8) : ["Sponsor activity is not available right now."]).join("\n").slice(0, 4000),
           url: `https://github.com/${encodeURIComponent(sponsorship.githubUsername)}`,
           fields: [
             {
@@ -59,7 +57,11 @@ export async function handleSponsorInfo(interaction: CommandInteraction) {
               inline: true,
             },
             { name: "Amount", value: amount, inline: true },
-            { name: totalLabel, value: estimatedTotal, inline: true },
+            {
+              name: "Royal Sigils from GitHub",
+              value: history ? history.totalCents.toLocaleString("en-US") : "Not visible",
+              inline: true,
+            },
             {
               name: "Tier",
               value: sponsorship.tierName ?? "Not visible",
@@ -68,7 +70,7 @@ export async function handleSponsorInfo(interaction: CommandInteraction) {
             { name: "Started", value: `<t:${startedAt}:D>`, inline: true },
           ],
           footer: {
-            text: "Recurring totals are estimates from the visible tier and dates; GitHub does not expose a payment ledger.",
+            text: "$1 = 100 Royal Sigils. Monthly payments are counted from GitHub's sponsor activity: start, tier changes and cancellations.",
           },
         },
       ],
