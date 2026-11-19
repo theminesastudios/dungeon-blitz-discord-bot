@@ -6,6 +6,7 @@ import { waitUntil } from "@vercel/functions";
 import { mini } from "./interactions.js";
 import { updateDiscordMetadata } from "../src/utils/database.js";
 import { discordOAuthConfig } from "../src/utils/oauthConfig.js";
+import { renderGamePlayLink } from "../src/utils/gamePlay.js";
 import {
 	accountOAuthStateMatchesUser,
 	isAccountOAuthState,
@@ -84,7 +85,8 @@ function sendAccountPage(
 	res: any,
 	statusCode: number,
 	title: string,
-	message: string
+	message: string,
+	showPlayLink = false
 ) {
 	res.statusCode = statusCode;
 	res.setHeader("content-type", "text/html; charset=utf-8");
@@ -104,7 +106,7 @@ function sendAccountPage(
     p { line-height: 1.6; margin-bottom: 0; }
   </style>
 </head>
-<body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message).replaceAll("\n", "<br>")}</p></main></body>
+<body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message).replaceAll("\n", "<br>")}</p>${renderGamePlayLink(showPlayLink)}</main></body>
 </html>`);
 }
 
@@ -250,12 +252,13 @@ async function handleAccountOAuth(req: any, res: any) {
 		publishGameStatsInBackground(result.account.discordId);
 		const message = result.account.passwordConfigured
 			? `Your Discord account is already linked to ${result.account.email}. You can view it with /account view in Discord.`
-			: `Your account is ready with ${result.account.email}. Return to Discord and select “Set initial password” in the /account create message.`;
+			: `Your account is ready with ${result.account.email}. Return to Discord and select “Set password” in the /account create message to use password login, or play now using Discord login in-game.`;
 		sendAccountPage(
 			res,
 			200,
 			result.status === "created" ? "Your Dungeon Blitz account was created" : "Your Dungeon Blitz account is already linked",
-			message
+			message,
+			true
 		);
 	} catch (error) {
 		if (error instanceof GameAccountConflictError) {

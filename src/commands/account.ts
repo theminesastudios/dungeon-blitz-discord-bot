@@ -22,6 +22,7 @@ import {
   type PublicGameAccount,
 } from "../utils/gameAccount.js";
 import { createAccountOAuthUrl } from "../utils/accountOAuth.js";
+import { GAME_PLAY_URL, DISCORD_LOGIN_HINT } from "../utils/gamePlay.js";
 import { interactionDiscordId } from "../utils/discordInteractions.js";
 import {
   buildPortraitUrl,
@@ -644,6 +645,15 @@ export const accountPasswordButton = {
   },
 };
 
+export function buildPasswordSuccess(email: string, initialOnly: boolean) {
+  return notice(
+    COLORS.success,
+    initialOnly ? "Password set" : "Password reset",
+    `You can sign in to the game with **${email}**. ${DISCORD_LOGIN_HINT}`,
+    [buttonRow(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Play in browser").setURL(GAME_PLAY_URL))],
+  );
+}
+
 async function handlePasswordModal(interaction: ModalSubmitInteraction, initialOnly: boolean) {
   const discordId = interactionDiscordId(interaction);
   if (!discordId) return interaction.reply(errorNotice(UNVERIFIED_TEXT));
@@ -668,11 +678,7 @@ async function handlePasswordModal(interaction: ModalSubmitInteraction, initialO
     }
     return interaction.editReply(
       v2(
-        notice(
-          COLORS.success,
-          initialOnly ? "Password set" : "Password reset",
-          `You can sign in to the game with **${result.account.email}**.`,
-        ),
+        buildPasswordSuccess(result.account.email, initialOnly),
       ),
     );
   } catch (error) {
