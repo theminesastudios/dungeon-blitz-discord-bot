@@ -25,7 +25,7 @@ export async function handleMaintenance(interaction: CommandInteraction) {
       embeds: [
         {
           color: 0xf1c40f,
-          title: "🛠️ Maintenance warning started",
+          title: "Maintenance warning started",
           fields: [
             {
               name: "Countdown",

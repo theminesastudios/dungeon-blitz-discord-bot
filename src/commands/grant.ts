@@ -22,6 +22,7 @@ import type {
   ModalSubmitInteraction,
 } from "@minesa-org/mini-interaction";
 import { waitUntil } from "@vercel/functions";
+import { componentEmoji, emoji } from "../ui/emojis.js";
 import {
   applyGrant,
   findGrantCategory,
@@ -197,7 +198,7 @@ function categorySelectRow(
         new StringSelectMenuOptionBuilder()
           .setLabel(category.label)
           .setValue(category.id)
-          .setEmoji(category.emoji)
+          .setEmoji(componentEmoji(category.emoji))
           .setDefault(category.id === state.categoryId),
       ),
     );
@@ -270,12 +271,10 @@ function operationRow(state: OpState): ActionRowBuilder<MessageActionRowComponen
     new ButtonBuilder()
       .setCustomId(opCustomId(state, "add"))
       .setLabel("Add")
-      .setEmoji({ name: "➕" })
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
       .setCustomId(opCustomId(state, "remove"))
       .setLabel("Remove")
-      .setEmoji({ name: "➖" })
       .setStyle(ButtonStyle.Danger),
   );
 }
@@ -301,7 +300,7 @@ async function renderPanel(
   primeGameItemNames();
 
   const container = new ContainerBuilder().setAccentColor(ACCENT);
-  container.addComponent(text("## 🎁 Grant an item"));
+  container.addComponent(text("## Grant an item"));
   container.addComponent(
     text("-# Give or remove one specific thing on a player's game save."),
   );
@@ -377,7 +376,7 @@ async function renderPanel(
     text(
       [
         "**Step 3 · Add or remove**",
-        `-# ${category.emoji} ${category.label}${chosen}`,
+        `-# ${emoji(category.emoji)} ${category.label}${chosen}`,
         notice ? `-# ${notice}` : "",
       ]
         .filter(Boolean)
@@ -400,7 +399,7 @@ function resultContainer(
   );
   container.addComponent(
     text(
-      `## ${outcome.operation === "add" ? "✅ Grant applied" : "➖ Removal applied"}`,
+      `## ${outcome.operation === "add" ? "Grant applied" : "Removal applied"}`,
     ),
   );
   container.addComponent(separator());
@@ -421,7 +420,7 @@ function resultContainer(
 
 function errorContainer(message: string): ContainerBuilder {
   const container = new ContainerBuilder().setAccentColor(0xe74c3c);
-  container.addComponent(text("## ⚠️ Grant failed"));
+  container.addComponent(text("## Grant failed"));
   container.addComponent(separator());
   container.addComponent(text(message));
   container.addComponent(separator());
@@ -480,7 +479,7 @@ function outcomeToPanel(
 function reportGrant(fields: GameLogField[], failed: boolean) {
   const promise = publishGameLog({
     event: failed ? "admin-grant-failed" : "admin-grant",
-    title: failed ? "⚠️ Manual grant failed" : "🎁 Manual grant applied",
+    title: failed ? "Manual grant failed" : "Manual grant applied",
     fields,
   });
   try {
@@ -511,7 +510,7 @@ async function executeGrant(
     { name: "Player", value: `<@${input.targetId}>`, inline: true },
     {
       name: "Item",
-      value: category ? `${category.emoji} ${category.label}` : input.categoryId,
+      value: category ? `${emoji(category.emoji)} ${category.label}` : input.categoryId,
       inline: true,
     },
     ...(input.itemKey

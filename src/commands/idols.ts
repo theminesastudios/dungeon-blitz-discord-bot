@@ -5,6 +5,7 @@ import {
   formatCharacterLabel,
   searchGameWallets,
 } from "../utils/gameWallet.js";
+import { emoji } from "../ui/emojis.js";
 import { isAdministrator } from "../utils/discordInteractions.js";
 
 /** `/admin idols` — atomically adds or subtracts a player's Mammoth Idols. */
@@ -51,7 +52,7 @@ export async function handleIdols(interaction: CommandInteraction) {
       embeds: [
         {
           color: operation === "add" ? 0x2ecc71 : 0xe74c3c,
-          title: `${operation === "add" ? "➕" : "➖"} Mammoth Idols ${
+          title: `${emoji("item_mammoth_idol")} Mammoth Idols ${
             operation === "add" ? "added" : "removed"
           }`,
           description: `**${result.after.characterName}**`,

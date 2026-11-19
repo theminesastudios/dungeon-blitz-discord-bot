@@ -95,7 +95,7 @@ async function handleMailboxSubmit(interaction: ModalSubmitInteraction) {
 			embeds: [
 				{
 					color: 0x2ecc71,
-					title: `📬 Mailbox note #${result.id} sent`,
+					title: `Mailbox note #${result.id} sent`,
 					description: `**${result.title}** — ${result.date}\n\n${result.body.slice(0, 3_500)}`,
 					footer: { text: `${result.recipients} online player(s) notified` },
 				},
@@ -103,7 +103,7 @@ async function handleMailboxSubmit(interaction: ModalSubmitInteraction) {
 		});
 	} catch (error) {
 		logError("mailbox", "Mailbox note failed", { error: errorMessage(error) });
-		return interaction.editReply({ content: `❌ Not sent: ${errorMessage(error)}` });
+		return interaction.editReply({ content: `Not sent: ${errorMessage(error)}` });
 	}
 }
 

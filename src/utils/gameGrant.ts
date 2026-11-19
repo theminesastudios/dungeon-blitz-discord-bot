@@ -14,6 +14,7 @@ import {
   type MaterialRarity,
   type GameRewardsOutcome,
 } from "./gameRewards.js";
+import { emoji, type EmojiName } from "../ui/emojis.js";
 import { adjustGameMammothIdols, GameServerAdminError } from "./gameMaintenance.js";
 import { DYE_NAMES, MOUNT_NAMES, dyeLabel, mountLabel } from "./gameItemNames.js";
 
@@ -64,7 +65,7 @@ export type GrantShape = "currency" | "list" | "stack" | "set";
 export type GrantCategory = {
   id: GrantCategoryId;
   label: string;
-  emoji: string;
+  emoji: EmojiName;
   /** How the value lives in the save, which decides what the flow asks for next. */
   shape: GrantShape;
   /** Currency categories only. */
@@ -78,11 +79,11 @@ export type GrantCategory = {
 };
 
 export const GRANT_CATEGORIES: GrantCategory[] = [
-  { id: "gold", label: "Gold", emoji: "💰", shape: "currency", currencyField: "gold", unit: "gold" },
+  { id: "gold", label: "Gold", emoji: "item_gold", shape: "currency", currencyField: "gold", unit: "gold" },
   {
     id: "mammothIdols",
     label: "Mammoth Idols",
-    emoji: "🔮",
+    emoji: "item_mammoth_idol",
     shape: "currency",
     currencyField: "mammothIdols",
     unit: "Mammoth Idols",
@@ -90,7 +91,7 @@ export const GRANT_CATEGORIES: GrantCategory[] = [
   {
     id: "dragonKeys",
     label: "Dragon Keys",
-    emoji: "🗝️",
+    emoji: "cur_dragon_key",
     shape: "currency",
     currencyField: "DragonKeys",
     unit: "Dragon Keys",
@@ -98,7 +99,7 @@ export const GRANT_CATEGORIES: GrantCategory[] = [
   {
     id: "dragonOre",
     label: "Dragon Ore",
-    emoji: "⛏️",
+    emoji: "cur_dragon_ore",
     shape: "currency",
     currencyField: "DragonOre",
     unit: "Dragon Ore",
@@ -106,7 +107,7 @@ export const GRANT_CATEGORIES: GrantCategory[] = [
   {
     id: "silverSigils",
     label: "Silver Sigils",
-    emoji: "🪙",
+    emoji: "item_silver_sigil",
     shape: "currency",
     currencyField: "SilverSigils",
     unit: "Silver Sigils",
@@ -114,25 +115,25 @@ export const GRANT_CATEGORIES: GrantCategory[] = [
   {
     id: "royalSigils",
     label: "Royal Sigils",
-    emoji: "👑",
+    emoji: "item_royal_sigil",
     shape: "currency",
     currencyField: "RoyalSigils",
     unit: "Royal Sigils",
   },
-  { id: "mount", label: "Mount", emoji: "🐴", shape: "list", unit: "mount", single: true },
-  { id: "dye", label: "Legendary Dye", emoji: "🎨", shape: "list", unit: "dye", single: true },
-  { id: "lockbox", label: "Trove Chest", emoji: "📦", shape: "stack", unit: "Trove Chests" },
-  { id: "consumable", label: "Potion", emoji: "🧪", shape: "stack", unit: "potions" },
-  { id: "gear", label: "All class gear", emoji: "🗡️", shape: "set", unit: "gear pieces", single: true },
+  { id: "mount", label: "Mount", emoji: "item_mount", shape: "list", unit: "mount", single: true },
+  { id: "dye", label: "Legendary Dye", emoji: "item_dye_legendary", shape: "list", unit: "dye", single: true },
+  { id: "lockbox", label: "Trove Chest", emoji: "item_trove_chest", shape: "stack", unit: "Trove Chests" },
+  { id: "consumable", label: "Potion", emoji: "item_potion_exp", shape: "stack", unit: "potions" },
+  { id: "gear", label: "All class gear", emoji: "class_rogue", shape: "set", unit: "gear pieces", single: true },
   {
     id: "materials",
     label: "Materials",
-    emoji: "🧱",
+    emoji: "item_potion_material",
     shape: "stack",
     unit: "materials",
     amountPrompt: "How many of each material?",
   },
-  { id: "xp", label: "Experience", emoji: "✨", shape: "currency", currencyField: "xp", unit: "XP" },
+  { id: "xp", label: "Experience", emoji: "ui_level", shape: "currency", currencyField: "xp", unit: "XP" },
 ];
 
 export function findGrantCategory(id: string): GrantCategory | null {
@@ -480,23 +481,23 @@ export function formatGrantLine(outcome: Extract<GrantOutcome, { status: "ok" }>
   const sign = outcome.operation === "add" ? "+" : "−";
   const item = outcome.itemLabel ? ` ${outcome.itemLabel}` : ` ${outcome.category.unit}`;
   if (outcome.category.shape === "list") {
-    return `${outcome.category.emoji} ${sign}${item.trim()}${outcome.unchanged ? " (already set)" : ""}`;
+    return `${emoji(outcome.category.emoji)} ${sign}${item.trim()}${outcome.unchanged ? " (already set)" : ""}`;
   }
   const delta = Math.abs(outcome.afterValue - outcome.beforeValue).toLocaleString();
   if (outcome.category.shape === "set") {
-    return `${outcome.category.emoji} ${sign}${delta}${item}${outcome.unchanged ? " (nothing to change)" : " pieces"}`;
+    return `${emoji(outcome.category.emoji)} ${sign}${delta}${item}${outcome.unchanged ? " (nothing to change)" : " pieces"}`;
   }
   const level =
     outcome.levelBefore !== undefined && outcome.levelAfter !== undefined && outcome.levelBefore !== outcome.levelAfter
       ? ` (Lv ${outcome.levelBefore} → ${outcome.levelAfter})`
       : "";
-  return `${outcome.category.emoji} ${sign}${delta}${item}${level}`;
+  return `${emoji(outcome.category.emoji)} ${sign}${delta}${item}${level}`;
 }
 
 /** The resulting value in the save, phrased for a human. */
 export function formatGrantValue(outcome: Extract<GrantOutcome, { status: "ok" }>): string {
   if (outcome.category.shape === "list") {
-    return outcome.afterValue > 0 ? "owned ✅" : "not owned ❌";
+    return outcome.afterValue > 0 ? "owned" : "not owned";
   }
   if (outcome.category.shape === "set") {
     const total = outcome.total !== undefined ? ` of ${outcome.total.toLocaleString()}` : "";

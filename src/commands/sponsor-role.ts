@@ -146,10 +146,10 @@ export async function handleSponsorRole(interaction: CommandInteraction) {
 
 	if (profileWriteFailed) {
 		lines.push(
-			"❌ Their stored profile could not be updated, so sponsor packs and credit are still locked for them."
+			"Their stored profile could not be updated, so sponsor packs and credit are still locked for them."
 		);
 	} else if (remove) {
-		lines.push("ℹ️ Their profile is no longer marked as a sponsor.");
+		lines.push("Their profile is no longer marked as a sponsor.");
 	} else {
 		lines.push(
 			`Their profile is marked as a sponsor of **${matchedTarget ?? "the studio"}**, so sponsor packs and credit are unlocked.`
@@ -166,11 +166,11 @@ export async function handleSponsorRole(interaction: CommandInteraction) {
 		);
 	} else if (alreadyHasRole) {
 		lines.push(
-			`✅ ${mention} already has the <@&${roleId}> role, so nothing else is needed — Discord keeps it as long as their metadata keeps claiming it.`
+			`${mention} already has the <@&${roleId}> role, so nothing else is needed — Discord keeps it as long as their metadata keeps claiming it.`
 		);
 	} else {
 		lines.push(
-			`ℹ️ ${mention} does not have the <@&${roleId}> role yet. It is a **linked role**, so Discord grants it from the metadata below — they get it as soon as they authorize their account, and they can also claim it themselves from their profile.`
+			`${mention} does not have the <@&${roleId}> role yet. It is a **linked role**, so Discord grants it from the metadata below — they get it as soon as they authorize their account, and they can also claim it themselves from their profile.`
 		);
 	}
 

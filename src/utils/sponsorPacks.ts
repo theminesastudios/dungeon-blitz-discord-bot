@@ -18,6 +18,7 @@ import {
 	listGameSaveCharacters,
 	type GameSaveCharacterRef,
 } from "./gameRewards.js";
+import type { EmojiName } from "../ui/emojis.js";
 import { getSponsorDonationInfo, type SponsorDonationInfo } from "./githubSponsors.js";
 
 export type { GameCharacterOption } from "./gameRewards.js";
@@ -210,7 +211,7 @@ export type SponsorPack = {
 	id: string;
 	name: string;
 	priceCents: number;
-	emoji: string;
+	emoji: EmojiName;
 	color: number;
 	items: string[];
 	/** Banner image displayed in the pack shop. */
@@ -256,7 +257,7 @@ export const SPONSOR_PACKS: SponsorPack[] = [
 		id: "sponsor",
 		name: "Sponsor Pack",
 		priceCents: 0,
-		emoji: "🐴",
+		emoji: "item_mount",
 		color: 0xf1f1f1,
 		items: ["1 random non-exclusive mount", "10,000 golds"],
 		imageUrl: packImageUrl("sponsor"),
@@ -266,7 +267,7 @@ export const SPONSOR_PACKS: SponsorPack[] = [
 		id: "booster",
 		name: "Booster Pack",
 		priceCents: 0,
-		emoji: "💎",
+		emoji: "item_trove_chest",
 		color: 0xf47fff,
 		items: ["2 trove chests", "2 trove keys", "10,000 golds", "1 EXP potion"],
 		imageUrl: packImageUrl("booster"),
@@ -276,7 +277,7 @@ export const SPONSOR_PACKS: SponsorPack[] = [
 		id: "supporter",
 		name: "Supporter Pack",
 		priceCents: 300,
-		emoji: "🗝️",
+		emoji: "cur_dragon_key",
 		color: 0x4fc3f7,
 		items: [
 			"3 trove keys",
@@ -290,7 +291,7 @@ export const SPONSOR_PACKS: SponsorPack[] = [
 		id: "adventurer",
 		name: "Adventurer Pack",
 		priceCents: 1_000,
-		emoji: "⚔️",
+		emoji: "item_mount_exclusive",
 		color: 0xe2582b,
 		items: [
 			"10 trove keys",
@@ -306,7 +307,7 @@ export const SPONSOR_PACKS: SponsorPack[] = [
 		id: "hero",
 		name: "Hero Pack",
 		priceCents: 2_500,
-		emoji: "🛡️",
+		emoji: "item_dye_legendary",
 		color: 0x2c3e50,
 		items: [
 			"25 trove keys",
@@ -326,7 +327,7 @@ export const SPONSOR_PACKS: SponsorPack[] = [
 		id: "champions",
 		name: "Champions' Pack",
 		priceCents: 10_000,
-		emoji: "🏆",
+		emoji: "cur_royal_sigil",
 		color: 0x0e8f6e,
 		items: [
 			"50 trove keys",
@@ -350,17 +351,14 @@ export function findSponsorPack(packId: string): SponsorPack | null {
 	return SPONSOR_PACKS.find((pack) => pack.id === packId) ?? null;
 }
 
-/** Shop currency icon. One credit is one cent of donation, so $1 donated is 100 credits. */
-export const CREDIT_EMOJI = "🪙";
-
 /** A credit amount as a bare number: `1,250`. Balances are stored in cents, one cent per credit. */
 export function formatCreditAmount(cents: number): string {
 	return cents.toLocaleString("en-US");
 }
 
-/** A credit amount for players: `🪙 1,250 credits`. */
+/** A credit amount for players: `1,250 credits`. One credit is one cent of donation. */
 export function formatCredits(cents: number): string {
-	return `${CREDIT_EMOJI} ${formatCreditAmount(cents)} ${cents === 1 ? "credit" : "credits"}`;
+	return `${formatCreditAmount(cents)} ${cents === 1 ? "credit" : "credits"}`;
 }
 
 /**

@@ -5,7 +5,6 @@ import {
   addCreditsToPlayer,
   removeCreditsFromPlayer,
   formatCredits,
-  CREDIT_EMOJI,
 } from "../utils/sponsorPacks.js";
 import { interactionDiscordId, isAdministrator } from "../utils/discordInteractions.js";
 
@@ -82,7 +81,7 @@ export async function handleAddCredits(interaction: CommandInteraction) {
       embeds: [
         {
           color: 0x2ecc71,
-          title: `${CREDIT_EMOJI} Credits added`,
+          title: "Credits added",
           fields: [
             { name: "Player", value: `<@${targetDiscordId}>`, inline: true },
             { name: "Added", value: `${formatCredits(result.cents)} (${dollarLabel})`, inline: true },
@@ -133,7 +132,7 @@ async function removeCredits(
     embeds: [
       {
         color: 0xe74c3c,
-        title: `${CREDIT_EMOJI} Credits removed`,
+        title: "Credits removed",
         fields: [
           { name: "Player", value: `<@${targetDiscordId}>`, inline: true },
           { name: "Removed", value: `${formatCredits(result.cents)} (${dollarLabel})`, inline: true },

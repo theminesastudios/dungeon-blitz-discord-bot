@@ -20,6 +20,7 @@ import {
 	NON_EXCLUSIVE_MOUNT_IDS,
 } from "../src/utils/sponsorPacks.js";
 import { requestGameRewards } from "../src/utils/gameRewards.js";
+import { emoji } from "../src/ui/emojis.js";
 import {
 	BAN_DURATION_CHOICES,
 	banDurationSeconds,
@@ -201,7 +202,7 @@ assert.equal(isAdministrator({ member: { permissions: "8" } }), true);
 	const gearOutcome = grantOutcomeFromGame(gearAnswer, 14, { category: gear, operation: "add", amount: 1, itemKey: "2", itemLabel: "Legendary gear" });
 	assert.equal(gearOutcome.status, "ok");
 	if (gearOutcome.status === "ok") {
-		assert.equal(formatGrantLine(gearOutcome), "🗡️ +390 Legendary gear pieces");
+		assert.equal(formatGrantLine(gearOutcome), `${emoji("class_rogue")} +390 Legendary gear pieces`);
 		assert.equal(formatGrantValue(gearOutcome), "394 of 394 pieces at this tier");
 	}
 
@@ -212,7 +213,7 @@ assert.equal(isAdministrator({ member: { permissions: "8" } }), true);
 	const xpOutcome = grantOutcomeFromGame(xpAnswer, 14, { category: xp, operation: "add", amount: 5_000 });
 	assert.equal(xpOutcome.status, "ok");
 	if (xpOutcome.status === "ok") {
-		assert.equal(formatGrantLine(xpOutcome), "✨ +5,000 XP (Lv 2 → 9)");
+		assert.equal(formatGrantLine(xpOutcome), `${emoji("ui_level")} +5,000 XP (Lv 2 → 9)`);
 		assert.equal(formatGrantValue(xpOutcome), "5,100 XP · Lv 9");
 	}
 

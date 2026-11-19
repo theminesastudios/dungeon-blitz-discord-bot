@@ -70,9 +70,9 @@ function testViewShowsValuesButNoSecret(): void {
 	const components = componentsOf(buildEnvViewContainer(env()));
 	const text = textOf(components);
 	assert.match(text, /\*\*SERVER_LOGS\*\* `on`/);
-	assert.match(text, /\*\*MONGODB_URI\*\* •••• \*\(secret, hidden\)\* 🔒/, "a secret is shown as set, never by value");
-	assert.match(text, /\*\*DEPLOY_BRANCH\*\* `main` 🔒/);
-	assert.match(text, /⏳ running `release\/2026-10-29` — restart to apply/);
+	assert.match(text, /\*\*MONGODB_URI\*\* •••• \*\(secret, hidden\)\* \*\(locked\)\*/, "a secret is shown as set, never by value");
+	assert.match(text, /\*\*DEPLOY_BRANCH\*\* `main` \*\(locked\)\*/);
+	assert.match(text, /running `release\/2026-10-29` — restart to apply/);
 	assert.deepEqual(buttonsOf(components), [], "nothing is owed, so no restart is offered");
 
 	const pending = componentsOf(buildEnvViewContainer(env({ restartPending: true })));
@@ -104,7 +104,7 @@ function testViewShowsValuesButNoSecret(): void {
 
 function testChangeSaysWhetherARestartIsOwed(): void {
 	const set = componentsOf(buildEnvChangeContainer(change()));
-	assert.match(textOf(set), /✅ \*\*SERVER_LOGS\*\* set to `off`\./);
+	assert.match(textOf(set), /\*\*SERVER_LOGS\*\* set to `off`\./);
 	assert.match(textOf(set), /was `on`/);
 	assert.match(textOf(set), /Applies at the next restart/);
 	assert.deepEqual(buttonsOf(set).map((button) => button.label), ["Restart to release/2026-10-29 in 5 min", "Open /server"]);

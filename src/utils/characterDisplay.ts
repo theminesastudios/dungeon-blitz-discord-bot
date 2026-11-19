@@ -47,7 +47,7 @@ export function disciplineName(character: Pick<GameWalletSummary, "characterMast
 
 /**
  * The small grey line under a character's name:
- * `-# ⭐ Level 50 · 🔮 Mage · 🔥 Flameseer`.
+ * `-# Level 50 · Mage · Flameseer`.
  */
 export function characterSubtitle(character: GameWalletSummary): string {
 	const parts = [`${emoji("ui_level")} Level ${character.characterLevel}`];

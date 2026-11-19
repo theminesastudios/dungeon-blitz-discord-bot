@@ -3,66 +3,65 @@ import { EMOJI_IDS } from "./emojiIds.js";
 
 /**
  * Game icons uploaded as application emojis: `scripts/sync-emojis.ts` uploads the PNGs in
- * `assets/emojis/` (exported from the client SWFs with FFDec) and writes `emojiIds.ts`.
- *
- * Every icon has a unicode fallback, so a fresh deployment — or one whose application has
- * not had the emojis uploaded yet — still renders something sensible instead of `:name:`.
+ * `assets/emojis/` and writes `emojiIds.ts`. The bot uses no unicode emojis: an icon that has
+ * not been uploaded yet renders as nothing.
  */
-const FALLBACKS = {
-	class_mage: "🔮",
-	class_rogue: "🗡️",
-	class_paladin: "🛡️",
-	disc_executioner: "🪓",
-	disc_shadowwalker: "🌑",
-	disc_soulthief: "👻",
-	disc_sentinel: "🏰",
-	disc_justicar: "⚖️",
-	disc_templar: "✝️",
-	disc_frostwarden: "❄️",
-	disc_flameseer: "🔥",
-	disc_necromancer: "💀",
-	cur_gold: "💰",
-	cur_idol: "🗿",
-	cur_dragon_key: "🗝️",
-	cur_dragon_ore: "⛏️",
-	cur_silver_sigil: "🪙",
-	cur_royal_sigil: "👑",
-	item_gold: "💰",
-	item_silver_sigil: "🪙",
-	item_trove_chest: "📦",
-	item_dye_legendary: "🎨",
-	item_dye_rare: "🎨",
-	item_potion_exp: "🧪",
-	item_potion_gear: "🧪",
-	item_potion_gold: "🧪",
-	item_potion_material: "🧪",
-	item_mount: "🐴",
-	item_mount_exclusive: "🐉",
-	item_pet: "🐾",
-	ui_level: "⭐",
-	ui_quest: "📜",
-	ui_character: "👤",
-	ui_rename: "✏️",
-	ui_delete: "🗑️",
-} as const;
+const EMOJI_NAMES = [
+	"class_mage",
+	"class_rogue",
+	"class_paladin",
+	"disc_executioner",
+	"disc_shadowwalker",
+	"disc_soulthief",
+	"disc_sentinel",
+	"disc_justicar",
+	"disc_templar",
+	"disc_frostwarden",
+	"disc_flameseer",
+	"disc_necromancer",
+	"cur_gold",
+	"cur_idol",
+	"cur_dragon_key",
+	"cur_dragon_ore",
+	"cur_silver_sigil",
+	"cur_royal_sigil",
+	"item_gold",
+	"item_silver_sigil",
+	"item_trove_chest",
+	"item_dye_legendary",
+	"item_dye_rare",
+	"item_potion_exp",
+	"item_potion_gear",
+	"item_potion_gold",
+	"item_potion_material",
+	"item_mount",
+	"item_mount_exclusive",
+	"item_pet",
+	"ui_level",
+	"ui_quest",
+	"ui_character",
+	"ui_delete",
+	"item_mammoth_idol",
+	"item_royal_sigil",
+] as const;
 
-export type EmojiName = keyof typeof FALLBACKS;
+export type EmojiName = (typeof EMOJI_NAMES)[number];
 
 function uploadedId(name: EmojiName): string | null {
 	const id = String(EMOJI_IDS[name] ?? "").trim();
 	return /^\d{15,25}$/.test(id) ? id : null;
 }
 
-/** Inline form for text: `<:cur_gold:123>` or the unicode fallback. */
+/** Inline form for text: `<:cur_gold:123>`, or empty when the icon is not uploaded. */
 export function emoji(name: EmojiName): string {
 	const id = uploadedId(name);
-	return id ? `<:${name}:${id}>` : FALLBACKS[name];
+	return id ? `<:${name}:${id}>` : "";
 }
 
 /** Component form for buttons and select options. */
-export function componentEmoji(name: EmojiName): APIMessageComponentEmoji {
+export function componentEmoji(name: EmojiName): APIMessageComponentEmoji | undefined {
 	const id = uploadedId(name);
-	return id ? { id, name } : { name: FALLBACKS[name] };
+	return id ? { id, name } : undefined;
 }
 
 const CLASS_EMOJI: Record<string, EmojiName> = {
@@ -76,7 +75,7 @@ export function classEmoji(characterClass: string): string {
 	return emoji(CLASS_EMOJI[characterClass.trim().toLowerCase()] ?? "ui_character");
 }
 
-export function classComponentEmoji(characterClass: string): APIMessageComponentEmoji {
+export function classComponentEmoji(characterClass: string): APIMessageComponentEmoji | undefined {
 	return componentEmoji(CLASS_EMOJI[characterClass.trim().toLowerCase()] ?? "ui_character");
 }
 

@@ -132,7 +132,7 @@ export default async function handler(req: any, res: any) {
 
 		const log = await publishGameLog({
 			event: "deploy-scheduled",
-			title: dryRun ? "🧪 Scheduled restart rehearsal" : undefined,
+			title: dryRun ? "Scheduled restart rehearsal" : undefined,
 			message: dryRun
 				? `The daily restart would redeploy \`${result.branch}\` at ${result.restartAt}. Nothing was scheduled.`
 				: `Redeploying \`${result.branch}\` at ${result.restartAt}. The game server warned ${result.recipients} connected player(s).`,

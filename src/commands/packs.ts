@@ -19,7 +19,6 @@ import type {
 import {
 	SPONSOR_PACKS,
 	formatCredits,
-	CREDIT_EMOJI,
 	purchaseSponsorPack,
 	findSponsorPack,
 	getFreePackStatus,
@@ -50,7 +49,7 @@ import {
 } from "../utils/gameLogChannel.js";
 import { waitUntil } from "@vercel/functions";
 import { buttonRow, COLORS, divider, text } from "../ui/containers.js";
-import { classComponentEmoji, emoji, type EmojiName } from "../ui/emojis.js";
+import { classComponentEmoji, componentEmoji, emoji, type EmojiName } from "../ui/emojis.js";
 
 const BUY_BUTTON_PREFIX = "packs:buy:";
 const PACK_SELECT_ID = "packs:view";
@@ -85,7 +84,7 @@ function buildPackSelectRow(defaultId?: string) {
 				new StringSelectMenuOptionBuilder()
 					.setLabel(`${pack.name} · ${packPriceLabel(pack)}`)
 					.setValue(pack.id)
-					.setEmoji(pack.emoji)
+					.setEmoji(componentEmoji(pack.emoji))
 					.setDescription(packTerms(pack))
 					.setDefault(pack.id === defaultId),
 			),
@@ -129,17 +128,17 @@ function statusLine(status: FreePackStatus | null): string | null {
 	if (!status) return null;
 	switch (status.kind) {
 		case "eligible":
-			return "✅ You can claim this pack.";
+			return "You can claim this pack.";
 		case "claimed":
-			return "📦 You have already claimed this pack.";
+			return "You have already claimed this pack.";
 		case "missing-role":
-			return `🔒 You need the <@&${status.roleId}> role to claim this pack.`;
+			return `You need the <@&${status.roleId}> role to claim this pack.`;
 		case "boosting": {
 			if (status.boostedDays === null) {
-				return `🔒 Boost the server and keep it for ${status.requiredDays} days to unlock this pack.`;
+				return `Boost the server and keep it for ${status.requiredDays} days to unlock this pack.`;
 			}
 			const left = status.requiredDays - status.boostedDays;
-			return `⏳ You have boosted for ${status.boostedDays} of ${status.requiredDays} days. ${left} more ${left === 1 ? "day" : "days"} to go.`;
+			return `You have boosted for ${status.boostedDays} of ${status.requiredDays} days. ${left} more ${left === 1 ? "day" : "days"} to go.`;
 		}
 	}
 }
@@ -165,7 +164,7 @@ function buildPackContainer(
 	container.addComponent(
 		text(
 			[
-				`## ${pack.emoji} ${pack.name}`,
+				`## ${emoji(pack.emoji)} ${pack.name}`,
 				`**${packPriceLabel(pack)}** · ${packTerms(pack)}`,
 				...(status_ ? [status_] : []),
 			].join("\n"),
@@ -224,16 +223,16 @@ function buildPackContainer(
 function buildShopContainer(): ContainerBuilder {
 	const container = new ContainerBuilder().setAccentColor(COLORS.warning);
 	const line = (pack: SponsorPack) =>
-		`${pack.emoji} **${pack.name}** · ${pack.priceCents === 0 ? packTerms(pack).replace(" · once per player", "") : packPriceLabel(pack)}`;
+		`${emoji(pack.emoji)} **${pack.name}** · ${pack.priceCents === 0 ? packTerms(pack).replace(" · once per player", "") : packPriceLabel(pack)}`;
 	const free = SPONSOR_PACKS.filter((pack) => pack.priceCents === 0);
 	const paid = SPONSOR_PACKS.filter((pack) => pack.priceCents > 0);
 
 	container.addComponent(
 		text(
 			[
-				"## 🛍️ Pack Shop",
+				"## Pack Shop",
 				"-# Rewards go straight into the character you pick, the moment you buy.",
-				`-# ${CREDIT_EMOJI} Every $1 donated gives you 100 credits to spend here.`,
+				`-# Every $1 donated gives you 100 credits to spend here.`,
 			].join("\n"),
 		),
 	);
@@ -242,7 +241,7 @@ function buildShopContainer(): ContainerBuilder {
 		text(["### Free, once per player", ...free.map(line)].join("\n")),
 	);
 	container.addComponent(
-		text([`### Paid with ${CREDIT_EMOJI} credits`, ...paid.map(line)].join("\n")),
+		text(["### Paid with credits", ...paid.map(line)].join("\n")),
 	);
 	container.addComponent(divider());
 	container.addComponent(buildPackSelectRow());
@@ -306,10 +305,10 @@ function buildDeliverySummary(deliveries: PackRewardDeliveryResult[]): string[] 
 			continue;
 		}
 		const line = `${rewardIcon(reward)} ${formatRewardLine(reward)}`;
-		lines.push(outcome.status === "delivered" ? line : `${line} · ⚠️ not delivered`);
+		lines.push(outcome.status === "delivered" ? line : `${line} · not delivered`);
 	}
 	if (deliveries.some((outcome) => outcome.status !== "delivered")) {
-		lines.push("-# Something marked ⚠️ did not reach your save. Staff have been notified and will add it by hand.");
+		lines.push("-# Anything marked \"not delivered\" did not reach your save. Staff have been notified and will add it by hand.");
 	}
 	return lines;
 }
@@ -331,7 +330,7 @@ function buildPurchasedContainer(
 	container.addComponent(
 		text(
 			[
-				`## ✅ ${pack.name} delivered${characterName ? ` to ${characterName}` : ""}`,
+				`## ${emoji(pack.emoji)} ${pack.name} delivered${characterName ? ` to ${characterName}` : ""}`,
 				paidLine,
 			].join("\n"),
 		),
@@ -364,17 +363,17 @@ function reportPurchase(payload: GameLogPayload) {
 }
 
 /** Pretty labels for the outcome states, so the log never shows a raw `missing-role`. */
-const PURCHASE_STATUS: Record<string, { emoji: string; label: string }> = {
-	ok: { emoji: "✅", label: "Delivered" },
-	insufficient: { emoji: "💸", label: "Not enough credits" },
-	"missing-role": { emoji: "🎟️", label: "Sponsor role required" },
-	"not-boosting": { emoji: "💎", label: "Not boosting long enough" },
-	"already-claimed": { emoji: "📦", label: "Already claimed" },
-	"no-character": { emoji: "❌", label: "Delivery failed — refunded" },
-	"credit-unknown": { emoji: "⚠️", label: "Credits could not be verified" },
-	conflict: { emoji: "🔁", label: "Balance changed mid-purchase" },
-	"not-sponsor": { emoji: "🙅", label: "Not a sponsor" },
-	"no-profile": { emoji: "🔗", label: "Not linked" },
+const PURCHASE_STATUS: Record<string, string> = {
+	ok: "Delivered",
+	insufficient: "Not enough credits",
+	"missing-role": "Sponsor role required",
+	"not-boosting": "Not boosting long enough",
+	"already-claimed": "Already claimed",
+	"no-character": "Delivery failed — refunded",
+	"credit-unknown": "Credits could not be verified",
+	conflict: "Balance changed mid-purchase",
+	"not-sponsor": "Not a sponsor",
+	"no-profile": "Not linked",
 };
 
 /**
@@ -387,17 +386,14 @@ function purchaseLogCard(
 	discordId: string,
 	packId: string,
 ): GameLogPayload {
-	const status = PURCHASE_STATUS[result.status] ?? {
-		emoji: "ℹ️",
-		label: result.status,
-	};
+	const status = PURCHASE_STATUS[result.status] ?? result.status;
 	const fields: GameLogField[] = [
 		{ name: "Player", value: `<@${discordId}>`, inline: true },
 	];
 	if ("pack" in result) {
 		fields.push({
 			name: "Pack",
-			value: `${result.pack.emoji} ${result.pack.name}`,
+			value: `${emoji(result.pack.emoji)} ${result.pack.name}`,
 			inline: true,
 		});
 		fields.push({
@@ -460,7 +456,7 @@ function purchaseLogCard(
 					`- ${formatRewardLine(outcome.delivery.reward)} → ${outcome.error ?? "not delivered"}`,
 			);
 		if (missed.length > 0) {
-			fields.push({ name: "⚠️ Not delivered", value: missed.join("\n") });
+			fields.push({ name: "Not delivered", value: missed.join("\n") });
 		}
 	} else if (result.status === "insufficient") {
 		fields.push({
@@ -480,7 +476,7 @@ function purchaseLogCard(
 
 	return {
 		event: `pack-purchase-${result.status}`,
-		title: `${status.emoji} Pack purchase — ${status.label}`,
+		title: `Pack purchase — ${status}`,
 		...(message ? { message } : {}),
 		fields,
 	};
@@ -492,7 +488,7 @@ function buildPurchaseSummary(
 	deliveries: PackRewardDeliveryResult[],
 ): string {
 	return [
-		`### ${pack.emoji} ${pack.name} purchased!${pack.priceCents === 0 ? " (free claim)" : ""}`,
+		`### ${emoji(pack.emoji)} ${pack.name} purchased!${pack.priceCents === 0 ? " (free claim)" : ""}`,
 		`**Price:** ${packPriceLabel(pack)}`,
 		...(pack.requiredBoostDays !== undefined
 			? []
@@ -601,7 +597,7 @@ async function respondWithPurchase(
 			// back and the Sponsor Pack claim is released, so nothing was lost.
 			return editReply({
 				content: [
-					`❌ The **${result.pack.name}** could not be delivered — ${result.reason}`,
+					`The **${result.pack.name}** could not be delivered — ${result.reason}`,
 					result.pack.priceCents === 0
 						? "Your claim was released; try again once you have an unlocked character."
 						: "You were not charged; your balance is unchanged.",
@@ -652,7 +648,7 @@ async function handleBuy(
 		// message, so the operator log carries the real error.
 		reportPurchase({
 			event: "pack-purchase-error",
-			title: "🛑 Pack purchase failed",
+			title: "Pack purchase failed",
 			fields: [
 				{ name: "Player", value: `<@${discordId}>`, inline: true },
 				{ name: "Pack", value: packId, inline: true },

@@ -16,6 +16,8 @@ import {
 	type DiscordConnection,
 } from "../utils/discordConnections.js";
 
+import { emoji, type EmojiName } from "../ui/emojis.js";
+
 /**
  * `/authorize` is how a player connects their Discord account to the game's Discord surfaces:
  * the Game Stats widget on their profile, and the Social SDK's friends, rich presence, lobbies
@@ -29,18 +31,19 @@ import {
  * `prompt=consent`.
  */
 
-const CONNECTION_EMOJI: Record<string, string> = {
-	widget: "🎮",
-	presence: "👥",
-	lobbies: "💬",
-	everything: "✅",
+const CONNECTION_EMOJI: Record<string, EmojiName> = {
+	widget: "ui_level",
+	presence: "ui_character",
+	lobbies: "ui_quest",
+	everything: "cur_royal_sigil",
 };
 
 const WIDGET_STEPS =
 	"After you authorize, add it in Discord: open your profile → **Add Widget** → **Dungeon Blitz** → **Add to profile**.";
 
 function connectionEmoji(connection: DiscordConnection): string {
-	return CONNECTION_EMOJI[connection.id] ?? "•";
+	const name = CONNECTION_EMOJI[connection.id];
+	return name ? emoji(name) : "•";
 }
 
 function connectionBlock(connection: DiscordConnection): string {

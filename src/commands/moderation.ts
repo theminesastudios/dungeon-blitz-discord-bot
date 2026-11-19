@@ -79,7 +79,7 @@ export async function handleBan(interaction: CommandInteraction) {
       bannedByDiscordId: actorId,
     });
 
-    reportModeration("game-ban", `🔨 Game ban applied — ${durationLabel}`, [
+    reportModeration("game-ban", `Game ban applied — ${durationLabel}`, [
       { name: "Player", value: `<@${targetId}>`, inline: true },
       { name: "Game user", value: String(result.userId), inline: true },
       { name: "Duration", value: durationLabel, inline: true },
@@ -114,7 +114,7 @@ export async function handleBan(interaction: CommandInteraction) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("[moderation] Ban failed:", error);
-    reportModeration("game-ban-error", "⚠️ Game ban failed", [
+    reportModeration("game-ban-error", "Game ban failed", [
       { name: "Player", value: `<@${targetId}>`, inline: true },
       { name: "Duration", value: durationLabel, inline: true },
       { name: "Error", value: message.slice(0, 1000) },
@@ -148,7 +148,7 @@ export async function handleUnban(interaction: CommandInteraction) {
       unbannedByDiscordId: actorId,
     });
 
-    reportModeration("game-unban", "✅ Game ban lifted", [
+    reportModeration("game-unban", "Game ban lifted", [
       { name: "Player", value: `<@${targetId}>`, inline: true },
       { name: "Game user", value: String(result.userId), inline: true },
       ...(reason ? [{ name: "Reason", value: reason }] : []),
@@ -168,7 +168,7 @@ export async function handleUnban(interaction: CommandInteraction) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("[moderation] Unban failed:", error);
-    reportModeration("game-unban-error", "⚠️ Game unban failed", [
+    reportModeration("game-unban-error", "Game unban failed", [
       { name: "Player", value: `<@${targetId}>`, inline: true },
       { name: "Error", value: message.slice(0, 1000) },
     ]);
