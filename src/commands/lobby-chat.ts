@@ -82,7 +82,7 @@ export function buildLobbyChatStateEmbed(
 		description?: string;
 		footer?: { text: string };
 	} = {
-		title: "💬 Lobby chat channel",
+		title: "Lobby chat channel",
 	},
 ) {
 	const linked = Boolean(state.channelId);
@@ -144,7 +144,7 @@ export function buildLobbyChatMoveEmbed(
 	if (result.outcome === "moved") {
 		const { state } = result;
 		return buildLobbyChatStateEmbed(state, {
-			title: "✅ Lobby chat moved",
+			title: "Lobby chat moved",
 			color: state.channelId ? LINKED_COLOR : UNLINKED_COLOR,
 			description: state.channelId
 				? `Lobby linked to <#${state.channelId}>. Players now speak there as themselves through the game.`
@@ -158,7 +158,7 @@ export function buildLobbyChatMoveEmbed(
 	if (result.outcome === "unknown") {
 		return {
 			color: UNKNOWN_COLOR,
-			title: "⚠️ Lobby chat move: outcome unknown",
+			title: "Lobby chat move: outcome unknown",
 			description: `${result.reason} The server may or may not have moved lobby chat. Run \`/admin lobby-chat\` with no channel to see which channel is in use before trying again.`,
 		};
 	}
@@ -167,7 +167,7 @@ export function buildLobbyChatMoveEmbed(
 		result.status === 409 ? LOBBY_SETUP_HINT : result.status === 502 ? DISCORD_REFUSED_HINT : null;
 	return {
 		color: ERROR_COLOR,
-		title: "❌ Lobby chat not moved",
+		title: "Lobby chat not moved",
 		description: `The move failed${result.status ? ` (${result.status})` : ""}: ${verbatim(result.error)}`,
 		fields: [
 			{ name: "Lobby chat is still in", value: stillInChannel(result.current), inline: false },
@@ -203,7 +203,7 @@ export async function handleLobbyChat(interaction: CommandInteraction) {
 			return interaction.editReply({
 				embeds: [
 					buildLobbyChatStateEmbed(state, {
-						title: "💬 Linked lobby chat channel",
+						title: "Linked lobby chat channel",
 					}),
 				],
 			});
@@ -213,13 +213,13 @@ export async function handleLobbyChat(interaction: CommandInteraction) {
 					error instanceof GameServerAdminError && error.status === 404
 						? {
 								color: ERROR_COLOR,
-								title: "💬 The game server has no lobby-chat route",
+								title: "The game server has no lobby-chat route",
 								description:
 									"The game server answered 404 for `GET /api/admin/lobby-chat`, so there is no stored setting to read back: that route has to be added to the game server first. The channel the game is linked to right now comes from the game server's own configuration.",
 							}
 						: {
 								color: ERROR_COLOR,
-								title: "💬 Lobby chat channel",
+								title: "Lobby chat channel",
 								description: `The game server could not be read: ${
 									error instanceof Error ? error.message : String(error)
 								}`,
@@ -238,7 +238,7 @@ export async function handleLobbyChat(interaction: CommandInteraction) {
 				embeds: [
 					{
 						color: ERROR_COLOR,
-						title: "❌ Lobby chat not moved",
+						title: "Lobby chat not moved",
 						description: `${check.reason} Nothing was sent to the game server.`,
 					},
 				],

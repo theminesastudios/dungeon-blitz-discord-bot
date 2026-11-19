@@ -52,6 +52,8 @@ trim / fit 124 / pad 128x128 step. The pack shop uses them on its "What you got"
 | `item_mount` | Mount (non-exclusive) | `Non-exclusive.png` |
 | `item_mount_exclusive` | Exclusive mount | `Exclusive.png` |
 | `item_pet` | Pet (not used yet) | `pets.png` |
+| `item_mammoth_idol` | Mammoth Idols | `mammoth_idol.png` |
+| `item_royal_sigil` | Royal Sigils (no tile behind it, unlike `cur_royal_sigil`) | `sigil_royal.png` |
 
 The frame-to-discipline mapping for sprite 507 comes from its `FrameLabel` tags
 (`ffdec -dumpSWF cbp/UI_4.swf`). The labels match the `mMasterClass` strings the client uses.
@@ -59,7 +61,7 @@ The frame-to-discipline mapping for sprite 507 comes from its `FrameLabel` tags
 ## Not found
 
 - `ui_rename`: the SWFs have no quill or pen art. The armory's `am_Rename` control
-  (`cbp/UI_4.swf`, char 1266) is a text-only "Rename" button.
+  (`cbp/UI_4.swf`, char 1266) is a text-only "Rename" button, so the rename button has no icon.
 
 ## Alternatives that were not used
 

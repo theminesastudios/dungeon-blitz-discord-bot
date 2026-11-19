@@ -7,6 +7,7 @@ import {
 	resetPackLedger,
 	searchPlayers,
 } from "../utils/gameWallet.js";
+import { emoji } from "../ui/emojis.js";
 import { stripPackRewards } from "../utils/gameRewards.js";
 import { isAdministrator } from "../utils/discordInteractions.js";
 
@@ -61,9 +62,9 @@ export async function handlePackRewards(interaction: CommandInteraction) {
 		const fields = result.characters.map((entry) => ({
 			name: entry.name,
 			value: [
-				`-# 🎨 Dyes removed: ${entry.removedDyes.length > 0 ? entry.removedDyes.join(", ") : "none"}`,
-				`-# 🐴 Mounts removed: ${entry.removedMounts.length > 0 ? entry.removedMounts.join(", ") : "none"}`,
-				...(entry.error ? [`-# ⚠️ Not finished: ${entry.error}`] : []),
+				`-# ${emoji("item_dye_legendary")} Dyes removed: ${entry.removedDyes.length > 0 ? entry.removedDyes.join(", ") : "none"}`,
+				`-# ${emoji("item_mount")} Mounts removed: ${entry.removedMounts.length > 0 ? entry.removedMounts.join(", ") : "none"}`,
+				...(entry.error ? [`-# Not finished: ${entry.error}`] : []),
 			].join("\n"),
 		}));
 
@@ -79,7 +80,7 @@ export async function handlePackRewards(interaction: CommandInteraction) {
 			embeds: [
 				{
 					color: 0xe67e22,
-					title: "🧹 Pack rewards removed",
+					title: "Pack rewards removed",
 					description: [
 						`Game user **${result.userId}**`,
 						creditLine,

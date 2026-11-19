@@ -35,7 +35,7 @@ export async function getUserData(userId: string) {
 	try {
 		return await db.get(userId);
 	} catch (error) {
-		console.error("❌ Error getting user data:", error);
+		console.error("Error getting user data:", error);
 		throw error;
 	}
 }
@@ -55,7 +55,7 @@ export async function setUserMiniAppStatus(userId: string) {
 			lastUpdated: Date.now(),
 		});
 	} catch (error) {
-		console.error("❌ Error setting user miniapp status:", error);
+		console.error("Error setting user miniapp status:", error);
 		throw error;
 	}
 }

@@ -396,7 +396,7 @@ export function summarizeGameHealth(report: GameHealthReport): string {
 		report.tls.status === "ok"
 			? `TLS cert: valid, ${report.tls.daysRemaining} day(s) left (expires ${report.tls.expiresAt ?? "unknown"}${report.tls.issuer ? `, ${report.tls.issuer}` : ""})`
 			: report.tls.status === "expiring"
-				? `TLS cert: ⚠️ expires in ${report.tls.daysRemaining} day(s) (${report.tls.expiresAt ?? "unknown date"})`
+				? `TLS cert: expires in ${report.tls.daysRemaining} day(s) (${report.tls.expiresAt ?? "unknown date"})`
 				: report.tls.status === "expired"
 					? "TLS cert: EXPIRED — browsers refuse the site"
 					: `TLS cert: check failed (${report.tls.error ?? "unknown error"})`;
@@ -531,7 +531,7 @@ export async function maybeAlertOnGameHealth(
 				: null;
 			const result = await attempt(
 				"recovery",
-				`🟢 Dungeon Blitz host recovered: ${report.hostname}\n${
+				`Dungeon Blitz host recovered: ${report.hostname}\n${
 					downtimeMinutes === null ? "" : `Was unhealthy for ~${downtimeMinutes} min. `
 				}${summarizeGameHealth(report)}`,
 			);
@@ -556,7 +556,7 @@ export async function maybeAlertOnGameHealth(
 		if (report.tls.status === "expiring" && !previous?.certWarningOpen) {
 			const result = await attempt(
 				"warning",
-				`⚠️ Dungeon Blitz TLS certificate expires in ${report.tls.daysRemaining ?? "?"} day(s): ${report.hostname}\n(expires ${report.tls.expiresAt ?? "unknown date"}${report.tls.issuer ? `, issued by ${report.tls.issuer}` : ""})\nCaddy renews automatically; only act if the expiry date is not moving across checks.`,
+				`Dungeon Blitz TLS certificate expires in ${report.tls.daysRemaining ?? "?"} day(s): ${report.hostname}\n(expires ${report.tls.expiresAt ?? "unknown date"}${report.tls.issuer ? `, issued by ${report.tls.issuer}` : ""})\nCaddy renews automatically; only act if the expiry date is not moving across checks.`,
 			);
 			await persist({
 				_id: report.hostname,
@@ -572,7 +572,7 @@ export async function maybeAlertOnGameHealth(
 		if (report.tls.status !== "expiring" && previous?.certWarningOpen) {
 			const result = await attempt(
 				"warning",
-				`✅ Dungeon Blitz TLS certificate renewed: ${report.hostname}\n${summarizeGameHealth(report)}`,
+				`Dungeon Blitz TLS certificate renewed: ${report.hostname}\n${summarizeGameHealth(report)}`,
 			);
 			await persist({
 				_id: report.hostname,
@@ -600,7 +600,7 @@ export async function maybeAlertOnGameHealth(
 	const summary = summarizeGameHealth(report);
 
 	if (!previous?.alertOpen) {
-		const result = await attempt("alert", `🔴 Dungeon Blitz host is DOWN: ${report.hostname}\n${summary}`);
+		const result = await attempt("alert", `Dungeon Blitz host is DOWN: ${report.hostname}\n${summary}`);
 		await persist({
 			_id: report.hostname,
 			alertOpen: result.sent,
@@ -625,7 +625,7 @@ export async function maybeAlertOnGameHealth(
 	const outageMinutes = Math.max(0, Math.round((now.getTime() - Date.parse(firstUnhealthyAt)) / 60_000));
 	const result = await attempt(
 		"reminder",
-		`🔴 Still down (${outageMinutes} min): ${report.hostname}\n${summary}`,
+		`Still down (${outageMinutes} min): ${report.hostname}\n${summary}`,
 	);
 	await persist({
 		...previous,

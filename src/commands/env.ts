@@ -60,12 +60,12 @@ function describeEntry(entry: EnvEntry): string {
 		? entry.inFile ? "•••• *(secret, hidden)*" : "*(not in .env)*"
 		: entry.inFile ? code(entry.value ?? "") : "*(not in .env)*";
 	const marks: string[] = [];
-	if (!entry.editable) marks.push("🔒");
+	if (!entry.editable) marks.push("*(locked)*");
 	let line = `**${entry.key}** ${value}${marks.length ? ` ${marks.join(" ")}` : ""}`;
 	if (entry.running === "differs") {
 		line += entry.secret
-			? "\n-# ⏳ the running server has a different value — restart to apply"
-			: `\n-# ⏳ running ${entry.runningValue === null || entry.runningValue === undefined ? "*(unset)*" : code(entry.runningValue)} — restart to apply`;
+			? "\n-# the running server has a different value — restart to apply"
+			: `\n-# running ${entry.runningValue === null || entry.runningValue === undefined ? "*(unset)*" : code(entry.runningValue)} — restart to apply`;
 	}
 	return line;
 }
@@ -91,9 +91,9 @@ function restartRow(deployBranch: string): ActionRowBuilder<MessageActionRowComp
 /** Pure, like the `/server` panel: the container is what the test pins. */
 export function buildEnvViewContainer(env: GameServerEnv, onlyKey?: string): ContainerBuilder {
 	const container = new ContainerBuilder().setAccentColor(env.restartPending ? WARN_ACCENT : ACCENT);
-	const lines: string[] = ["## ⚙️ Game server .env"];
+	const lines: string[] = ["## Game server .env"];
 	if (!env.exists) {
-		lines.push("", `⚠️ There is no .env at \`${env.path}\` — the first \`/env set\` creates it.`);
+		lines.push("", `There is no .env at \`${env.path}\` — the first \`/env set\` creates it.`);
 	}
 
 	const body: string[] = [];
@@ -117,10 +117,10 @@ export function buildEnvViewContainer(env: GameServerEnv, onlyKey?: string): Con
 	}
 	lines.push(
 		"",
-		`-# \`${env.path}\` · 🔒 cannot be changed from Discord (secrets, and keys the restart's shell or node act on)`,
+		`-# \`${env.path}\` · *(locked)* cannot be changed from Discord (secrets, and keys the restart's shell or node act on)`,
 	);
 	if (env.restartPending) {
-		lines.push("-# ⏳ the running server differs from .env — a restart applies it");
+		lines.push("-# the running server differs from .env — a restart applies it");
 	}
 	container.addComponent(new TextDisplayBuilder().setContent(lines.join("\n")));
 	const row = env.restartPending ? restartRow(env.deployBranch) : null;
@@ -131,11 +131,11 @@ export function buildEnvViewContainer(env: GameServerEnv, onlyKey?: string): Con
 export function describeEnvChange(change: EnvChange): string[] {
 	const lines: string[] = [];
 	if (!change.changed) {
-		lines.push(`✅ **${change.key}** is already ${code(change.value)} in .env — nothing was written.`);
+		lines.push(`**${change.key}** is already ${code(change.value)} in .env — nothing was written.`);
 	} else if (change.action === "clear") {
-		lines.push(`✅ **${change.key}** cleared (now \`${change.key}=\`).`);
+		lines.push(`**${change.key}** cleared (now \`${change.key}=\`).`);
 	} else {
-		lines.push(`✅ **${change.key}** set to ${code(change.value)}.`);
+		lines.push(`**${change.key}** set to ${code(change.value)}.`);
 	}
 	if (change.changed) {
 		const previous = change.previousHidden
@@ -145,12 +145,12 @@ export function describeEnvChange(change: EnvChange): string[] {
 	}
 	if (!change.known) {
 		lines.push(
-			`⚠️ \`${change.key}\` was not in .env, .env.example or the running environment — check the spelling. \`/env clear ${change.key}\` empties it again.`,
+			`\`${change.key}\` was not in .env, .env.example or the running environment — check the spelling. \`/env clear ${change.key}\` empties it again.`,
 		);
 	}
 	lines.push(
 		change.restartRequired
-			? "⏳ **Applies at the next restart.** The running server still has the old value."
+			? "**Applies at the next restart.** The running server still has the old value."
 			: "-# The running server already has this value; no restart needed.",
 	);
 	return lines;
@@ -159,7 +159,7 @@ export function describeEnvChange(change: EnvChange): string[] {
 export function buildEnvChangeContainer(change: EnvChange): ContainerBuilder {
 	const container = new ContainerBuilder().setAccentColor(change.known ? ACCENT : WARN_ACCENT);
 	container.addComponent(
-		new TextDisplayBuilder().setContent(["## ⚙️ Game server .env", "", ...describeEnvChange(change)].join("\n")),
+		new TextDisplayBuilder().setContent(["## Game server .env", "", ...describeEnvChange(change)].join("\n")),
 	);
 	const row = change.restartRequired ? restartRow(change.deployBranch) : null;
 	if (row) container.addComponent(row);
@@ -169,7 +169,7 @@ export function buildEnvChangeContainer(change: EnvChange): ContainerBuilder {
 function buildErrorContainer(title: string, error: unknown): ContainerBuilder {
 	return new ContainerBuilder()
 		.setAccentColor(ERROR_ACCENT)
-		.addComponent(new TextDisplayBuilder().setContent(`⚠️ **${title}:** ${errorMessage(error)}`));
+		.addComponent(new TextDisplayBuilder().setContent(`**${title}:** ${errorMessage(error)}`));
 }
 
 /** Keys are upper case on the game server; accept `server_logs` as a typing convenience. */

@@ -75,16 +75,16 @@ export type GameLogPublishResult = {
 };
 
 const EVENT_TITLES: Record<string, string> = {
-	started: "🟢 Game server started",
-	stopping: "🟡 Game server shutting down",
-	crashed: "🛑 Game server crashed",
-	"startup-failed": "🔴 Game server failed to start",
-	reloading: "🔁 Game server reloading",
+	started: "Game server started",
+	stopping: "Game server shutting down",
+	crashed: "Game server crashed",
+	"startup-failed": "Game server failed to start",
+	reloading: "Game server reloading",
 	// A branch switch is a lifecycle event like any other: it belongs in the same channel as
 	// the start line it is about to produce, so the two read as one story.
-	"deploy-scheduled": "🛠️ Server restart scheduled",
+	"deploy-scheduled": "Server restart scheduled",
 	"deploy-cancelled": "↩️ Server restart cancelled",
-	"deploy-failed": "⚠️ Server restart request failed",
+	"deploy-failed": "Server restart request failed",
 };
 
 const EVENT_COLORS: Record<string, number> = {
@@ -111,7 +111,7 @@ export function logEventTitle(event: string, override?: string): string {
 	if (explicit) return explicit;
 	const known = EVENT_TITLES[event];
 	if (known) return known;
-	return `ℹ️ Game server event: ${cleanText(event, 64) || "unknown"}`;
+	return `Game server event: ${cleanText(event, 64) || "unknown"}`;
 }
 
 export function logEventColor(event: string): number {

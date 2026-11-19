@@ -119,19 +119,19 @@ export function describeRunningServer(state: GameServerState): string[] {
 	];
 	const warnings: string[] = [];
 	if (state.hold) {
-		warnings.push("🛑 a maintenance hold is set — a restart will not switch branches until it is released");
+		warnings.push("a maintenance hold is set — a restart will not switch branches until it is released");
 	}
 	// Worth saying out loud: the branch a restart pulls is not always the one checked out.
 	if (state.deployBranch && state.checkoutBranch && state.deployBranch !== state.checkoutBranch) {
 		warnings.push(
-			`⚠️ a restart deploys \`${state.deployBranch}\`, not the checked-out \`${state.checkoutBranch}\``,
+			`a restart deploys \`${state.deployBranch}\`, not the checked-out \`${state.checkoutBranch}\``,
 		);
 	}
 	if (state.dirty) {
-		warnings.push("⚠️ the server checkout has local edits");
+		warnings.push("the server checkout has local edits");
 	}
 	if (state.buildCommit && state.commit && state.buildCommit !== state.commit) {
-		warnings.push("⚠️ the running build is not the checked-out commit");
+		warnings.push("the running build is not the checked-out commit");
 	}
 	for (const warning of warnings) {
 		lines.push(`-# ${warning}`);
@@ -147,7 +147,7 @@ export function describePendingRestart(state: GameServerState): string | null {
 		? "no players were connected"
 		: `${pending.recipients} player${pending.recipients === 1 ? "" : "s"} warned`;
 	return [
-		`⏳ **Restart to \`${pending.branch}\` scheduled** ${when ?? pending.restartAt}`,
+		`**Restart to \`${pending.branch}\` scheduled** ${when ?? pending.restartAt}`,
 		`-# ${shortCommit(pending.commit)} · ${warned}${pending.requestedBy ? ` · requested by ${pending.requestedBy}` : ""}`,
 	].join("\n");
 }
@@ -235,7 +235,7 @@ export function buildServerControlContainer(
 			: PANEL_ACCENT;
 	const container = new ContainerBuilder().setAccentColor(accent);
 
-	const header: string[] = ["## 🖥️ Dungeon Blitz server"];
+	const header: string[] = ["## Dungeon Blitz server"];
 	if (notice) header.push("", notice);
 	if (state) {
 		header.push("", ...describeRunningServer(state));
@@ -244,7 +244,7 @@ export function buildServerControlContainer(
 	} else {
 		header.push(
 			"",
-			`⚠️ **The game server did not answer:** ${view.stateError ?? "unknown error"}`,
+			`**The game server did not answer:** ${view.stateError ?? "unknown error"}`,
 		);
 	}
 	container.addComponent(new TextDisplayBuilder().setContent(header.join("\n")));
@@ -262,7 +262,7 @@ export function buildServerControlContainer(
 		? selectedBranch
 		: state?.checkoutBranch ?? state?.deployBranch ?? branches[0]?.name ?? "";
 	const listLines = view.branchesError
-		? [`⚠️ **Cloud branches unavailable:** ${view.branchesError}`]
+		? [`**Cloud branches unavailable:** ${view.branchesError}`]
 		: [
 				`**Cloud branches** ${view.branchCount}${shown < view.branchCount ? ` (showing the first ${shown})` : ""}`,
 				"-# Pick a branch, then restart onto it. Everyone connected is disconnected by a restart.",
@@ -382,8 +382,8 @@ async function handleRestart(
 			: "no warning was sent";
 		const notice =
 			result.seconds > 0
-				? `✅ **Restart to \`${result.branch}\` scheduled in ${result.seconds}s** (${warnNotice}) — commit \`${shortCommit(result.commit)}\`.`
-				: `✅ **Restart to \`${result.branch}\` requested now** (${warnNotice}) — commit \`${shortCommit(result.commit)}\`.`;
+				? `**Restart to \`${result.branch}\` scheduled in ${result.seconds}s** (${warnNotice}) — commit \`${shortCommit(result.commit)}\`.`
+				: `**Restart to \`${result.branch}\` requested now** (${warnNotice}) — commit \`${shortCommit(result.commit)}\`.`;
 		logInfo("server", "restart_scheduled", {
 			branch: result.branch,
 			commit: shortCommit(result.commit),
@@ -408,8 +408,8 @@ async function handleRestart(
 		// No answer is not a refusal: the VM may have scheduled it and been slow to say so.
 		// The panel below reads the server again, and its pending-restart line is the truth.
 		const notice = timedOut
-			? `⏱️ **The game server did not answer in time.** The restart to \`${branch}\` may still have been scheduled — check the panel below before pressing again.`
-			: `⚠️ **The restart was refused:** ${errorMessage(error)}`;
+			? `**The game server did not answer in time.** The restart to \`${branch}\` may still have been scheduled — check the panel below before pressing again.`
+			: `**The restart was refused:** ${errorMessage(error)}`;
 		return renderDeferredPanel(interaction, {
 			selectedBranch: branch,
 			notice,
@@ -440,7 +440,7 @@ async function handleCancel(interaction: MessageComponentInteraction): Promise<u
 	} catch (error) {
 		logWarn("server", "cancel_failed", { error: errorMessage(error) });
 		return renderDeferredPanel(interaction, {
-			notice: `⚠️ **Nothing was cancelled:** ${errorMessage(error)}`,
+			notice: `**Nothing was cancelled:** ${errorMessage(error)}`,
 			readTimeoutMs: AFTER_WRITE_READ_TIMEOUT_MS,
 		});
 	}

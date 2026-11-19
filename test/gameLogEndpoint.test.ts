@@ -110,7 +110,7 @@ try {
 	assert.match(calls[0]!.url, /channels\/1551118889503432765\/messages$/);
 	assert.equal(calls[0]!.headers.Authorization, "Bot bot-token");
 	assert.equal(calls[0]!.body.embeds.length, 1);
-	assert.equal(calls[0]!.body.embeds[0].title, "🛑 Game server crashed");
+	assert.equal(calls[0]!.body.embeds[0].title, "Game server crashed");
 	assert.equal(calls[0]!.body.embeds[0].description, "uncaughtException: boom");
 	assert.deepEqual(calls[0]!.body.allowed_mentions, { parse: [] }, "log messages never ping anyone");
 

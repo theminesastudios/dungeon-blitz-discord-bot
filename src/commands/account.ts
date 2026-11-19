@@ -250,7 +250,6 @@ export function buildCharacterDetail(state: AccountState, character: GameWalletS
         new ButtonBuilder()
           .setStyle(ButtonStyle.Primary)
           .setLabel(`Rename · ${RENAME_COST_IDOLS} idols`)
-          .setEmoji(componentEmoji("ui_rename"))
           .setCustomId(`${ID.rename}${encodeName(character.characterName)}`),
         new ButtonBuilder()
           .setStyle(ButtonStyle.Danger)

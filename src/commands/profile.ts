@@ -63,7 +63,7 @@ function playtimeOf(activity: AccountActivity | null, wallet: GameWalletSummary)
 }
 
 /**
- * `-# ⭐ Level 50 · 1,234,567 XP · Played 3h 5m · ⚖️ Justicar`. Tighter than the shared
+ * `-# Level 50 · 1,234,567 XP · Played 3h 5m · Justicar`. Tighter than the shared
  * subtitle: eight characters on one save have to fit in Discord's 4,000-character message
  * limit, and every custom emoji costs ~35 characters. The class icon is on the name line
  * already, so the class is named only when no discipline (which implies it) is chosen yet —

@@ -136,7 +136,7 @@ try {
 	});
 	assert.match(calls[1]!.url, /channels\/1551118889503432765\/messages$/);
 	assert.equal(calls[1]!.headers.Authorization, "Bot bot-token");
-	assert.equal(calls[1]!.body.embeds[0].title, "🛠️ Server restart scheduled");
+	assert.equal(calls[1]!.body.embeds[0].title, "Server restart scheduled");
 	assert.match(String(calls[1]!.body.embeds[0].description), /Redeploying `main`/);
 	assert.equal(calls[1]!.body.embeds[0].fields[0].name, "Branch");
 	assert.equal(calls[1]!.body.embeds[0].fields[0].value, "`main`");
@@ -163,7 +163,7 @@ try {
 	assert.equal(calls.at(-2)!.body.branch, "release/2026-10-02");
 	assert.equal(calls.at(-2)!.body.dryRun, true);
 	assert.equal(calls.at(-2)!.body.requestedBy, "scheduled-daily-restart (dry run)");
-	assert.equal(calls.at(-1)!.body.embeds[0].title, "🧪 Scheduled restart rehearsal");
+	assert.equal(calls.at(-1)!.body.embeds[0].title, "Scheduled restart rehearsal");
 	assert.match(String(calls.at(-1)!.body.embeds[0].description), /Nothing was scheduled/);
 
 	// Disarmed, the cron does nothing at all — and ?run=now is the way to test while disarmed.
@@ -208,7 +208,7 @@ try {
 	assert.match(String(refused.body?.error), /maintenance hold is set/);
 	assert.match(String(refused.body?.note), /kept running/);
 	assert.equal(calls.length, 2);
-	assert.equal(calls.at(-1)!.body.embeds[0].title, "⚠️ Server restart request failed");
+	assert.equal(calls.at(-1)!.body.embeds[0].title, "Server restart request failed");
 	assert.match(String(calls.at(-1)!.body.embeds[0].description), /did not go through/);
 	assert.equal(
 		calls.at(-1)!.body.allowed_mentions.parse.length,

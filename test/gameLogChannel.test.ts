@@ -44,7 +44,7 @@ const started = buildGameLogEmbed(
 	},
 	fixedNow,
 );
-assert.equal(started.title, "🟢 Game server started");
+assert.equal(started.title, "Game server started");
 assert.equal(started.color, 0x2ecc71, "a start is green");
 assert.equal(started.timestamp, fixedNow.toISOString());
 assert.equal(started.footer?.text, "dungeonblitzr.theminesa.studio");
@@ -56,12 +56,12 @@ const crashed = buildGameLogEmbed(
 	{ event: "crashed", message: "uncaughtException: Cannot read properties of null" },
 	fixedNow,
 );
-assert.equal(crashed.title, "🛑 Game server crashed");
+assert.equal(crashed.title, "Game server crashed");
 assert.equal(crashed.color, 0xe74c3c, "a crash is red");
 assert.equal(crashed.description, "uncaughtException: Cannot read properties of null");
 
 const stopping = buildGameLogEmbed({ event: "stopping", message: "SIGTERM" }, fixedNow);
-assert.equal(stopping.title, "🟡 Game server shutting down");
+assert.equal(stopping.title, "Game server shutting down");
 
 const failedStart = buildGameLogEmbed({ event: "startup-failed", message: "Mongo refused" }, fixedNow);
 assert.equal(failedStart.color, 0x992d22, "a failed start is a darker red than a crash");
@@ -170,7 +170,7 @@ const sent = await publishGameLog({ event: "started", host: "h" }, { deliver: re
 assert.equal(sent.sent, true);
 assert.equal(sent.channel, "discord-channel:test");
 assert.equal(recorder.embeds.length, 1);
-assert.equal(recorder.embeds[0]?.title, "🟢 Game server started");
+assert.equal(recorder.embeds[0]?.title, "Game server started");
 
 // Discord refusing the message reports the failure instead of claiming success.
 const refused = await publishGameLog({ event: "started" }, { deliver: collectingDeliverer(null), now: fixedNow });

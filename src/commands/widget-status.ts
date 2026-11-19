@@ -233,7 +233,7 @@ export async function handleWidgetStatus(interaction: CommandInteraction) {
 		// 2. The one switch that decides whether a link can ask for the write scope.
 		const widgetScopeEnabled = await resolveWidgetScopeEnabled();
 		sections.push(
-			`**Game server widget switch** — ${widgetScopeEnabled ? "on ✅" : "off ❌"}`,
+			`**Game server widget switch** — ${widgetScopeEnabled ? "on" : "off"}`,
 			widgetScopeEnabled
 				? "-# `/authorize` asks for `application_identities.write`, so players can grant the widget access."
 				: "-# `/authorize` asks for account scopes only, so **no player can grant the widget access** and nothing can be written to a widget."

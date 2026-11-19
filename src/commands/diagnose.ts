@@ -71,7 +71,7 @@ async function handleLogs(interaction: CommandInteraction): Promise<unknown> {
 		}
 	} catch (error) {
 		logWarn("diagnose", "logs_failed", { user, error: errorMessage(error) });
-		return interaction.editReply({ content: `⚠️ **Could not read the logs:** ${errorMessage(error)}` });
+		return interaction.editReply({ content: `**Could not read the logs:** ${errorMessage(error)}` });
 	}
 }
 
