@@ -1,5 +1,15 @@
 # Dungeon Blitz Discord Bot
 
+## Play now
+
+**[Play in browser](https://dungeonblitzr.theminesa.studio/web)** · **[Join the Discord community](https://discord.gg/minesa)**
+
+1. Join the community and run `/account create`.
+2. Select **Verify with Discord** and authorize with your verified Discord email.
+3. Return to Discord to **Set password**, then sign in with your Discord email — or use **Discord login** in-game without setting a password.
+
+Developer documentation follows.
+
 This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord server. It handles integrations with GitHub and game stuffs.
 
 ## Commands
