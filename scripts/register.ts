@@ -5,11 +5,16 @@ import dotenv from "dotenv";
 dotenv.config({ path: [".env.production.local", ".env"] });
 
 /**
- * Registers every slash command on the one community guild (DISCORD_GUILD_ID) and
- * clears the application's global commands, so each command shows up once, only in
- * that server, and updates instantly instead of waiting on Discord's global cache.
- * The Activity's Entry Point command is global by nature and is kept.
- * Linked role metadata is application-wide and is synced here too.
+ * Command registration for a public bot (issue #60):
+ *
+ * - The player-facing commands are registered **globally**, so every guild the
+ *   bot is added to offers them. Global commands take up to an hour to appear.
+ *   The Activity's Entry Point command is global by nature and is kept.
+ * - The staff commands stay on the one community guild (DISCORD_GUILD_ID):
+ *   `default_member_permissions` Administrator would otherwise let an
+ *   administrator of *any* guild the bot joins ban players, restart the game
+ *   server or edit its `.env`.
+ * - Linked role metadata is application-wide and is synced here too.
  */
 
 if (
@@ -24,20 +29,20 @@ const botToken = process.env.DISCORD_BOT_TOKEN?.trim();
 const applicationId = process.env.DISCORD_APPLICATION_ID?.trim();
 const guildId = process.env.DISCORD_GUILD_ID?.trim();
 
-// Bail out before touching anything: clearing the global commands without a guild to
-// register on would leave the server with no commands at all.
 for (const [name, value] of [
 	["DISCORD_BOT_TOKEN", botToken],
 	["DISCORD_APPLICATION_ID", applicationId],
-	["DISCORD_GUILD_ID", guildId],
 ] as const) {
 	if (!value) {
 		console.log(`⚠️ ${name} not found. Skipping command registration.`);
 		process.exit(0);
 	}
 }
+if (!guildId) {
+	console.log("⚠️ DISCORD_GUILD_ID not found. Staff commands will not be registered on the community guild.");
+}
 
-const { commandData } = await import("../api/interactions");
+const { publicCommandData, staffCommandData } = await import("../api/interactions");
 
 const linkedRoleMetadata = [
 	{
@@ -88,7 +93,7 @@ type GlobalCommand = {
 
 /**
  * The global Entry Point command, if the app has one. Discord refuses a global
- * overwrite that leaves it out, so clearing the global commands has to carry it.
+ * overwrite that leaves it out, so the public commands are sent alongside it.
  */
 async function globalEntryPoints(): Promise<GlobalCommand[]> {
 	const response = await fetch(`${applicationUrl}/commands`, {
@@ -113,11 +118,19 @@ async function globalEntryPoints(): Promise<GlobalCommand[]> {
 		}));
 }
 
-// Guild first: if it is refused, the global commands are left in place.
-await put(`/guilds/${guildId}/commands`, commandData, "register guild commands");
-await put("/commands", await globalEntryPoints(), "clear global commands");
+// The staff set goes first: if it is refused, the global commands are left alone.
+if (guildId) {
+	await put(`/guilds/${guildId}/commands`, staffCommandData, "register staff commands on the community guild");
+}
+await put(
+	"/commands",
+	[...(await globalEntryPoints()), ...publicCommandData],
+	"register the public commands globally",
+);
 await put("/role-connections/metadata", linkedRoleMetadata, "sync linked role metadata");
 
 console.log(
-	`Registered ${commandData.length} commands on guild ${guildId}, cleared global commands, synced linked role metadata.`,
+	`Registered ${publicCommandData.length} commands globally` +
+		(guildId ? ` and ${staffCommandData.length} staff commands on guild ${guildId}` : "") +
+		`, synced linked role metadata.`,
 );

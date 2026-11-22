@@ -14,7 +14,7 @@ This Discord bot designed for the Dungeon Blitz: R—The Minesa Studios Discord 
 
 ## Commands
 
-Commands are registered on the community server only (`DISCORD_GUILD_ID`); there are no global commands, so nothing is offered in DMs or other servers. `npm run build` (run on every production deploy) overwrites the guild's commands and clears any global ones — see [Command registration](#command-registration).
+The bot is public: the player-facing commands are registered **globally**, so every guild the bot is added to offers them, while the staff commands stay on the community server (`DISCORD_GUILD_ID`) — an administrator of a foreign guild must not get `/admin ban`, `/server` or `/env` on our game. `npm run build` (run on every production deploy) overwrites both sets — see [Command registration](#command-registration).
 
 Every reply is a Components V2 **container**; follow-up actions are buttons, select menus and modals on that message rather than extra commands. Game icons (classes, disciplines, currencies) are application emojis — see [Emojis](#emojis).
 
@@ -22,13 +22,14 @@ Every reply is a Components V2 **container**; follow-up actions are buttons, sel
 - `/account view` is the player's private panel: their current character (name, then a `-#` line with level, class and discipline), every character with a **View** button, and buttons to set or reset the game password and turn upgrade DMs on or off. **View** opens the character's balances, current quest and playtime, with **Rename** (500 Mammoth Idols) and **Delete**. Each of those asks "are you sure?" in a separate ephemeral message, and every action re-reads the account when it runs, so a stale panel cannot act on a character that was already renamed, deleted or moved. Rename and delete are carried out by the game server — see [Character rename and delete](#character-rename-and-delete).
 - `/player name` shows anyone a character's public card: portrait, level, gold and current quest, and nothing else. Autocomplete lists live characters with their owner's Discord username.
 - `/authorize [connection]` sends owner-bound Discord OAuth links that connect a player's Discord account to the game's Discord surfaces: the Game Stats widget on their profile, the Social SDK's friends and rich presence, and its lobbies and chat. `connection` picks one; without it the reply offers a link for each, plus an "everything" link that authorizes them together. Links expire after 10 minutes and only the player who invoked the command can complete them.
-- `/packs` opens the pack shop: Sponsor (free, once, Sponsor role), Booster (free, once, for members who have boosted the server for 7 days, read from `member.premium_since`), and the paid Supporter, Adventurer, Hero and Champions' packs. Each pack shows its banner from `assets/packs/<id>.png`, served from the production deployment, and what it hands out matches that banner, trove keys (`DragonKeys`) included; a pack promising several mounts or dyes never rolls the same one twice. The Booster claim is recorded in the `packClaims` collection rather than on the profile, so a booster needs no linked GitHub account. It writes each pack's rewards straight into the chosen character's save: credit is deducted (or the one-time Sponsor Pack claim recorded) before the rewards roll, and a purchase whose rewards cannot be written is refunded automatically. Every write is addressed by the `_id` of the save document the shop read the character from, and each reward is **confirmed by reading the character back out of the save** — a write MongoDB accepted but the save does not show is reported as failed (and refunded) instead of confirmed, so the shop can never charge for rewards nobody can find.
+- `/packs` opens the pack shop: Sponsor (free, once, Sponsor role), Booster (free, once, for members who have boosted the community server for 7 days — the member's `premium_since` is always read on `DISCORD_GUILD_ID`, whatever guild `/packs` was run in), and the paid Supporter, Adventurer, Hero and Champions' packs. Each pack shows its banner from `assets/packs/<id>.png`, served from the production deployment, and what it hands out matches that banner, trove keys (`DragonKeys`) included; a pack promising several mounts or dyes never rolls the same one twice. The Booster claim is recorded in the `packClaims` collection rather than on the profile, so a booster needs no linked GitHub account. It writes each pack's rewards straight into the chosen character's save: credit is deducted (or the one-time Sponsor Pack claim recorded) before the rewards roll, and a purchase whose rewards cannot be written is refunded automatically. Every write is addressed by the `_id` of the save document the shop read the character from, and each reward is **confirmed by reading the character back out of the save** — a write MongoDB accepted but the save does not show is reported as failed (and refunded) instead of confirmed, so the shop can never charge for rewards nobody can find.
 - `/report-bug` opens a modal and files the report as a GitHub issue in the private tracker, recording the reporter as their Discord username and user ID and optionally linking screenshots they upload. Any member can use it in the server, one report per 10 minutes; the confirmation is ephemeral and quotes the issue number rather than a link, because the tracker is private.
 - `/admin profile player` (administrator) shows a player's Discord and GitHub identity, sponsor state, shop credit and every live character's balances.
 - `/admin ban target duration [reason]` (administrator) bans a Discord member from the game for a limited time. `duration` is one of `1-hour`, `1-day`, `3-days`, `7-days`, `30-days` or `Permanent`; the bot resolves the member to their linked game user and asks the game server to enforce it, which also drops a live session.
 - `/admin unban target [reason]` (administrator) lifts a game ban, permanent or otherwise.
 - `/admin maintenance seconds` (administrator) starts the in-game maintenance warning.
-- `/admin lobby-chat [channel]` (administrator) moves the game's lobby chat to a Discord channel: the game server links its Discord lobby to that channel (Discord "Linked Channels"), so players speak there as themselves through the game. Give a channel as `#channel-name`, `<#id>` or a raw id; `none` returns to the server's default channel, and running it with no channel shows the channel in use now. The reply only says the channel moved once the game server confirms the link. See [Linked lobby chat](#linked-lobby-chat).
+- `/guild-chat [channel]` (administrator, every guild) links the in-game guild the caller *leads* to a Discord channel: the game relays the guild's chat into the channel by webhook and polls the channel's messages back into guild chat, tagged `[Discord]`. The caller's linked account must have a character at guild rank 0 (Guild Master); officers and members cannot link. `none` unlinks, and running it with no channel shows the link in use. See [Linked guild chat](#linked-guild-chat).
+- `/lobby-chat [channel]` (administrator, every guild) moves the game's lobby chat to a Discord channel: the game server links its Discord lobby to that channel (Discord "Linked Channels"), so players speak there as themselves through the game. Give a channel as `#channel-name`, `<#id>` or a raw id; `none` returns to the server's default channel, and running it with no channel shows the channel in use now. The reply only says the channel moved once the game server confirms the link. The game holds one lobby link at a time, so the last guild to move it wins. See [Linked lobby chat](#linked-lobby-chat).
 - `/admin credits player dollars [note] [mode]` (administrator) adds Royal Sigils to a linked player at 100 Royal Sigils per $1. It stacks on top of what the player paid on GitHub Sponsors and Patreon, is audited on the player's profile, and can be spent in `/packs`. `mode: remove` takes added credits back (for a grant entered by mistake): it only touches added credits, never what a GitHub sponsorship is worth, and refuses an amount larger than the player's added credits. Each removal is audited as a negative entry next to the grants. Credits already spent on packs stay spent, so the player's balance shows 0 until new credit covers the gap.
 - Royal Sigils (`/packs`): every $1 a player has paid is 100 Royal Sigils. GitHub Sponsors payments, monthly and one-time, are rebuilt from the sponsored account's sponsor activity (start, tier change, cancellation, refund; needs `GITHUB_TOKEN` of an owner of the sponsored account). Patreon charges are read when `PATREON_ACCESS_TOKEN` (creator access token) and `PATREON_CAMPAIGN_ID` are set, matched to the player by the Discord account linked on Patreon. The history is stored on the profile, and the shop's **My Royal Sigils** button lists it month by month, including cancellations and resubscriptions. `/admin sponsor` shows the same list for a GitHub login.
 - `/admin idols player operation amount` (administrator) atomically adds or subtracts Mammoth Idols. Player autocomplete lists live characters with their owner's Discord username and current Idols.
@@ -50,11 +51,13 @@ Every reply is a Components V2 **container**; follow-up actions are buttons, sel
 
 `scripts/register.ts` (`npm run build`) does three bulk overwrites, in this order:
 
-1. `PUT /applications/{app}/guilds/{DISCORD_GUILD_ID}/commands` with every command — guild commands update instantly.
-2. `PUT /applications/{app}/commands` with `[]`, deleting the global commands so nothing shows up twice.
+1. `PUT /applications/{app}/guilds/{DISCORD_GUILD_ID}/commands` with the staff set — `/admin`, `/server`, `/env`, `/diagnose`, `/mailbox` — so they are offered on the community server only. Guild commands update instantly.
+2. `PUT /applications/{app}/commands` with the public set — `/account`, `/authorize`, `/player`, `/packs`, `/report-bug`, `/lobby-chat`, `/guild-chat` — plus the Activity's Entry Point command, which the global overwrite must carry. Global commands propagate to every guild the bot is in; Discord can take up to an hour to publish a change.
 3. The linked role metadata (`is_sponsor`, `contributor`), which is application-wide.
 
-It needs `DISCORD_BOT_TOKEN`, `DISCORD_APPLICATION_ID` and `DISCORD_GUILD_ID`; if any is missing it skips everything, so the global commands are never cleared without the guild ones taking their place. Preview deployments skip registration unless `ALLOW_PREVIEW_COMMAND_REGISTRATION=true`.
+It needs `DISCORD_BOT_TOKEN` and `DISCORD_APPLICATION_ID`; without `DISCORD_GUILD_ID` the staff set is skipped rather than registered globally. Preview deployments skip registration unless `ALLOW_PREVIEW_COMMAND_REGISTRATION=true`.
+
+Which set a command lands in is decided by `publicCommandModules` / `staffCommandModules` in `api/interactions.ts`. Put a command in the staff set when it acts on the game itself — a member's `default_member_permissions` Administrator bit is evaluated against *their own* guild's permissions, so it cannot be the only thing standing between a foreign guild admin and the game server.
 
 Every player picker reads only live data: characters on a current `saves` document whose account is linked to a Discord user, shown as `Character · Lv 50 Mage — @username`. Old snapshot documents and the accounts imported from the old `Accounts.json` test data have no Discord link and never appear.
 
@@ -116,7 +119,7 @@ How the bot reads the POST's answer:
 | `409` | Nothing moved: the server has no lobby, or no saved `CanLinkLobby` sign-in | The server's error, the channel lobby chat is still in, and the fix: run `node --env-file=.env tools/linkedDiscordLobby.js link --lobby <lobbyId>` on the game server once |
 | `502` | Nothing moved: Discord refused the link or could not be reached | The server's error, the channel still in use, and what to check on the channel |
 | other | Nothing moved (`400` bad body, `401`/`503` secret, `429` rate limit, `500`) | The server's error |
-| no answer within 20 s | Unknown: the server may have linked the lobby after the bot stopped waiting | Run `/admin lobby-chat` with no channel to see which channel is in use |
+| no answer within 20 s | Unknown: the server may have linked the lobby after the bot stopped waiting | Run `/lobby-chat` with no channel to see which channel is in use |
 
 `409` and `502` are not retried: they need a person to fix the server or the channel, and the server
 rate-limits this route (10 changes per window). The interactions function is allowed 30 s
@@ -141,7 +144,7 @@ What *is* achievable is the two halves separately:
 So a "players only" channel is only half a lock. Do not link a staff or private channel on the
 assumption that its permissions carry into the game. Discord's SDK exposes
 `isViewableAndWriteableByAllMembers` on each channel precisely so a game can warn about this;
-`/admin lobby-chat` reports the same thing from the channel's permission overwrites, and adds a
+`/lobby-chat` reports the same thing from the channel's permission overwrites, and adds a
 footer to the confirmation when the chosen channel carries role or member restrictions.
 
 #### What the bot checks
@@ -158,6 +161,12 @@ cannot detect that. The server's link call is where it surfaces, as a `502`.
 Discord's own requirements for the link (OAuth communication scopes, a persistent lobby, a lobby
 member with `CanLinkLobby`, and the 20 linking operations per 2 hours rate limit) are the game
 server's to meet; `tools/linkedDiscordLobby.js` on the game server sets the lobby up.
+
+### Linked guild chat
+
+`/guild-chat` stores a per-guild link on the game server (`POST /api/admin/guild-chat`): `guild name → {discordGuildId, channelId}`, kept in `.discord-guild-chat-channels.json` beside the server. The game relays that guild's `scope: 'guild'` lines to the channel by webhook named *Dungeon Blitz Lobby* (the bot posts `**Name**: line` where it cannot make one), and polls the channel for messages, broadcasting each into the guild's chat as `[Discord] <name>: <line>`. A link's channel backlog is never replayed, and the relay only runs while the bot relay is enabled (`botOutboundEnabled`, `gameChatToChannelEnabled`, relay mode `bot` or `both`).
+
+The link can only be made by the guild's leader: the bot resolves the caller's Discord id to their linked game account and reads `guild.rank` 0 off the save — the game server does not re-check it, so the route itself trusts the shared admin secret like the other `/api/admin/*` routes. `none` removes the link.
 
 ### Sponsor role and the badge
 
@@ -204,6 +213,17 @@ Two details keep the staff path from damaging what verification owns:
 
 Both payload shapes come from one builder in `src/utils/database.ts`, so metadata written by hand
 is byte-for-byte what a verification would write.
+
+## Discord Activity
+
+The game's Entry Point command launches the web client as a Discord Activity; it is a global command, so it is offered in every guild the bot is in. Discord loads it through its proxy at `<application id>.discordsays.com` and the page's game socket follows that host (`wss://<application id>.discordsays.com/game-ws`), so Discord itself has to know where to forward it — that is the developer portal's **Activities → URL Mappings**, not this repository:
+
+| Prefix | Target |
+| --- | --- |
+| `/` | `dungeonblitzr.theminesa.studio` |
+| `/game-ws` | `dungeonblitzr.theminesa.studio/game-ws` |
+
+The `/` mapping is what lets the page and its files load at all; `/game-ws` is the game socket (and its dungeon-server siblings `/game-ws/1`, `/game-ws/2`, … — one prefix covers them all). Without a mapping that reaches the WebSocket route, the activity renders the game but stops on "Connecting to World…": the browser is told to open `wss://<application id>.discordsays.com/game-ws` and Discord has nothing to forward it to. When members report exactly that stall, this mapping is the first thing to check — it lives in the portal, so a deploy cannot fix it.
 
 ## Bug reports (`/report-bug`)
 

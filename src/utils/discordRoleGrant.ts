@@ -21,22 +21,55 @@ function botToken(): string | null {
 	return process.env.DISCORD_BOT_TOKEN?.trim() || null;
 }
 
-/** Fetch the member's role ids, or null when they are not in the guild (or unreadable). */
-export async function getGuildMemberRoleIds(
-	discordUserId: string
-): Promise<string[] | null> {
+/**
+ * What `/packs`'s role- and boost-gated packs need from the **community** guild
+ * (DISCORD_GUILD_ID): the Sponsor role id and `premium_since` only ever exist
+ * there, so a command invoked in another guild — the bot is public — must read
+ * this member instead of the interaction's own `member`, which describes the
+ * player in *that* guild.
+ */
+export type CommunityGuildMember = {
+	roleIds: string[];
+	premiumSince: string | null;
+};
+
+/**
+ * The invoking user's membership of the community guild, or null when they are
+ * not in it (or it cannot be read). Gating treats null as "no roles, not
+ * boosting" — a lookup failure never unlocks a gated pack.
+ */
+export async function getCommunityGuildMember(
+	discordUserId: string,
+): Promise<CommunityGuildMember | null> {
 	const token = botToken();
 	const guildId = process.env.DISCORD_GUILD_ID?.trim();
 	if (!token || !guildId) return null;
 
 	const response = await fetch(
 		`${DISCORD_API_BASE}/guilds/${encodeURIComponent(guildId)}/members/${encodeURIComponent(discordUserId)}`,
-		{ headers: { Authorization: `Bot ${token}` } }
+		{ headers: { Authorization: `Bot ${token}` } },
 	);
 	if (!response.ok) return null;
 
-	const member = (await response.json()) as { roles?: unknown };
-	return Array.isArray(member.roles)
-		? member.roles.filter((role): role is string => typeof role === "string")
-		: [];
+	const member = (await response.json()) as {
+		roles?: unknown;
+		premium_since?: unknown;
+	};
+	return {
+		roleIds: Array.isArray(member.roles)
+			? member.roles.filter((role): role is string => typeof role === "string")
+			: [],
+		premiumSince:
+			typeof member.premium_since === "string" && member.premium_since.trim()
+				? member.premium_since
+				: null,
+	};
+}
+
+/** Fetch the member's role ids, or null when they are not in the guild (or unreadable). */
+export async function getGuildMemberRoleIds(
+	discordUserId: string,
+): Promise<string[] | null> {
+	const member = await getCommunityGuildMember(discordUserId);
+	return member?.roleIds ?? null;
 }

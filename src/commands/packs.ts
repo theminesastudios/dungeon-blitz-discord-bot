@@ -44,6 +44,7 @@ import {
 	getMemberRoleIds,
 	interactionDiscordId,
 } from "../utils/discordInteractions.js";
+import { getCommunityGuildMember } from "../utils/discordRoleGrant.js";
 import {
 	publishGameLog,
 	type GameLogField,
@@ -641,6 +642,38 @@ async function respondWithPurchase(
 	);
 }
 
+/**
+ * The member a gated pack is checked against. The Sponsor role and server
+ * boosts exist only on the community guild (DISCORD_GUILD_ID), while the shop
+ * is global — the interaction's `member` describes the player in whichever
+ * guild they invoked it from, so outside the community guild their membership
+ * is fetched there instead. A member that cannot be read gets no roles and no
+ * boost, never a free pass.
+ */
+async function packMember(
+	interaction: CommandInteraction | MessageComponentInteraction,
+	discordId: string,
+): Promise<PackMember> {
+	const communityGuildId = process.env.DISCORD_GUILD_ID?.trim();
+	const guildId = String(
+		(interaction as { guild_id?: string | null }).guild_id ?? "",
+	).trim();
+	if (!communityGuildId) {
+		return { roleIds: [], premiumSince: null };
+	}
+	if (guildId === communityGuildId) {
+		return {
+			roleIds: getMemberRoleIds(interaction),
+			premiumSince: getMemberPremiumSince(interaction),
+		};
+	}
+	const member = await getCommunityGuildMember(discordId).catch(() => null);
+	return {
+		roleIds: member?.roleIds ?? [],
+		premiumSince: member?.premiumSince ?? null,
+	};
+}
+
 async function handleBuy(
 	interaction: CommandInteraction | MessageComponentInteraction,
 	packId: string,
@@ -659,10 +692,7 @@ async function handleBuy(
 		return await respondWithPurchase(
 			discordId,
 			packId,
-			{
-				roleIds: getMemberRoleIds(interaction),
-				premiumSince: getMemberPremiumSince(interaction),
-			},
+			await packMember(interaction, discordId),
 			characterName,
 			(data) => interaction.editReply(data as never),
 		);
@@ -720,13 +750,13 @@ async function buildPackView(
 	selectedCharacter?: string,
 ): Promise<ContainerBuilder> {
 	const discordId = interactionDiscordId(interaction);
-	const member: PackMember = {
-		roleIds: getMemberRoleIds(interaction),
-		premiumSince: getMemberPremiumSince(interaction),
-	};
 	const [characters, status] = await Promise.all([
 		discordId ? listGameSaveCharacters(discordId).catch(() => []) : Promise.resolve([]),
-		discordId ? getFreePackStatus(discordId, pack, member) : Promise.resolve(null),
+		discordId
+			? packMember(interaction, discordId).then((member) =>
+					getFreePackStatus(discordId, pack, member),
+				)
+			: Promise.resolve(null),
 	]);
 	return buildPackContainer(pack, status, characters, selectedCharacter);
 }

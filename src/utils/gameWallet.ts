@@ -35,6 +35,8 @@ type RawSaveCharacter = Document & {
 	talentPoints?: unknown;
 	/** Written by the game on every region change; its timestamp is when the character last played. */
 	LastRegionPosition?: { timestamp?: number } | null;
+	/** Guild membership, synced to Mongo promptly so other players' lookups can see it. `rank` 0 is the guild's leader. */
+	guild?: { name?: string; rank?: number } | null;
 };
 
 type RawSave = Document & {
@@ -511,6 +513,33 @@ function findSaveCharacter(save: RawSave, characterName: string): RawSaveCharact
  * Every named character on one player's save, ordered by level. Used by the Discord Game Stats
  * Widget sync and `/account view`, which need the whole roster rather than a single wallet.
  */
+export type LedGuild = {
+	guildName: string;
+	characterName: string;
+};
+
+/**
+ * The in-game guild one player's save says they lead — `guild.rank` 0 is Guild Master, the
+ * same constant the game server's GuildHandler uses. `null` when they lead none. Read off
+ * the save the way the game's own roster does, so `/guild-chat` can gate a link on the
+ * caller actually leading the guild they name.
+ */
+export async function findGuildLedByUser(gameUserId: number): Promise<LedGuild | null> {
+	const userId = normalizeBalance(gameUserId);
+	if (userId <= 0) return null;
+	const { saves } = await getGameCollections();
+	const save = await saves.findOne({ user_id: userId } as Filter<RawSave>);
+	if (!save || !Array.isArray(save.characters)) return null;
+	for (const character of save.characters) {
+		const guild = character?.guild;
+		const name = String(guild?.name ?? "").trim();
+		if (name && Number(guild?.rank) === 0) {
+			return { guildName: name, characterName: String(character.name ?? "").trim() };
+		}
+	}
+	return null;
+}
+
 export async function listSaveCharacters(gameUserId: number): Promise<GameWalletSummary[]> {
 	const userId = normalizeBalance(gameUserId);
 	if (userId <= 0) return [];
