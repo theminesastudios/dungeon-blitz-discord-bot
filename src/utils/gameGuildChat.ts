@@ -80,7 +80,11 @@ export function parseGuildChatLinks(payload: unknown): GuildChatLink[] {
 /** Case/spacing-insensitive match on the in-game guild name, as the game keys it. */
 export function findGuildChatLink(links: GuildChatLink[], guildName: string): GuildChatLink | null {
 	const key = guildName.trim().replace(/\s+/g, " ").toLowerCase();
-	return links.find((link) => link.guildName.toLowerCase() === key) ?? null;
+	return (
+		links.find(
+			(link) => link.guildName.trim().replace(/\s+/g, " ").toLowerCase() === key,
+		) ?? null
+	);
 }
 
 export async function fetchGuildChatLinks(): Promise<GuildChatLink[]> {
@@ -126,7 +130,19 @@ export async function setGuildChatLink(options: {
 
 	const { status, payload, rawBody } = answer;
 	if (status === 200) {
-		return { outcome: "stored", links: parseGuildChatLinks(payload) };
+		const links = parseGuildChatLinks(payload);
+		// A store that cannot be read back cannot be confirmed: an unlink drops the
+		// guild's row, but a link request must come back with it. Reporting 'stored'
+		// on an empty or unreadable list would claim the channel is live when it
+		// may not be.
+		if (options.channelId && !findGuildChatLink(links, options.guildName)) {
+			return {
+				outcome: "unknown",
+				reason:
+					"The game server answered 200 but the link was not in the response, so it cannot be confirmed.",
+			};
+		}
+		return { outcome: "stored", links };
 	}
 	const detail =
 		payload && typeof payload === "object" && "error" in payload
