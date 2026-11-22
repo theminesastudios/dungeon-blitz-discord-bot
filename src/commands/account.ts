@@ -310,6 +310,50 @@ export function buildDeleteConfirm(character: GameWalletSummary): ContainerBuild
   );
 }
 
+/**
+ * The message shown after a confirmed rename: the notice plus the refreshed character
+ * card when the roster re-read already has the new name; the notice with a Back button
+ * (which loads the panel fresh) when it could not be re-read yet.
+ */
+export function buildRenameSuccess(
+  fresh: AccountState | null,
+  result: { oldName: string; newName: string; idolsBefore: number; idolsAfter: number },
+): ContainerBuilder[] {
+  const lines = [
+    `**${result.oldName}** is now **${result.newName}**.`,
+    `${emoji("cur_idol")} ${formatNumber(result.idolsBefore)} → **${formatNumber(result.idolsAfter)}** Mammoth Idols`,
+  ];
+  const renamed = fresh ? findCharacter(fresh, result.newName) : null;
+  if (!fresh || !renamed) {
+    return [
+      notice(COLORS.success, "Character renamed", lines, [
+        buttonRow(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel("Back").setCustomId(ID.home)),
+      ]),
+    ];
+  }
+  return [notice(COLORS.success, "Character renamed", lines), buildCharacterDetail(fresh, renamed)];
+}
+
+/** Same for a confirmed delete: the notice plus the refreshed roster when it re-reads. */
+export function buildDeleteSuccess(
+  fresh: AccountState | null,
+  result: { characterName: string; remaining: number },
+  displayName: string,
+): ContainerBuilder[] {
+  const lines = [
+    `**${result.characterName}** was removed from your account.`,
+    `-# ${result.remaining} character${result.remaining === 1 ? "" : "s"} left`,
+  ];
+  if (!fresh) {
+    return [
+      notice(COLORS.muted, "Character deleted", lines, [
+        buttonRow(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel("Back").setCustomId(ID.home)),
+      ]),
+    ];
+  }
+  return [notice(COLORS.muted, "Character deleted", lines), buildDashboard(fresh, displayName)];
+}
+
 /* ------------------------------------------------------------------ helpers */
 
 function interactionDisplayName(
@@ -565,15 +609,10 @@ export const accountRenameConfirmButton = {
       if (!result.ok) {
         return interaction.editReply(v2Update(notice(COLORS.danger, "Rename failed", result.message)));
       }
-      return interaction.editReply(
-        v2Update(
-          notice(COLORS.success, "Character renamed", [
-            `**${result.oldName}** is now **${result.newName}**.`,
-            `${emoji("cur_idol")} ${formatNumber(result.idolsBefore)} → **${formatNumber(result.idolsAfter)}** Mammoth Idols`,
-            "-# Open `/account view` again to see the updated roster.",
-          ]),
-        ),
-      );
+      // The game flushes Mongo before answering, so a fresh read shows the new
+      // name. Render it in place instead of telling the player to reopen the panel.
+      const fresh = await loadAccountState(discordId).catch(() => null);
+      return interaction.editReply(v2Update(buildRenameSuccess(fresh, result)));
     });
   },
 };
@@ -614,13 +653,11 @@ export const accountDeleteConfirmButton = {
       if (!result.ok) {
         return interaction.editReply(v2Update(notice(COLORS.danger, "Delete failed", result.message)));
       }
+      // Same as rename: the flush already happened server-side, so re-read and
+      // show the roster as it is now instead of asking the player to reopen it.
+      const fresh = await loadAccountState(discordId).catch(() => null);
       return interaction.editReply(
-        v2Update(
-          notice(COLORS.muted, "Character deleted", [
-            `**${result.characterName}** was removed from your account.`,
-            `-# ${result.remaining} character${result.remaining === 1 ? "" : "s"} left · open \`/account view\` again to see the roster.`,
-          ]),
-        ),
+        v2Update(buildDeleteSuccess(fresh, result, interactionDisplayName(interaction))),
       );
     });
   },
