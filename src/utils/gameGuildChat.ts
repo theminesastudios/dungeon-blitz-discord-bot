@@ -1,0 +1,245 @@
+/**
+ * The Discord channel an in-game guild's chat is linked to, for `/guild-chat`.
+ *
+ * Unlike `/lobby-chat` there is no Discord lobby behind a guild link: the game
+ * server relays the guild's chat into the channel by webhook (or as the bot) and
+ * polls the channel back into guild chat. So the game server only stores the
+ * mapping — `POST /api/admin/guild-chat` — and its `200` means the link was
+ * stored, nothing about Discord having accepted anything. Which channel is
+ * linkable is therefore checked here, with Discord, before the server is asked.
+ *
+ * Who may link is also settled here: the game trusts the shared admin secret, so
+ * the command reads the caller's save and only sends the name of the in-game
+ * guild one of their characters leads (`guild.rank` 0, Guild Master). A caller
+ * who leads no guild never reaches the game server.
+ */
+
+import {
+	fetchGameServerAdmin,
+	postGameServerAdmin,
+} from "./gameMaintenance.js";
+import { hasDiscordSideRestrictions } from "./gameLobbyChat.js";
+
+const GUILD_CHAT_PATH = "/api/admin/guild-chat";
+
+const DISCORD_API_BASE = "https://discord.com/api/v10";
+
+/** A channel read must not hold an interaction open while Discord stalls. */
+const DISCORD_READ_TIMEOUT_MS = 6_000;
+
+/** Only a plain server text channel can hold a chat relay. */
+const GUILD_TEXT_CHANNEL_TYPE = 0;
+
+/** One stored link, as the game server reports it. */
+export type GuildChatLink = {
+	guildName: string;
+	discordGuildId: string | null;
+	channelId: string;
+	channelName: string | null;
+	updatedAt: string;
+	updatedBy: string | null;
+};
+
+export type GuildChatLinkResult =
+	| { outcome: "stored"; links: GuildChatLink[] }
+	| { outcome: "failed"; status: number | null; error: string }
+	| { outcome: "unknown"; reason: string };
+
+function optionalString(value: unknown): string | null {
+	const text = String(value ?? "").trim();
+	return text ? text : null;
+}
+
+function isSnowflake(value: string): boolean {
+	return /^\d{5,32}$/.test(value);
+}
+
+function parseGuildChatLink(raw: unknown): GuildChatLink | null {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+	const record = raw as Record<string, unknown>;
+	const guildName = optionalString(record.guildName ?? record.guild_name);
+	const channelId = optionalString(record.channelId ?? record.channel_id);
+	if (!guildName || !channelId || !isSnowflake(channelId)) return null;
+	return {
+		guildName,
+		discordGuildId: optionalString(record.discordGuildId ?? record.discord_guild_id ?? record.guildId),
+		channelId,
+		channelName: optionalString(record.channelName ?? record.channel_name),
+		updatedAt: optionalString(record.updatedAt ?? record.updated_at) ?? "",
+		updatedBy: optionalString(record.updatedBy ?? record.updated_by ?? record.requestedBy),
+	};
+}
+
+export function parseGuildChatLinks(payload: unknown): GuildChatLink[] {
+	const raw = (payload ?? {}) as { links?: unknown };
+	return (Array.isArray(raw.links) ? raw.links : [])
+		.map(parseGuildChatLink)
+		.filter((link): link is GuildChatLink => link !== null);
+}
+
+/** Case/spacing-insensitive match on the in-game guild name, as the game keys it. */
+export function findGuildChatLink(links: GuildChatLink[], guildName: string): GuildChatLink | null {
+	const key = guildName.trim().replace(/\s+/g, " ").toLowerCase();
+	return links.find((link) => link.guildName.toLowerCase() === key) ?? null;
+}
+
+export async function fetchGuildChatLinks(): Promise<GuildChatLink[]> {
+	const payload = await fetchGameServerAdmin<unknown>(
+		GUILD_CHAT_PATH,
+		"the guild chat channel links",
+	);
+	return parseGuildChatLinks(payload);
+}
+
+export async function setGuildChatLink(options: {
+	guildName: string;
+	guildId: string | null;
+	channelId: string | null;
+	channelName?: string | null;
+	requestedBy?: string | null;
+}): Promise<GuildChatLinkResult> {
+	const body = {
+		guildName: options.guildName,
+		guildId: options.guildId,
+		channelId: options.channelId,
+		channelName: options.channelName ?? null,
+		requestedBy: options.requestedBy ?? null,
+	};
+
+	let answer: Awaited<ReturnType<typeof postGameServerAdmin>>;
+	try {
+		answer = await postGameServerAdmin(GUILD_CHAT_PATH, body);
+	} catch (error) {
+		const name = error instanceof Error ? error.name : "";
+		const message = error instanceof Error ? error.message : String(error);
+		if (name === "TimeoutError" || name === "AbortError") {
+			return { outcome: "unknown", reason: "The game server did not answer in time." };
+		}
+		if (/DISCORD_MAINTENANCE_API_SECRET/.test(message)) {
+			return { outcome: "failed", status: null, error: message };
+		}
+		return {
+			outcome: "unknown",
+			reason: `The request to the game server failed before an answer arrived: ${message}`,
+		};
+	}
+
+	const { status, payload, rawBody } = answer;
+	if (status === 200) {
+		return { outcome: "stored", links: parseGuildChatLinks(payload) };
+	}
+	const detail =
+		payload && typeof payload === "object" && "error" in payload
+			? String((payload as { error?: unknown }).error ?? "unknown error")
+			: rawBody.trim().startsWith("<")
+				? "the game server has no route at this path; it needs the guild-chat route deployed first"
+				: "invalid response";
+	return { outcome: "failed", status, error: detail };
+}
+
+/* ------------------------------------------------------------------
+ * Checking the channel with Discord before the game is told about it
+ * ------------------------------------------------------------------ */
+
+type DiscordChannel = {
+	id?: unknown;
+	name?: unknown;
+	type?: unknown;
+	guild_id?: unknown;
+	permission_overwrites?: unknown;
+};
+
+export type GuildChatChannelCheck =
+	| {
+			ok: true;
+			channelId: string;
+			channelName: string;
+			/**
+			 * The channel has role or member permission overrides. Those apply in the
+			 * Discord client only: every guild member reads the relayed lines in game.
+			 */
+			restrictedInDiscord: boolean;
+	  }
+	| { ok: false; reason: string };
+
+/**
+ * Confirms the channel is one a chat relay can live in: a text channel in the
+ * guild the command was run in, that the bot can see. Discord answers `404` both
+ * for an id that does not exist and for one the bot cannot see, so the reason
+ * names both rather than claiming the id is wrong. Age restriction does not
+ * matter here — nothing is linked as a lobby.
+ */
+export async function checkGuildChatChannel(
+	channelId: string,
+	options: { guildId?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<GuildChatChannelCheck> {
+	const env = options.env ?? process.env;
+	const botToken = String(env.DISCORD_BOT_TOKEN ?? "").trim();
+	if (!botToken) {
+		return {
+			ok: false,
+			reason:
+				"The bot deployment has no DISCORD_BOT_TOKEN, so it cannot confirm the channel with Discord.",
+		};
+	}
+
+	let channel: DiscordChannel;
+	try {
+		const response = await fetch(
+			`${DISCORD_API_BASE}/channels/${encodeURIComponent(channelId)}`,
+			{
+				headers: { Authorization: `Bot ${botToken}`, Accept: "application/json" },
+				signal: AbortSignal.timeout(DISCORD_READ_TIMEOUT_MS),
+			},
+		);
+		if (response.status === 404) {
+			return {
+				ok: false,
+				reason:
+					"Discord did not return that channel for the bot: the id is wrong, or the bot cannot see the channel.",
+			};
+		}
+		if (!response.ok) {
+			return {
+				ok: false,
+				reason: `Discord answered ${response.status} when reading that channel; retry once the API is reachable.`,
+			};
+		}
+		channel = (await response.json()) as DiscordChannel;
+	} catch (error) {
+		return {
+			ok: false,
+			reason: `Discord could not be reached to check the channel: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		};
+	}
+
+	if (Number(channel.type) !== GUILD_TEXT_CHANNEL_TYPE) {
+		return {
+			ok: false,
+			reason:
+				"That is not a text channel. Guild chat can only be relayed to a normal server text channel (not announcement, voice, forum or thread).",
+		};
+	}
+
+	const channelGuildId = optionalString(channel.guild_id);
+	if (!channelGuildId) {
+		return { ok: false, reason: "That is not a channel in a server; guild chat needs a guild channel." };
+	}
+
+	const expectedGuildId = String(options.guildId ?? "").trim();
+	if (expectedGuildId && channelGuildId !== expectedGuildId) {
+		return {
+			ok: false,
+			reason: "That channel belongs to a different server than the one this command was run in.",
+		};
+	}
+
+	return {
+		ok: true,
+		channelId: optionalString(channel.id) ?? channelId,
+		channelName: optionalString(channel.name) ?? channelId,
+		restrictedInDiscord: hasDiscordSideRestrictions(channel.permission_overwrites),
+	};
+}

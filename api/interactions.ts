@@ -59,6 +59,7 @@ import {
   grantUserSelect,
 } from "../src/commands/grant.js";
 import { lobbyChatCommand } from "../src/commands/lobby-chat.js";
+import { guildChatCommand } from "../src/commands/guild-chat.js";
 import { errorMessage, logError, logInfo, startTimer } from "../src/utils/logger.js";
 
 const applicationId = process.env.DISCORD_APPLICATION_ID?.trim();
@@ -108,6 +109,7 @@ const publicCommandModules: CommandModule[] = [
   packsCommand,
   reportBugCommand,
   lobbyChatCommand,
+  guildChatCommand,
 ];
 
 /** The staff set: registered on the community guild (DISCORD_GUILD_ID) only. */

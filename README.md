@@ -28,6 +28,7 @@ Every reply is a Components V2 **container**; follow-up actions are buttons, sel
 - `/admin ban target duration [reason]` (administrator) bans a Discord member from the game for a limited time. `duration` is one of `1-hour`, `1-day`, `3-days`, `7-days`, `30-days` or `Permanent`; the bot resolves the member to their linked game user and asks the game server to enforce it, which also drops a live session.
 - `/admin unban target [reason]` (administrator) lifts a game ban, permanent or otherwise.
 - `/admin maintenance seconds` (administrator) starts the in-game maintenance warning.
+- `/guild-chat [channel]` (administrator, every guild) links the in-game guild the caller *leads* to a Discord channel: the game relays the guild's chat into the channel by webhook and polls the channel's messages back into guild chat, tagged `[Discord]`. The caller's linked account must have a character at guild rank 0 (Guild Master); officers and members cannot link. `none` unlinks, and running it with no channel shows the link in use. See [Linked guild chat](#linked-guild-chat).
 - `/lobby-chat [channel]` (administrator, every guild) moves the game's lobby chat to a Discord channel: the game server links its Discord lobby to that channel (Discord "Linked Channels"), so players speak there as themselves through the game. Give a channel as `#channel-name`, `<#id>` or a raw id; `none` returns to the server's default channel, and running it with no channel shows the channel in use now. The reply only says the channel moved once the game server confirms the link. The game holds one lobby link at a time, so the last guild to move it wins. See [Linked lobby chat](#linked-lobby-chat).
 - `/admin credits player dollars [note] [mode]` (administrator) adds Royal Sigils to a linked player at 100 Royal Sigils per $1. It stacks on top of what the player paid on GitHub Sponsors and Patreon, is audited on the player's profile, and can be spent in `/packs`. `mode: remove` takes added credits back (for a grant entered by mistake): it only touches added credits, never what a GitHub sponsorship is worth, and refuses an amount larger than the player's added credits. Each removal is audited as a negative entry next to the grants. Credits already spent on packs stay spent, so the player's balance shows 0 until new credit covers the gap.
 - Royal Sigils (`/packs`): every $1 a player has paid is 100 Royal Sigils. GitHub Sponsors payments, monthly and one-time, are rebuilt from the sponsored account's sponsor activity (start, tier change, cancellation, refund; needs `GITHUB_TOKEN` of an owner of the sponsored account). Patreon charges are read when `PATREON_ACCESS_TOKEN` (creator access token) and `PATREON_CAMPAIGN_ID` are set, matched to the player by the Discord account linked on Patreon. The history is stored on the profile, and the shop's **My Royal Sigils** button lists it month by month, including cancellations and resubscriptions. `/admin sponsor` shows the same list for a GitHub login.
@@ -51,7 +52,7 @@ Every reply is a Components V2 **container**; follow-up actions are buttons, sel
 `scripts/register.ts` (`npm run build`) does three bulk overwrites, in this order:
 
 1. `PUT /applications/{app}/guilds/{DISCORD_GUILD_ID}/commands` with the staff set — `/admin`, `/server`, `/env`, `/diagnose`, `/mailbox` — so they are offered on the community server only. Guild commands update instantly.
-2. `PUT /applications/{app}/commands` with the public set — `/account`, `/authorize`, `/player`, `/packs`, `/report-bug`, `/lobby-chat` — plus the Activity's Entry Point command, which the global overwrite must carry. Global commands propagate to every guild the bot is in; Discord can take up to an hour to publish a change.
+2. `PUT /applications/{app}/commands` with the public set — `/account`, `/authorize`, `/player`, `/packs`, `/report-bug`, `/lobby-chat`, `/guild-chat` — plus the Activity's Entry Point command, which the global overwrite must carry. Global commands propagate to every guild the bot is in; Discord can take up to an hour to publish a change.
 3. The linked role metadata (`is_sponsor`, `contributor`), which is application-wide.
 
 It needs `DISCORD_BOT_TOKEN` and `DISCORD_APPLICATION_ID`; without `DISCORD_GUILD_ID` the staff set is skipped rather than registered globally. Preview deployments skip registration unless `ALLOW_PREVIEW_COMMAND_REGISTRATION=true`.
@@ -160,6 +161,12 @@ cannot detect that. The server's link call is where it surfaces, as a `502`.
 Discord's own requirements for the link (OAuth communication scopes, a persistent lobby, a lobby
 member with `CanLinkLobby`, and the 20 linking operations per 2 hours rate limit) are the game
 server's to meet; `tools/linkedDiscordLobby.js` on the game server sets the lobby up.
+
+### Linked guild chat
+
+`/guild-chat` stores a per-guild link on the game server (`POST /api/admin/guild-chat`): `guild name → {discordGuildId, channelId}`, kept in `.discord-guild-chat-channels.json` beside the server. The game relays that guild's `scope: 'guild'` lines to the channel by webhook named *Dungeon Blitz Lobby* (the bot posts `**Name**: line` where it cannot make one), and polls the channel for messages, broadcasting each into the guild's chat as `[Discord] <name>: <line>`. A link's channel backlog is never replayed, and the relay only runs while the bot relay is enabled (`botOutboundEnabled`, `gameChatToChannelEnabled`, relay mode `bot` or `both`).
+
+The link can only be made by the guild's leader: the bot resolves the caller's Discord id to their linked game account and reads `guild.rank` 0 off the save — the game server does not re-check it, so the route itself trusts the shared admin secret like the other `/api/admin/*` routes. `none` removes the link.
 
 ### Sponsor role and the badge
 
