@@ -565,15 +565,25 @@ export const accountRenameConfirmButton = {
       if (!result.ok) {
         return interaction.editReply(v2Update(notice(COLORS.danger, "Rename failed", result.message)));
       }
-      return interaction.editReply(
-        v2Update(
-          notice(COLORS.success, "Character renamed", [
+      // The game flushes Mongo before answering, so a fresh read shows the new
+      // name. Render it in place instead of telling the player to reopen the panel.
+      const renamedNotice = notice(COLORS.success, "Character renamed", [
+        `**${result.oldName}** is now **${result.newName}**.`,
+        `${emoji("cur_idol")} ${formatNumber(result.idolsBefore)} → **${formatNumber(result.idolsAfter)}** Mammoth Idols`,
+      ]);
+      const fresh = await loadAccountState(discordId).catch(() => null);
+      const renamed = fresh ? findCharacter(fresh, result.newName) : null;
+      if (!fresh || !renamed) {
+        return interaction.editReply(
+          v2Update(notice(COLORS.success, "Character renamed", [
             `**${result.oldName}** is now **${result.newName}**.`,
             `${emoji("cur_idol")} ${formatNumber(result.idolsBefore)} → **${formatNumber(result.idolsAfter)}** Mammoth Idols`,
-            "-# Open `/account view` again to see the updated roster.",
-          ]),
-        ),
-      );
+          ], [
+            buttonRow(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel("Back").setCustomId(ID.home)),
+          ])),
+        );
+      }
+      return interaction.editReply(v2Update([renamedNotice, buildCharacterDetail(fresh, renamed)]));
     });
   },
 };
@@ -614,13 +624,25 @@ export const accountDeleteConfirmButton = {
       if (!result.ok) {
         return interaction.editReply(v2Update(notice(COLORS.danger, "Delete failed", result.message)));
       }
-      return interaction.editReply(
-        v2Update(
-          notice(COLORS.muted, "Character deleted", [
+      // Same as rename: the flush already happened server-side, so re-read and
+      // show the roster as it is now instead of asking the player to reopen it.
+      const deletedNotice = notice(COLORS.muted, "Character deleted", [
+        `**${result.characterName}** was removed from your account.`,
+        `-# ${result.remaining} character${result.remaining === 1 ? "" : "s"} left`,
+      ]);
+      const fresh = await loadAccountState(discordId).catch(() => null);
+      if (!fresh) {
+        return interaction.editReply(
+          v2Update(notice(COLORS.muted, "Character deleted", [
             `**${result.characterName}** was removed from your account.`,
-            `-# ${result.remaining} character${result.remaining === 1 ? "" : "s"} left · open \`/account view\` again to see the roster.`,
-          ]),
-        ),
+            `-# ${result.remaining} character${result.remaining === 1 ? "" : "s"} left`,
+          ], [
+            buttonRow(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel("Back").setCustomId(ID.home)),
+          ])),
+        );
+      }
+      return interaction.editReply(
+        v2Update([deletedNotice, buildDashboard(fresh, interactionDisplayName(interaction))]),
       );
     });
   },
