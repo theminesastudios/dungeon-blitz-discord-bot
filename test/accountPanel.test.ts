@@ -11,7 +11,9 @@ const {
 	buildCharacterDetail,
 	buildDashboard,
 	buildDeleteConfirm,
+	buildDeleteSuccess,
 	buildRenameConfirm,
+	buildRenameSuccess,
 	customIdNames,
 	pickCurrentCharacter,
 } = await import("../src/commands/account.js");
@@ -110,6 +112,55 @@ assert.match(texts(buildRenameConfirm(veteran, "NewHero", 499).toJSON()), /"disa
 const odd = character({ characterName: "a:b" });
 const [deleteId] = customIds(buildDeleteConfirm(odd).toJSON());
 assert.deepEqual(customIdNames(deleteId, ACCOUNT_IDS.deleteConfirm), ["a:b"]);
+
+// After a confirmed rename the message is the notice plus the refreshed character
+// card — the panel shows the new name without reopening the command.
+const renamedState = {
+	account,
+	characters: [character({ characterName: "NewHero" }), fresh],
+	notices: true,
+};
+const renamed = buildRenameSuccess(renamedState, {
+	oldName: "Veteran",
+	newName: "NewHero",
+	idolsBefore: 700,
+	idolsAfter: 200,
+});
+assert.equal(renamed.length, 2);
+assert.match(texts(renamed[0].toJSON()), /Veteran.*NewHero/s);
+assert.match(texts(renamed[1].toJSON()), /NewHero/);
+assert.ok(customIds(renamed[1].toJSON()).includes(`${ACCOUNT_IDS.rename}NewHero`));
+
+// When the roster cannot be re-read (or lags), the notice stays and offers Back.
+const renameFallback = buildRenameSuccess(null, {
+	oldName: "Veteran",
+	newName: "NewHero",
+	idolsBefore: 700,
+	idolsAfter: 200,
+});
+assert.equal(renameFallback.length, 1);
+assert.ok(customIds(renameFallback[0].toJSON()).includes(ACCOUNT_IDS.home));
+const lagged = buildRenameSuccess(renamedState, {
+	oldName: "Veteran",
+	newName: "Missing",
+	idolsBefore: 700,
+	idolsAfter: 200,
+});
+assert.equal(lagged.length, 1);
+assert.ok(customIds(lagged[0].toJSON()).includes(ACCOUNT_IDS.home));
+
+// After a confirmed delete the message is the notice plus the refreshed roster.
+const deleted = buildDeleteSuccess(
+	{ account, characters: [fresh], notices: true },
+	{ characterName: "Veteran", remaining: 1 },
+	"Neo",
+);
+assert.equal(deleted.length, 2);
+assert.match(texts(deleted[0].toJSON()), /Veteran.*removed|removed.*Veteran/s);
+assert.doesNotMatch(texts(deleted[1].toJSON()), /Veteran/);
+const deleteFallback = buildDeleteSuccess(null, { characterName: "Veteran", remaining: 1 }, "Neo");
+assert.equal(deleteFallback.length, 1);
+assert.ok(customIds(deleteFallback[0].toJSON()).includes(ACCOUNT_IDS.home));
 
 // Current quest: the story quest leads, and a finished objective shows its turn-in text.
 assert.equal(currentQuest({}), null);
