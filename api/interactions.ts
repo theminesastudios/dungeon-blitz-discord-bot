@@ -58,6 +58,7 @@ import {
   grantStartButton,
   grantUserSelect,
 } from "../src/commands/grant.js";
+import { lobbyChatCommand } from "../src/commands/lobby-chat.js";
 import { errorMessage, logError, logInfo, startTimer } from "../src/utils/logger.js";
 
 const applicationId = process.env.DISCORD_APPLICATION_ID?.trim();
@@ -93,17 +94,34 @@ type ComponentModule = {
 type ModalModule = { customId: string; handler: ModalHandler };
 type AutocompleteModule = { command: string; handler: AutocompleteHandler };
 
-const commandModules: CommandModule[] = [
-  serverCommand,
+/**
+ * The public set: registered globally, so every guild the bot is added to gets
+ * them (issue #60). Anything on the game itself — bans, deploys, `.env`, logs,
+ * the staff toolbox — stays on the community guild below, because
+ * `default_member_permissions` Administrator would otherwise hand every guild
+ * the bot joins an admin's own members as game operators.
+ */
+const publicCommandModules: CommandModule[] = [
   accountCommand,
-  adminCommand,
   authorizeCommand,
   playerCommand,
   packsCommand,
   reportBugCommand,
+  lobbyChatCommand,
+];
+
+/** The staff set: registered on the community guild (DISCORD_GUILD_ID) only. */
+const staffCommandModules: CommandModule[] = [
+  serverCommand,
+  adminCommand,
   diagnoseCommand,
   envCommand,
   mailboxCommand,
+];
+
+const commandModules: CommandModule[] = [
+  ...publicCommandModules,
+  ...staffCommandModules,
 ];
 
 const componentModules: ComponentModule[] = [
@@ -138,8 +156,17 @@ const autocompleteModules: AutocompleteModule[] = [
   { command: "player", handler: handlePlayerAutocomplete },
 ];
 
-/** Command payloads for global registration (see scripts/register.ts). */
-export const commandData = commandModules.map((command) => command.data.toJSON());
+/**
+ * Command payloads for registration (see scripts/register.ts): the public set
+ * goes to Discord's global endpoint, the staff set to the community guild's.
+ */
+export const publicCommandData = publicCommandModules.map((command) =>
+  command.data.toJSON(),
+);
+export const staffCommandData = staffCommandModules.map((command) =>
+  command.data.toJSON(),
+);
+export const commandData = [...publicCommandData, ...staffCommandData];
 
 const commandHandlers = new Map<string, CommandHandler>(
   commandData.map((payload, index) => [payload.name, commandModules[index].handler]),

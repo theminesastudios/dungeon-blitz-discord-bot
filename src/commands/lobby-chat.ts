@@ -1,3 +1,7 @@
+import {
+	CommandBuilder,
+	CommandContext,
+} from "@minesa-org/mini-interaction";
 import type { CommandInteraction } from "@minesa-org/mini-interaction";
 import { interactionActorLabel, isAdministrator } from "../utils/discordInteractions.js";
 import { GameServerAdminError } from "../utils/gameMaintenance.js";
@@ -11,7 +15,7 @@ import {
 } from "../utils/gameLobbyChat.js";
 
 /**
- * `/admin lobby-chat` — moves the game's lobby chat to a Discord channel.
+ * `/lobby-chat` — moves the game's lobby chat to a Discord channel.
  *
  * The game server links its Discord lobby to the channel (Discord "Linked
  * Channels"), so players speak there as themselves through the game. The server
@@ -19,9 +23,15 @@ import {
  * admin secret (`POST /api/admin/lobby-chat`) and never posts lobby chat into the
  * channel itself.
  *
- *   /admin lobby-chat              — show the channel in use right now
- *   /admin lobby-chat #lobby-chat  — link the lobby to that channel
- *   /admin lobby-chat none         — return to the server's default channel
+ *   /lobby-chat              — show the channel in use right now
+ *   /lobby-chat #lobby-chat  — link the lobby to that channel
+ *   /lobby-chat none         — return to the server's default channel
+ *
+ * The command is global and administrator-gated, so an administrator of any
+ * guild the bot is added to can point lobby chat at one of their own channels
+ * (issue #60). It is guild-only (`contexts: [Guild]`): in a DM there is no
+ * channel to link. The game holds one lobby link at a time, so the last guild
+ * to move it wins; the bare command shows where it is.
  *
  * A channel is checked against Discord before the server is asked, because
  * Discord cannot link one that is not a plain text channel or is age-restricted.
@@ -127,7 +137,7 @@ function verbatim(text: string, limit = 3_500): string {
 }
 
 function stillInChannel(current: GameLobbyChatState | null): string {
-	if (!current) return "Unchanged. Run `/admin lobby-chat` with no channel to see which channel is in use.";
+	if (!current) return "Unchanged. Run `/lobby-chat` with no channel to see which channel is in use.";
 	if (!current.channelId) return "The server's default channel";
 	return `<#${current.channelId}>${current.channelName ? ` (${oneLine(current.channelName, 200)})` : ""}`;
 }
@@ -159,7 +169,7 @@ export function buildLobbyChatMoveEmbed(
 		return {
 			color: UNKNOWN_COLOR,
 			title: "Lobby chat move: outcome unknown",
-			description: `${result.reason} The server may or may not have moved lobby chat. Run \`/admin lobby-chat\` with no channel to see which channel is in use before trying again.`,
+			description: `${result.reason} The server may or may not have moved lobby chat. Run \`/lobby-chat\` with no channel to see which channel is in use before trying again.`,
 		};
 	}
 
@@ -177,6 +187,12 @@ export function buildLobbyChatMoveEmbed(
 }
 
 export async function handleLobbyChat(interaction: CommandInteraction) {
+	if (!interaction.guild_id) {
+		return interaction.reply({
+			content: "Lobby chat can only be linked from inside a server.",
+			flags: 64,
+		});
+	}
 	if (!isAdministrator(interaction)) {
 		return interaction.reply({
 			content: "Administrator permission is required.",
@@ -258,3 +274,31 @@ export async function handleLobbyChat(interaction: CommandInteraction) {
 		embeds: [buildLobbyChatMoveEmbed(result, { restrictedInDiscord })],
 	});
 }
+
+/* ------------------------------------------------------------------
+ * The command itself
+ * ------------------------------------------------------------------ */
+
+/**
+ * A top-level command rather than an `/admin` subcommand: `/admin` stays on the
+ * community guild, while this one is registered globally (scripts/register.ts)
+ * so the administrators of any guild the bot is added to can link lobby chat to
+ * their own channel. `contexts: [Guild]` keeps it out of DMs, where there is no
+ * channel to link.
+ */
+export const lobbyChatCommand = {
+	data: new CommandBuilder()
+		.setName("lobby-chat")
+		.setDescription("Link the game's lobby chat to a channel in this server")
+		.setDefaultMemberPermissions(8n)
+		.setContexts([CommandContext.Guild])
+		.addStringOption((option) =>
+			option
+				.setName("channel")
+				.setDescription(
+					"Channel to link (#channel, <#id> or an id), `none` to unlink, or empty to show the current one",
+				)
+				.setRequired(false),
+		),
+	handler: handleLobbyChat,
+};

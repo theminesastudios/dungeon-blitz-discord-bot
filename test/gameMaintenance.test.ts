@@ -31,7 +31,7 @@ assert.deepEqual(result, { ok: true, seconds: 300, recipients: 4 });
 // Without GAME_SERVER_BASE_URL the live game server is used by default.
 delete process.env.GAME_SERVER_BASE_URL;
 const resultDefault = await broadcastGameMaintenance(60);
-assert.equal(requestedUrl, "http://35.185.71.109/api/admin/maintenance");
+assert.equal(requestedUrl, "http://dungeonblitzr.theminesa.studio/api/admin/maintenance");
 assert.deepEqual(JSON.parse(requestBody), { seconds: 60 });
 assert.deepEqual(resultDefault, { ok: true, seconds: 60, recipients: 4 });
 

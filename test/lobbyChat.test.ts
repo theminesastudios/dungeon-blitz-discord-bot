@@ -282,7 +282,7 @@ try {
 		const run = await runLobbyChat(NEW_CHANNEL, textChannel, "timeout");
 		assert.equal(run.gameRequests.length, 1);
 		assert.match(run.embed.title ?? "", /unknown/);
-		assert.match(run.text, /`\/admin lobby-chat` with no channel/);
+		assert.match(run.text, /`\/lobby-chat` with no channel/);
 		assert.doesNotMatch(run.text, /Lobby linked to|not moved/);
 	}
 
@@ -298,7 +298,28 @@ try {
 		assert.match(run.text, reason);
 	}
 
-	// The channel check on its own: a text channel in the right guild passes.
+	// Outside a guild there is no channel to link, so the command refuses before
+// touching Discord or the game server.
+{
+	const events: string[] = [];
+	let replied = "";
+	const interaction = {
+		guild_id: null,
+		member: null,
+		user: { id: "1", username: "admin" },
+		options: { getString: () => "none" },
+		reply: async (payload: { content?: string }) => {
+			events.push("reply");
+			replied = String(payload.content ?? "");
+		},
+		deferReply: async () => events.push("defer"),
+	};
+	await handleLobbyChat(interaction as never);
+	assert.deepEqual(events, ["reply"]);
+	assert.match(replied, /inside a server/);
+}
+
+// The channel check on its own: a text channel in the right guild passes.
 	let discordRequest = "";
 	globalThis.fetch = async (input, init) => {
 		discordRequest = String(input);

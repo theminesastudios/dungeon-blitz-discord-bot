@@ -20,7 +20,6 @@ import {
   handleWidgetStatusAutocomplete,
 } from "./widget-status.js";
 import { handleSponsorInfo } from "./sponsor-info.js";
-import { handleLobbyChat } from "./lobby-chat.js";
 import { handleGrant } from "./grant.js";
 import { handleSponsorRole } from "./sponsor-role.js";
 import { handleProfile, handleProfileAutocomplete } from "./profile.js";
@@ -34,7 +33,6 @@ import { BAN_DURATION_CHOICES } from "../utils/gameModeration.js";
  *   /admin profile       — a player's playtime, characters, XP, balances, abilities and talents
  *   /admin ban / unban   — take a player out of the game, or let them back in
  *   /admin maintenance   — start the in-game maintenance countdown
- *   /admin lobby-chat    — choose the Discord channel lobby chat is linked to
  *   /admin credits        — add credits for a donation, or remove credits added by mistake
  *   /admin idols          — add or subtract Mammoth Idols
  *   /admin rewards        — strip sponsor pack rewards from a save
@@ -114,19 +112,6 @@ export const adminCommand = {
             .setMinValue(1)
             .setMaxValue(86_400)
             .setRequired(true),
-        ),
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("lobby-chat")
-        .setDescription("Choose the Discord channel the game's lobby chat is linked to")
-        .addStringOption((option) =>
-          option
-            .setName("channel")
-            .setDescription(
-              "Channel to link (#channel, <#id> or an id), `none` to unlink, or empty to show the current one",
-            )
-            .setRequired(false),
         ),
     )
     .addSubcommand((subcommand) =>
@@ -292,8 +277,6 @@ export const adminCommand = {
         return handleUnban(interaction);
       case "maintenance":
         return handleMaintenance(interaction);
-      case "lobby-chat":
-        return handleLobbyChat(interaction);
       case "credits":
         return handleAddCredits(interaction);
       case "idols":
