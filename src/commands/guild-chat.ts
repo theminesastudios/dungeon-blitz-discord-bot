@@ -32,10 +32,14 @@ import { parseLobbyChatArgument } from "../utils/gameLobbyChat.js";
  *   /guild-chat #guild-chat  — link the guild's chat to that channel
  *   /guild-chat none         — unlink
  *
- * The game server relays the guild's lines into the channel by webhook (or as
- * the bot) and polls the channel back into guild chat, tagged `[Discord]`. A
- * channel is checked against Discord before the server is asked, because a
- * relay needs a plain text channel the bot can see in this guild.
+ * A link is a Discord lobby for the guild, linked to the channel the way lobby
+ * chat's lobby is: members who play from the launcher talk in the channel as
+ * themselves, and the channel's messages reach the guild in game tagged
+ * `[Discord]`. Discord lets only a user link a lobby, so a new link is pending
+ * until the Guild Master opens the game from the launcher, signed in with this
+ * Discord account. A channel is checked against Discord before the server is
+ * asked: a text channel in this server that the bot can see and that is not
+ * age-restricted.
  */
 
 const LINKED_COLOR = 0x2ecc71;
@@ -49,7 +53,18 @@ const UNKNOWN_COLOR = 0xf1c40f;
  * guild reads the relayed lines in game whatever the channel is set to.
  */
 const IN_GAME_ACCESS_WARNING =
-	"That channel has role or member restrictions in Discord. Those apply in the Discord client only — every member of the guild reads its chat in game, whatever the channel is set to.";
+	"That channel has role or member restrictions in Discord. Those apply in the Discord client only — every member of the guild reads and writes it in game, whatever the channel is set to.";
+
+/** What a pending link is waiting for, said where the reply shows one. */
+const PENDING_LINK_NOTE =
+	"Waiting for the Guild Master: open Dungeon Blitz from the launcher, signed in with this Discord account, and the launcher links the guild's lobby to the channel. Until then nothing reaches the channel.";
+
+function statusLabel(link: GuildChatLink | null): string {
+	if (!link?.channelId) return "Not linked";
+	if (link.status === "pending") return "Pending — the Guild Master's launcher links it";
+	if (link.status === "linked") return "Linked";
+	return "Stored";
+}
 
 function oneLine(value: string | null | undefined, limit = 1_024): string {
 	const text = String(value ?? "").replace(/\s+/g, " ").trim();
@@ -88,6 +103,7 @@ function buildGuildChatStateEmbed(
 			},
 			...(link
 				? [
+						{ name: "Status", value: statusLabel(link), inline: false },
 						{
 							name: "Changed",
 							value: `${formatTimestamp(link.updatedAt)}${link.updatedBy ? ` by ${oneLine(link.updatedBy, 200)}` : ""}`,
@@ -99,7 +115,7 @@ function buildGuildChatStateEmbed(
 	};
 }
 
-function buildGuildChatResultEmbed(
+export function buildGuildChatResultEmbed(
 	guildName: string,
 	result: GuildChatLinkResult,
 	options: { channelId?: string | null; restrictedInDiscord?: boolean } = {},
@@ -111,8 +127,10 @@ function buildGuildChatResultEmbed(
 			title: unlinked ? "Guild chat unlinked" : "Guild chat linked",
 			color: unlinked ? UNLINKED_COLOR : LINKED_COLOR,
 			description: unlinked
-				? `${guildName}'s chat is no longer relayed to a Discord channel.`
-				: `${guildName}'s chat now relays to <#${link!.channelId}>, and the channel's messages reach the guild in game tagged \`[Discord]\`.`,
+				? `${guildName}'s chat is no longer linked to a Discord channel; its Discord lobby was removed.`
+				: link!.status === "pending"
+					? `${guildName} has a Discord lobby for <#${link!.channelId}>. ${PENDING_LINK_NOTE}`
+					: `${guildName}'s chat is linked to <#${link!.channelId}>: members who play from the launcher talk there as themselves, and the channel's messages reach the guild in game tagged \`[Discord]\`. Officer chat stays in game.`,
 			...(link?.channelId && options.restrictedInDiscord ? { footer: { text: IN_GAME_ACCESS_WARNING } } : {}),
 		});
 	}
@@ -204,8 +222,10 @@ export async function handleGuildChat(interaction: CommandInteraction) {
 					buildGuildChatStateEmbed(guildName, link, {
 						title: "Linked guild chat channel",
 						...(link
-							? {}
-							: { description: "Link a channel and this guild's chat will be relayed both ways." }),
+							? link.status === "pending"
+								? { description: PENDING_LINK_NOTE }
+								: {}
+							: { description: "Link a channel and members who play from the launcher talk there as themselves, both ways." }),
 					}),
 				],
 			});
