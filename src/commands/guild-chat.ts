@@ -1,7 +1,3 @@
-import {
-	CommandBuilder,
-	CommandContext,
-} from "@minesa-org/mini-interaction";
 import type { CommandInteraction } from "@minesa-org/mini-interaction";
 import { interactionActorLabel, interactionDiscordId, isAdministrator } from "../utils/discordInteractions.js";
 import { GameServerAdminError } from "../utils/gameMaintenance.js";
@@ -19,7 +15,7 @@ import {
 import { parseLobbyChatArgument } from "../utils/gameLobbyChat.js";
 
 /**
- * `/guild-chat` — links one in-game guild's chat to a Discord channel.
+ * `/lobby guild` — links one in-game guild's chat to a Discord channel.
  *
  * The caller must be both: an administrator of the Discord guild the command is
  * run in (the channel is theirs to offer), and the leader of the in-game guild
@@ -28,9 +24,9 @@ import { parseLobbyChatArgument } from "../utils/gameLobbyChat.js";
  * guild chats: any Discord server admin who leads an in-game guild can pipe
  * their guild's chat into their community, not just our staff.
  *
- *   /guild-chat              — show the channel the guild's chat is linked to
- *   /guild-chat #guild-chat  — link the guild's chat to that channel
- *   /guild-chat none         — unlink
+ *   /lobby guild              — show the channel the guild's chat is linked to
+ *   /lobby guild #guild-chat  — link the guild's chat to that channel
+ *   /lobby guild none         — unlink
  *
  * The game server relays the guild's lines into the channel by webhook (or as
  * the bot) and polls the channel back into guild chat, tagged `[Discord]`. A
@@ -121,7 +117,7 @@ function buildGuildChatResultEmbed(
 		return {
 			color: UNKNOWN_COLOR,
 			title: "Guild chat link: outcome unknown",
-			description: `${result.reason} The link may or may not have been stored. Run \`/guild-chat\` with no channel to see the link in use before trying again.`,
+			description: `${result.reason} The link may or may not have been stored. Run \`/lobby guild\` with no channel to see the link in use before trying again.`,
 		};
 	}
 
@@ -260,29 +256,3 @@ export async function handleGuildChat(interaction: CommandInteraction) {
 		],
 	});
 }
-
-/* ------------------------------------------------------------------
- * The command itself
- * ------------------------------------------------------------------ */
-
-/**
- * Registered globally (scripts/register.ts) like `/lobby-chat`: the leader of an
- * in-game guild links its chat into whichever Discord server they administer.
- * `contexts: [Guild]` keeps it out of DMs, where there is no channel to link.
- */
-export const guildChatCommand = {
-	data: new CommandBuilder()
-		.setName("guild-chat")
-		.setDescription("Link the chat of the in-game guild you lead to a channel in this server")
-		.setDefaultMemberPermissions(8n)
-		.setContexts([CommandContext.Guild])
-		.addStringOption((option) =>
-			option
-				.setName("channel")
-				.setDescription(
-					"Channel to link (#channel, <#id> or an id), `none` to unlink, or empty to show the current one",
-				)
-				.setRequired(false),
-		),
-	handler: handleGuildChat,
-};

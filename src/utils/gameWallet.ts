@@ -521,7 +521,7 @@ export type LedGuild = {
 /**
  * The in-game guild one player's save says they lead — `guild.rank` 0 is Guild Master, the
  * same constant the game server's GuildHandler uses. `null` when they lead none. Read off
- * the save the way the game's own roster does, so `/guild-chat` can gate a link on the
+ * the save the way the game's own roster does, so `/lobby guild` can gate a link on the
  * caller actually leading the guild they name.
  */
 export async function findGuildLedByUser(gameUserId: number): Promise<LedGuild | null> {

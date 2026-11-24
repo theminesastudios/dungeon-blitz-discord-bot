@@ -58,8 +58,8 @@ import {
   grantStartButton,
   grantUserSelect,
 } from "../src/commands/grant.js";
-import { lobbyChatCommand } from "../src/commands/lobby-chat.js";
-import { guildChatCommand } from "../src/commands/guild-chat.js";
+import { lobbyCommand } from "../src/commands/lobby.js";
+import { dailyCommand, handleDailyAutocomplete } from "../src/commands/daily.js";
 import { errorMessage, logError, logInfo, startTimer } from "../src/utils/logger.js";
 
 const applicationId = process.env.DISCORD_APPLICATION_ID?.trim();
@@ -85,7 +85,11 @@ type ComponentHandler = (
   interaction: MessageComponentInteraction,
 ) => Promise<unknown>;
 type ModalHandler = (interaction: ModalSubmitInteraction) => Promise<unknown>;
-type AutocompleteHandler = (autocomplete: AutocompleteContext) => Promise<void>;
+/** The raw interaction rides along for handlers that need the caller (AutocompleteContext keeps it private). */
+type AutocompleteHandler = (
+  autocomplete: AutocompleteContext,
+  interaction: APIInteraction,
+) => Promise<void>;
 
 type CommandModule = { data: CommandBuilder; handler: CommandHandler };
 type ComponentModule = {
@@ -97,19 +101,29 @@ type AutocompleteModule = { command: string; handler: AutocompleteHandler };
 
 /**
  * The public set: registered globally, so every guild the bot is added to gets
- * them (issue #60). Anything on the game itself — bans, deploys, `.env`, logs,
+ * them (issue #60). Kept to what a player in any server needs: their account
+ * link, a player's card, the daily reward, and linking the game's chats into
+ * their own server. Anything on the game itself — bans, deploys, `.env`, logs,
  * the staff toolbox — stays on the community guild below, because
  * `default_member_permissions` Administrator would otherwise hand every guild
  * the bot joins an admin's own members as game operators.
  */
 const publicCommandModules: CommandModule[] = [
   accountCommand,
-  authorizeCommand,
   playerCommand,
+  dailyCommand,
+  lobbyCommand,
+];
+
+/**
+ * Player commands offered on the community guild (DISCORD_GUILD_ID) only: the
+ * shop (its Booster pack is tied to that guild anyway), Social SDK
+ * authorization and bug reports into the private tracker.
+ */
+const communityCommandModules: CommandModule[] = [
+  authorizeCommand,
   packsCommand,
   reportBugCommand,
-  lobbyChatCommand,
-  guildChatCommand,
 ];
 
 /** The staff set: registered on the community guild (DISCORD_GUILD_ID) only. */
@@ -121,9 +135,15 @@ const staffCommandModules: CommandModule[] = [
   mailboxCommand,
 ];
 
+/** Everything registered on the community guild: its player commands and the staff set. */
+const guildCommandModules: CommandModule[] = [
+  ...communityCommandModules,
+  ...staffCommandModules,
+];
+
 const commandModules: CommandModule[] = [
   ...publicCommandModules,
-  ...staffCommandModules,
+  ...guildCommandModules,
 ];
 
 const componentModules: ComponentModule[] = [
@@ -156,19 +176,21 @@ const modalModules: ModalModule[] = [
 const autocompleteModules: AutocompleteModule[] = [
   { command: "admin", handler: handleAdminAutocomplete },
   { command: "player", handler: handlePlayerAutocomplete },
+  { command: "daily", handler: handleDailyAutocomplete },
 ];
 
 /**
  * Command payloads for registration (see scripts/register.ts): the public set
- * goes to Discord's global endpoint, the staff set to the community guild's.
+ * goes to Discord's global endpoint, the community and staff sets to the
+ * community guild's.
  */
 export const publicCommandData = publicCommandModules.map((command) =>
   command.data.toJSON(),
 );
-export const staffCommandData = staffCommandModules.map((command) =>
+export const guildCommandData = guildCommandModules.map((command) =>
   command.data.toJSON(),
 );
-export const commandData = [...publicCommandData, ...staffCommandData];
+export const commandData = [...publicCommandData, ...guildCommandData];
 
 const commandHandlers = new Map<string, CommandHandler>(
   commandData.map((payload, index) => [payload.name, commandModules[index].handler]),
@@ -386,7 +408,7 @@ async function dispatch(
     const handler = autocompleteHandlers.get(interaction.data.name);
     if (!handler) return AUTOCOMPLETE_EMPTY;
     const autocomplete = new AutocompleteContext(interaction);
-    await handler(autocomplete);
+    await handler(autocomplete, interaction);
     return autocomplete.result ?? AUTOCOMPLETE_EMPTY;
   }
 
