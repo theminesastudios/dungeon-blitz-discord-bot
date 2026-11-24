@@ -114,6 +114,7 @@ try {
 	);
 	assert.doesNotMatch(legacyEmbed.description ?? "", /launcher|lobby/, "a server without lobby state is not described as one");
 	assert.match(legacyEmbed.description ?? "", /stored/);
+	assert.equal(legacyEmbed.title, "Guild chat link stored", "and its headline does not claim it is live");
 
 	const linkedEmbed = buildGuildChatResultEmbed(
 		GUILD,

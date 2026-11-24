@@ -133,7 +133,13 @@ export function buildGuildChatResultEmbed(
 					: // A game server too old to report the lobby's state: say only what it stored.
 						`The game server stored <#${link!.channelId}> for ${guildName}'s chat.`;
 		return buildGuildChatStateEmbed(guildName, link, {
-			title: unlinked ? "Guild chat unlinked" : pending ? "Guild chat link pending" : "Guild chat linked",
+			title: unlinked
+				? "Guild chat unlinked"
+				: pending
+					? "Guild chat link pending"
+					: link?.status === "linked"
+						? "Guild chat linked"
+						: "Guild chat link stored",
 			color: unlinked ? UNLINKED_COLOR : pending ? UNKNOWN_COLOR : LINKED_COLOR,
 			description,
 			...(link?.channelId && options.restrictedInDiscord ? { footer: { text: IN_GAME_ACCESS_WARNING } } : {}),
