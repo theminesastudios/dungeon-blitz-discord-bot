@@ -105,6 +105,15 @@ try {
 		JSON.stringify(pendingEmbed).includes("Pending"),
 		"the Status field reads pending",
 	);
+	assert.equal(pendingEmbed.title, "Guild chat link pending", "and the headline does not claim it is linked");
+
+	const legacyEmbed = buildGuildChatResultEmbed(
+		GUILD,
+		{ outcome: "stored", links: parseGuildChatLinks({ links: [row({ status: undefined, lobbyId: undefined })] }) },
+		{ channelId: CHANNEL },
+	);
+	assert.doesNotMatch(legacyEmbed.description ?? "", /launcher|lobby/, "a server without lobby state is not described as one");
+	assert.match(legacyEmbed.description ?? "", /stored/);
 
 	const linkedEmbed = buildGuildChatResultEmbed(
 		GUILD,
@@ -113,6 +122,7 @@ try {
 	);
 	assert.match(linkedEmbed.description ?? "", /talk there as themselves/, "a linked one says how the channel works");
 	assert.match(linkedEmbed.description ?? "", /Officer chat stays in game/);
+	assert.equal(linkedEmbed.title, "Guild chat linked");
 
 	const unlinkedEmbed = buildGuildChatResultEmbed(GUILD, { outcome: "stored", links: [] }, { channelId: null });
 	assert.equal(unlinkedEmbed.title, "Guild chat unlinked");

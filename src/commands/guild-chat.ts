@@ -123,14 +123,19 @@ export function buildGuildChatResultEmbed(
 	if (result.outcome === "stored") {
 		const link = findGuildChatLink(result.links, guildName);
 		const unlinked = options.channelId === null || (options.channelId === undefined && !link);
+		const pending = !unlinked && link?.status === "pending";
+		const description = unlinked
+			? `${guildName}'s chat is no longer linked to a Discord channel; its Discord lobby was removed.`
+			: pending
+				? `${guildName} has a Discord lobby for <#${link!.channelId}>. ${PENDING_LINK_NOTE}`
+				: link?.status === "linked"
+					? `${guildName}'s chat is linked to <#${link.channelId}>: members who play from the launcher talk there as themselves, and the channel's messages reach the guild in game tagged \`[Discord]\`. Officer chat stays in game.`
+					: // A game server too old to report the lobby's state: say only what it stored.
+						`The game server stored <#${link!.channelId}> for ${guildName}'s chat.`;
 		return buildGuildChatStateEmbed(guildName, link, {
-			title: unlinked ? "Guild chat unlinked" : "Guild chat linked",
-			color: unlinked ? UNLINKED_COLOR : LINKED_COLOR,
-			description: unlinked
-				? `${guildName}'s chat is no longer linked to a Discord channel; its Discord lobby was removed.`
-				: link!.status === "pending"
-					? `${guildName} has a Discord lobby for <#${link!.channelId}>. ${PENDING_LINK_NOTE}`
-					: `${guildName}'s chat is linked to <#${link!.channelId}>: members who play from the launcher talk there as themselves, and the channel's messages reach the guild in game tagged \`[Discord]\`. Officer chat stays in game.`,
+			title: unlinked ? "Guild chat unlinked" : pending ? "Guild chat link pending" : "Guild chat linked",
+			color: unlinked ? UNLINKED_COLOR : pending ? UNKNOWN_COLOR : LINKED_COLOR,
+			description,
 			...(link?.channelId && options.restrictedInDiscord ? { footer: { text: IN_GAME_ACCESS_WARNING } } : {}),
 		});
 	}
