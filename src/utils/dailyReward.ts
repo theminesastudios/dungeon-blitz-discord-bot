@@ -20,11 +20,13 @@ import { MongoClient, type Collection } from "mongodb";
  *      `confirmDailyClaim` (the streak, day and total move only now) or
  *      `releaseDailyClaim` (the game said no: nothing was paid, the day is free again).
  *
- * A payment whose outcome is unknown — the game server did not answer — stays pending.
- * The next `/daily` asks again with the *same* `requestId`, which the game server answers
+ * While the game server gives no usable answer, the same `/daily` keeps asking, in real
+ * time, with the *same* `requestId` (DAILY_SETTLE_BUDGET_MS), which the game server answers
  * with the first result instead of paying again (it remembers request ids for 15 minutes,
- * RECENT_REQUEST_TTL_MS in its RewardAdminApi.ts). A pending payment older than that can
- * no longer be retried safely, so it is counted as paid rather than risk paying twice.
+ * RECENT_REQUEST_TTL_MS in its RewardAdminApi.ts). Only when the game server stays silent
+ * for the whole budget does the payment stay pending, for whichever `/daily` runs next to
+ * settle the same way. A pending payment older than the server's memory can no longer be
+ * asked about safely, so it is counted as paid rather than risk paying twice.
  *
  * Because the streak only moves on confirmation, a claim made after midnight while the
  * previous night's payment is still pending cannot build on it: the pending payment is
@@ -40,10 +42,18 @@ const DAY_MS = 86_400_000;
 export const DAILY_RETRY_WINDOW_MS = 14 * 60_000;
 
 /**
- * A payment younger than this may still be in flight in another invocation (the reward
- * request waits up to 14 s over two attempts), so it is not retried from here.
+ * The latest moment, after `/daily` starts, at which it may start another question to the
+ * game server about its payment. The interactions function may run for 60 s
+ * (`vercel.json`) and one reward request waits up to 14 s over its two attempts, so a last
+ * request started at 42 s still ends by 56 s.
  */
-export const DAILY_IN_FLIGHT_MS = 30_000;
+export const DAILY_SETTLE_BUDGET_MS = 42_000;
+
+/**
+ * A payment younger than this may still be being settled by the `/daily` that made it
+ * (DAILY_SETTLE_BUDGET_MS plus the last request), so another invocation does not ask too.
+ */
+export const DAILY_IN_FLIGHT_MS = 65_000;
 
 export type DailyPendingPayment = {
 	requestId: string;

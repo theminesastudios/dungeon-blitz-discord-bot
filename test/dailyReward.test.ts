@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
 	DAILY_IN_FLIGHT_MS,
+	DAILY_SETTLE_BUDGET_MS,
 	DAILY_RETRY_WINDOW_MS,
 	confirmDailyClaim,
 	currentDailyStreak,
@@ -15,7 +16,7 @@ import {
 	type DailyClaimDocument,
 	type DailyReservation,
 } from "../src/utils/dailyReward.js";
-import { pickDailyCharacter } from "../src/commands/daily.js";
+import { pickDailyCharacter, settlePayment, type PaymentResult } from "../src/commands/daily.js";
 
 const DAY = 86_400_000;
 
@@ -197,6 +198,61 @@ async function claimAndPay(nowMs: number): Promise<Reserved> {
 	assert.equal(await confirmDailyClaim(USER, lost, midnight + 62_000), false, "a second confirmation counts nothing");
 	assert.equal(collection.docs.get(USER)?.totalSigils, 1);
 	assert.equal((await reserveDailyClaim(USER, TARGET, midnight + 63_000)).status, "already-claimed");
+}
+
+// The same /daily keeps asking, in real time, with the same request id until the game answers.
+{
+	const pending = { requestId: "req-1", day: today, streak: 3, amount: 3, userId: 7, characterName: "Aria", startedAtMs: 0 };
+	let clock = 0;
+	const asked: string[] = [];
+	let waits = 0;
+	const answers: PaymentResult[] = [
+		{ kind: "unknown", reason: "timeout" },
+		{ kind: "unknown", reason: "timeout" },
+		{ kind: "paid", balance: 103, online: true, characterName: "Aria" },
+	];
+	const result = await settlePayment("u", pending, {
+		deadlineMs: DAILY_SETTLE_BUDGET_MS,
+		onWaiting: () => waits++,
+		payOnce: async (_id, payment) => {
+			asked.push(payment.requestId);
+			clock += 14_000;
+			return answers.shift()!;
+		},
+		now: () => clock,
+		sleep: async (ms) => {
+			clock += ms;
+		},
+	});
+	assert.equal(result.kind, "paid", "settled within the same command");
+	assert.deepEqual(asked, ["req-1", "req-1", "req-1"], "every attempt reuses the request id");
+	assert.equal(waits, 1, "the player is told once that it is still paying");
+
+	// A definite answer stops at once; a game server silent past the budget leaves it unknown.
+	clock = 0;
+	let calls = 0;
+	const refused = await settlePayment("u", pending, {
+		deadlineMs: DAILY_SETTLE_BUDGET_MS,
+		payOnce: async () => (calls++, { kind: "refused", reason: "locked" }),
+		now: () => clock,
+		sleep: async () => {},
+	});
+	assert.equal(refused.kind, "refused");
+	assert.equal(calls, 1);
+
+	clock = 0;
+	calls = 0;
+	const silent = await settlePayment("u", pending, {
+		deadlineMs: DAILY_SETTLE_BUDGET_MS,
+		payOnce: async () => (calls++, (clock += 14_000), { kind: "unknown", reason: "timeout" }),
+		now: () => clock,
+		sleep: async (ms) => {
+			clock += ms;
+		},
+	});
+	assert.equal(silent.kind, "unknown");
+	assert.ok(clock <= 56_000, "the last request ends before the function's 60 s");
+	assert.equal(calls, 3);
 }
 
 setDailyCollectionForTests(null);

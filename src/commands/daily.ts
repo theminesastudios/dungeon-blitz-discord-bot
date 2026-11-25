@@ -10,6 +10,7 @@ import {
 } from "../utils/gameRewards.js";
 import { listSaveCharacters } from "../utils/gameWallet.js";
 import {
+	DAILY_SETTLE_BUDGET_MS,
 	confirmDailyClaim,
 	currentDailyStreak,
 	dailyRewardForStreak,
@@ -96,7 +97,7 @@ function refusalText(outcome: Extract<GameRewardsOutcome, { ok: false }>, charac
 	}
 }
 
-type PaymentResult =
+export type PaymentResult =
 	| { kind: "paid"; balance: number; online: boolean; characterName: string }
 	| { kind: "refused"; reason: string }
 	| { kind: "unknown"; reason: string };
@@ -123,8 +124,59 @@ async function pay(discordId: string, pending: DailyPendingPayment): Promise<Pay
 	return { kind: "unknown", reason: outcome.message };
 }
 
+/** Pause between two questions about the same payment. */
+const SETTLE_RETRY_PAUSE_MS = 2_000;
+
+/**
+ * Pays `pending` now, in real time: while the game server gives no usable answer, asks
+ * again with the same request id — which it pays at most once — until it answers or the
+ * invocation's budget runs out. `onWaiting` runs once, before the first retry, so the
+ * player sees that the payment is still going through.
+ */
+export async function settlePayment(
+	discordId: string,
+	pending: DailyPendingPayment,
+	options: {
+		deadlineMs: number;
+		onWaiting?: () => unknown;
+		payOnce?: (discordId: string, pending: DailyPendingPayment) => Promise<PaymentResult>;
+		now?: () => number;
+		sleep?: (ms: number) => Promise<void>;
+	},
+): Promise<PaymentResult> {
+	const payOnce = options.payOnce ?? pay;
+	const now = options.now ?? Date.now;
+	const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+	let waited = false;
+	for (;;) {
+		const result = await payOnce(discordId, pending);
+		if (result.kind !== "unknown") return result;
+		// `deadlineMs` is the latest a request may *start*; it then takes up to REWARD_REQUEST_MAX_MS.
+		if (now() + SETTLE_RETRY_PAUSE_MS > options.deadlineMs) return result;
+		if (!waited) {
+			waited = true;
+			await Promise.resolve(options.onWaiting?.()).catch(() => undefined);
+		}
+		await sleep(SETTLE_RETRY_PAUSE_MS);
+	}
+}
+
 const UNKNOWN_FOOTER =
-	"Run `/daily` again in a few minutes to finish this claim — it is paid at most once.";
+	"The game server did not answer in time. Your claim is saved and will be paid exactly once as soon as it answers — run `/daily` again in a moment.";
+
+function paidNotice(nowMs: number, pending: DailyPendingPayment, paid: Extract<PaymentResult, { kind: "paid" }>) {
+	return v2(
+		notice(COLORS.success, "Daily reward claimed", [
+			`**+${formatNumber(pending.amount)}** ${SIGIL()} Royal Sigils on **${paid.characterName}** — now **${formatNumber(paid.balance)}**.`,
+			`Streak: ${days(pending.streak)}.`,
+			`${nextClaimLine(nowMs)} ${streakKeptLine(nowMs, pending.streak)}`,
+			...(paid.online ? [] : ["-# The character is offline; the sigils are on its save for the next login."]),
+		]),
+	);
+}
+
+const WAITING_NOTICE = () =>
+	v2(notice(COLORS.warning, "Paying your daily reward…", "The game server is slow to answer; still trying."));
 
 export async function handleDaily(interaction: CommandInteraction) {
 	const discordId = interactionDiscordId(interaction);
@@ -134,6 +186,8 @@ export async function handleDaily(interaction: CommandInteraction) {
 	const requested = String(interaction.options.getString("character", false) ?? "").trim();
 
 	interaction.deferReply({ flags: 64 });
+	const deadlineMs = Date.now() + DAILY_SETTLE_BUDGET_MS;
+	const onWaiting = () => interaction.editReply(WAITING_NOTICE());
 
 	try {
 		const account = await getGameAccountByDiscordId(discordId).catch(() => null);
@@ -166,7 +220,7 @@ export async function handleDaily(interaction: CommandInteraction) {
 				await confirmDailyClaim(discordId, claim, nowMs);
 				logWarn("daily", "pending_assumed_paid", { user: discordId, requestId: state.pending.requestId });
 			} else {
-				const settled = await pay(discordId, state.pending);
+				const settled = await settlePayment(discordId, state.pending, { deadlineMs, onWaiting });
 				if (settled.kind === "unknown") {
 					return interaction.editReply(
 						v2(notice(COLORS.warning, "Earlier claim still unconfirmed", [settled.reason, UNKNOWN_FOOTER])),
@@ -176,15 +230,7 @@ export async function handleDaily(interaction: CommandInteraction) {
 				else await releaseDailyClaim(discordId, claim);
 				logInfo("daily", "pending_settled", { user: discordId, result: settled.kind, requestId: state.pending.requestId });
 				if (settled.kind === "paid" && state.pending.day === utcDay(nowMs)) {
-					return interaction.editReply(
-						v2(
-							notice(COLORS.success, "Daily reward claimed", [
-								`**+${formatNumber(state.pending.amount)}** ${SIGIL()} Royal Sigils on **${settled.characterName}** — now **${formatNumber(settled.balance)}**.`,
-								`Streak: ${days(state.pending.streak)}.`,
-								`${nextClaimLine(nowMs)} ${streakKeptLine(nowMs, state.pending.streak)}`,
-							]),
-						),
-					);
+					return interaction.editReply(paidNotice(Date.now(), state.pending, settled));
 				}
 			}
 		}
@@ -246,9 +292,9 @@ export async function handleDaily(interaction: CommandInteraction) {
 		}
 
 		const { pending } = reservation;
-		const paid = await pay(discordId, pending);
+		const paid = await settlePayment(discordId, pending, { deadlineMs, onWaiting });
 		if (paid.kind === "unknown") {
-			// Kept pending with its request id: the next /daily asks again and is paid once.
+			// Silent for the whole budget: kept pending with its request id, paid at most once.
 			logWarn("daily", "payment_unknown", { user: discordId, requestId: pending.requestId, reason: paid.reason });
 			return interaction.editReply(
 				v2(notice(COLORS.warning, "Daily reward not confirmed yet", [paid.reason, UNKNOWN_FOOTER])),
@@ -280,16 +326,7 @@ export async function handleDaily(interaction: CommandInteraction) {
 			reward: pending.amount,
 			online: paid.online,
 		});
-		return interaction.editReply(
-			v2(
-				notice(COLORS.success, "Daily reward claimed", [
-					`**+${formatNumber(pending.amount)}** ${SIGIL()} Royal Sigils on **${paid.characterName}** — now **${formatNumber(paid.balance)}**.`,
-					`Streak: ${days(pending.streak)}.`,
-					`${nextClaimLine(nowMs)} ${streakKeptLine(nowMs, pending.streak)}`,
-					...(paid.online ? [] : ["-# The character is offline; the sigils are on its save for the next login."]),
-				]),
-			),
-		);
+		return interaction.editReply(paidNotice(Date.now(), pending, paid));
 	} catch (error) {
 		logError("daily", "failed", { user: discordId, error: errorMessage(error) });
 		return interaction.editReply(errorNotice("The daily reward could not be claimed right now. Try again later."));
