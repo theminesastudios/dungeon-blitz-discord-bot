@@ -333,12 +333,13 @@ async function fetchAllGithubActivities(): Promise<GithubSponsorActivity[]> {
 					repositoryOwner?: {
 						sponsorsActivities?: {
 							pageInfo: { hasNextPage: boolean; endCursor: string | null };
+							// GitHub can return null entries in `nodes`; they are skipped below.
 							nodes: Array<{
 								action: string;
 								timestamp: string;
 								sponsor: { login?: string } | null;
 								sponsorsTier: { monthlyPriceInCents: number; isOneTime: boolean; name: string | null } | null;
-							}>;
+							} | null>;
 						};
 					} | null;
 				};
@@ -347,7 +348,7 @@ async function fetchAllGithubActivities(): Promise<GithubSponsorActivity[]> {
 			if (payload.errors?.length) throw new Error(payload.errors.map((error) => error.message).join(", "));
 			const connection = payload.data?.repositoryOwner?.sponsorsActivities;
 			for (const node of connection?.nodes ?? []) {
-				if (!node.sponsor?.login) continue;
+				if (!node?.sponsor?.login) continue;
 				activities.push({
 					action: node.action,
 					timestamp: node.timestamp,
