@@ -1,133 +1,43 @@
-import { randomUUID } from "node:crypto";
 import { MongoClient, type Collection } from "mongodb";
 
 /**
- * `/daily`: one claim per UTC day, paid in Royal Sigils, growing with the streak.
+ * `/daily`: claimable once every 24 hours, paid in Royal Sigils, growing with the streak.
  *
- *   day 1 → 1, day 2 → 2, day 3 → 3, …
+ *   1st day → 1, 2nd → 2, 3rd → 3, …
  *
- * A streak continues when the previous confirmed claim was on the UTC day before today,
- * and starts over at 1 when a day was missed. The day boundary is UTC midnight for
- * everyone, so the reply can show the same `<t:…>` reset time to every player.
- *
- * A claim is two steps, so a payment is never made twice and never counted unpaid:
- *
- *   1. `reserveDailyClaim` writes a `pending` payment — day, streak, amount, character and
- *      the `requestId` the game server will be asked with. Only one reservation can exist
- *      per player: the write is conditional on the document's `claimId`, and a document
- *      that already holds a pending payment refuses a new one.
- *   2. The caller pays through `/api/admin/rewards` with that `requestId`, then either
- *      `confirmDailyClaim` (the streak, day and total move only now) or
- *      `releaseDailyClaim` (the game said no: nothing was paid, the day is free again).
- *
- * While the game server gives no usable answer, the same `/daily` keeps asking, in real
- * time, with the *same* `requestId` (DAILY_SETTLE_BUDGET_MS), which the game server answers
- * with the first result instead of paying again (it remembers request ids for 15 minutes,
- * RECENT_REQUEST_TTL_MS in its RewardAdminApi.ts). Only when the game server stays silent
- * for the whole budget does the payment stay pending, for whichever `/daily` runs next to
- * settle the same way. A pending payment older than the server's memory can no longer be
- * asked about safely, so it is counted as paid rather than risk paying twice.
- *
- * Because the streak only moves on confirmation, a claim made after midnight while the
- * previous night's payment is still pending cannot build on it: the pending payment is
- * settled first.
+ * The clock is real time from the player's own last claim, not a shared daily reset: the
+ * next claim opens 24 hours after the last one, and the streak continues if it is made
+ * within 48 hours of it; later than that, it starts over at 1.
  *
  * One document per Discord user in `dailyClaims`, next to `packClaims`:
- *   { _id: discordId, lastClaimDay?, streak, totalSigils, lastClaimAtMs, claimId, pending? }
+ *   { _id: discordId, lastClaimAtMs, streak, totalSigils }
  */
 
-const DAY_MS = 86_400_000;
-
-/** The game server's request-id memory; a retry after this could pay a second time. */
-export const DAILY_RETRY_WINDOW_MS = 14 * 60_000;
-
-/**
- * The latest moment, after `/daily` starts, at which it may start another question to the
- * game server about its payment. The interactions function may run for 60 s
- * (`vercel.json`) and one reward request waits up to 14 s over its two attempts, so a last
- * request started at 42 s still ends by 56 s.
- */
-export const DAILY_SETTLE_BUDGET_MS = 42_000;
-
-/**
- * A payment younger than this may still be being settled by the `/daily` that made it
- * (DAILY_SETTLE_BUDGET_MS plus the last request), so another invocation does not ask too.
- */
-export const DAILY_IN_FLIGHT_MS = 65_000;
-
-export type DailyPendingPayment = {
-	requestId: string;
-	/** The UTC day being claimed. */
-	day: number;
-	streak: number;
-	amount: number;
-	userId: number;
-	characterName: string;
-	startedAtMs: number;
-};
+export const DAILY_COOLDOWN_MS = 24 * 3_600_000;
+/** The streak is kept when the next claim comes within this long of the last one. */
+export const DAILY_STREAK_WINDOW_MS = 48 * 3_600_000;
 
 export type DailyClaimDocument = {
 	_id: string;
-	/** Days since the Unix epoch (UTC) of the last confirmed claim; absent before the first. */
-	lastClaimDay?: number;
-	/** Consecutive days claimed, counting the last confirmed claim. */
-	streak: number;
-	/** Every Royal Sigil `/daily` has paid this player. */
-	totalSigils: number;
 	lastClaimAtMs: number;
-	/** Changes on every write, so each conditional write knows what it read. */
-	claimId: string;
-	pending?: DailyPendingPayment;
+	streak: number;
+	totalSigils: number;
 };
 
-export type DailyState = { lastClaimDay?: number; streak: number };
-
-/** The UTC day number of a timestamp. */
-export function utcDay(nowMs: number): number {
-	return Math.floor(nowMs / DAY_MS);
-}
-
-/** When a UTC day starts, in ms. */
-export function utcDayStartMs(day: number): number {
-	return day * DAY_MS;
-}
-
-/** Royal Sigils paid for the `streak`-th consecutive day: one per day of the streak. */
+/** Royal Sigils for the `streak`-th day in a row: one per day of the streak. */
 export function dailyRewardForStreak(streak: number): number {
 	return Math.max(1, Math.floor(streak));
 }
 
-function hasClaimed(state: DailyState | null): state is DailyState & { lastClaimDay: number } {
-	return Boolean(state) && Number.isFinite(state!.lastClaimDay);
+/** The streak a claim made now reaches, or `null` while the 24 hours are not up. */
+export function nextDailyStreak(state: DailyClaimDocument | null, nowMs: number): number | null {
+	if (!state) return 1;
+	const since = nowMs - state.lastClaimAtMs;
+	if (since < DAILY_COOLDOWN_MS) return null;
+	return since <= DAILY_STREAK_WINDOW_MS ? Math.max(0, Math.floor(state.streak)) + 1 : 1;
 }
 
-/** The streak a claim made today would reach, or `null` when today is already claimed. */
-export function nextDailyStreak(state: DailyState | null, today: number): number | null {
-	if (!hasClaimed(state)) return 1;
-	if (state.lastClaimDay >= today) return null;
-	if (state.lastClaimDay === today - 1) return Math.max(0, Math.floor(state.streak)) + 1;
-	return 1;
-}
-
-/** The streak the player still holds today: it lapses once a whole UTC day goes unclaimed. */
-export function currentDailyStreak(state: DailyState | null, today: number): number {
-	if (!hasClaimed(state)) return 0;
-	return state.lastClaimDay >= today - 1 ? Math.max(0, Math.floor(state.streak)) : 0;
-}
-
-/** What to do about a payment still pending: wait for it, ask again, or count it as paid. */
-export function pendingAction(pending: DailyPendingPayment, nowMs: number): "in-flight" | "retry" | "assume-paid" {
-	const age = nowMs - pending.startedAtMs;
-	if (age < DAILY_IN_FLIGHT_MS) return "in-flight";
-	if (age <= DAILY_RETRY_WINDOW_MS) return "retry";
-	return "assume-paid";
-}
-
-/* ------------------------------------------------------------------
- * Storage
- * ------------------------------------------------------------------ */
-
-type DailyCollection = Pick<Collection<DailyClaimDocument>, "findOne" | "insertOne" | "updateOne">;
+type DailyCollection = Pick<Collection<DailyClaimDocument>, "findOne" | "insertOne" | "updateOne" | "deleteOne">;
 
 let collectionOverride: DailyCollection | null = null;
 let clientPromise: Promise<MongoClient> | null = null;
@@ -142,135 +52,74 @@ async function getDailyCollection(): Promise<DailyCollection> {
 	if (!clientPromise) {
 		const uri = process.env.GAME_MONGODB_URI?.trim() || process.env.MONGODB_URI?.trim();
 		if (!uri) throw new Error("GAME_MONGODB_URI or MONGODB_URI is required");
-		clientPromise = (async () => {
-			// Fail fast: the driver's default 30s stall would outlive the interaction's patience.
-			const client = new MongoClient(uri, {
-				ignoreUndefined: true,
-				serverSelectionTimeoutMS: 5_000,
-				connectTimeoutMS: 5_000,
-				socketTimeoutMS: 10_000,
+		clientPromise = new MongoClient(uri, {
+			ignoreUndefined: true,
+			serverSelectionTimeoutMS: 5_000,
+			connectTimeoutMS: 5_000,
+			socketTimeoutMS: 10_000,
+		})
+			.connect()
+			.catch((error) => {
+				clientPromise = null;
+				throw error;
 			});
-			await client.connect();
-			return client;
-		})().catch((error) => {
-			clientPromise = null;
-			throw error;
-		});
 	}
 	return (await clientPromise)
 		.db(process.env.PROFILE_MONGODB_DB_NAME?.trim() || "minidb")
 		.collection<DailyClaimDocument>("dailyClaims");
 }
 
-export async function getDailyState(discordId: string): Promise<DailyClaimDocument | null> {
-	const id = discordId.trim();
-	if (!id) return null;
-	return (await getDailyCollection()).findOne({ _id: id });
-}
-
-export type DailyReservation =
-	| { status: "reserved"; claimId: string; pending: DailyPendingPayment }
-	| { status: "already-claimed"; streak: number; nextClaimAtMs: number }
-	/** Another payment is still pending; settle it (`pendingAction`) before claiming. */
-	| { status: "pending"; claimId: string; pending: DailyPendingPayment }
-	/** Another invocation wrote first; read the state again. */
-	| { status: "conflict" };
+export type DailyClaim =
+	| { status: "claimed"; streak: number; reward: number; previous: DailyClaimDocument | null; claimedAtMs: number }
+	| { status: "cooldown"; streak: number; nextClaimAtMs: number };
 
 /**
- * Reserves today's claim for one character, or reports why it cannot. Pays nothing: the
- * caller pays `pending.amount` with `pending.requestId`, then confirms or releases.
+ * Records a claim now, or reports when the next one opens. The write is conditional on the
+ * document still being what was read, so two clicks at once record (and pay) only one claim.
  */
-export async function reserveDailyClaim(
-	discordId: string,
-	target: { userId: number; characterName: string },
-	nowMs = Date.now(),
-): Promise<DailyReservation> {
+export async function recordDailyClaim(discordId: string, nowMs = Date.now()): Promise<DailyClaim> {
 	const id = discordId.trim();
 	if (!id) throw new Error("A Discord id is required to claim the daily reward");
 	const collection = await getDailyCollection();
-	const today = utcDay(nowMs);
-	const nextClaimAtMs = utcDayStartMs(today + 1);
+	const previous = await collection.findOne({ _id: id });
+	const streak = nextDailyStreak(previous, nowMs);
+	const cooldown = (state: DailyClaimDocument | null): DailyClaim => ({
+		status: "cooldown",
+		streak: state?.streak ?? 0,
+		nextClaimAtMs: (state?.lastClaimAtMs ?? nowMs) + DAILY_COOLDOWN_MS,
+	});
+	if (streak === null) return cooldown(previous);
 
-	const current = await collection.findOne({ _id: id });
-	if (current?.pending) return { status: "pending", claimId: current.claimId, pending: current.pending };
-
-	const streak = nextDailyStreak(current, today);
-	if (streak === null) {
-		return { status: "already-claimed", streak: current?.streak ?? 0, nextClaimAtMs };
-	}
-
-	const pending: DailyPendingPayment = {
-		requestId: randomUUID(),
-		day: today,
-		streak,
-		amount: dailyRewardForStreak(streak),
-		userId: target.userId,
-		characterName: target.characterName,
-		startedAtMs: nowMs,
-	};
-	const claimId = randomUUID();
-
-	if (!current) {
+	const reward = dailyRewardForStreak(streak);
+	const next = { lastClaimAtMs: nowMs, streak, totalSigils: (previous?.totalSigils ?? 0) + reward };
+	if (!previous) {
 		try {
-			await collection.insertOne({
-				_id: id,
-				streak: 0,
-				totalSigils: 0,
-				lastClaimAtMs: 0,
-				claimId,
-				pending,
-			});
+			await collection.insertOne({ _id: id, ...next });
 		} catch (error) {
-			if ((error as { code?: number }).code === 11000) return { status: "conflict" };
+			if ((error as { code?: number }).code === 11000) return cooldown(await collection.findOne({ _id: id }));
 			throw error;
 		}
-		return { status: "reserved", claimId, pending };
+	} else {
+		const written = await collection.updateOne(
+			{ _id: id, lastClaimAtMs: previous.lastClaimAtMs },
+			{ $set: next },
+		);
+		if (written.matchedCount !== 1) return cooldown(await collection.findOne({ _id: id }));
 	}
-
-	const written = await collection.updateOne(
-		{ _id: id, claimId: current.claimId, pending: { $exists: false } },
-		{ $set: { claimId, pending } },
-	);
-	if (written.matchedCount !== 1) return { status: "conflict" };
-	return { status: "reserved", claimId, pending };
+	return { status: "claimed", streak, reward, previous, claimedAtMs: nowMs };
 }
 
-/** The game paid: the day, streak and total move, and the pending payment is cleared. */
-export async function confirmDailyClaim(
+/** Undoes a claim the game server refused to pay, so the player can claim again now. */
+export async function undoDailyClaim(
 	discordId: string,
-	claim: { claimId: string; pending: DailyPendingPayment },
-	nowMs = Date.now(),
+	claim: Extract<DailyClaim, { status: "claimed" }>,
 ): Promise<boolean> {
 	const id = discordId.trim();
 	const collection = await getDailyCollection();
-	const current = await collection.findOne({ _id: id, claimId: claim.claimId });
-	if (!current?.pending || current.pending.requestId !== claim.pending.requestId) return false;
-	const written = await collection.updateOne(
-		{ _id: id, claimId: claim.claimId },
-		{
-			$set: {
-				lastClaimDay: claim.pending.day,
-				streak: claim.pending.streak,
-				totalSigils: Math.max(0, Math.floor(current.totalSigils ?? 0)) + claim.pending.amount,
-				lastClaimAtMs: nowMs,
-				claimId: randomUUID(),
-			},
-			$unset: { pending: "" },
-		},
-	);
-	return written.matchedCount === 1;
-}
-
-/** The game paid nothing: the pending payment is dropped and the day can be claimed again. */
-export async function releaseDailyClaim(
-	discordId: string,
-	claim: { claimId: string; pending: DailyPendingPayment },
-): Promise<boolean> {
-	const id = discordId.trim();
-	const collection = await getDailyCollection();
-	const written = await collection.updateOne(
-		{ _id: id, claimId: claim.claimId, "pending.requestId": claim.pending.requestId },
-		{ $set: { claimId: randomUUID() }, $unset: { pending: "" } },
-	);
+	if (!claim.previous) {
+		return (await collection.deleteOne({ _id: id, lastClaimAtMs: claim.claimedAtMs })).deletedCount === 1;
+	}
+	const { _id, ...fields } = claim.previous;
+	const written = await collection.updateOne({ _id: id, lastClaimAtMs: claim.claimedAtMs }, { $set: fields });
 	return written.matchedCount === 1;
 }

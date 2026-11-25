@@ -509,13 +509,8 @@ export async function requestGameRewards(input: {
 	rewards: GameRewardChange[];
 	requestedBy: string;
 	allowLocked?: boolean;
-	/**
-	 * Reuse one id to ask again about a payment whose answer was lost: the game server
-	 * answers a repeated id with the first result instead of paying twice (for 15 minutes).
-	 */
-	requestId?: string;
 }): Promise<GameRewardsOutcome> {
-	const body = { ...input, requestId: input.requestId ?? randomUUID() };
+	const body = { ...input, requestId: randomUUID() };
 	let lastError: unknown = null;
 	for (const timeoutMs of REWARD_TIMEOUTS_MS) {
 		let response: GameServerAdminResponse;
