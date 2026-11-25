@@ -41,6 +41,33 @@ for (const subcommand of ["guild", "world"]) {
 	assert.match(String((reply as { content?: string } | null)?.content), /Administrator permission is required/);
 }
 
+// An administrator's `channel` option reaches the subcommand's own handler: each refuses an
+// unreadable channel with its own wording, before anything is sent anywhere.
+for (const [subcommand, wording] of [
+	["guild", /`none` to unlink/],
+	["world", /return to the server's default channel/],
+] as const) {
+	const asked: Array<[string, boolean | undefined]> = [];
+	let reply: { content?: string } | null = null;
+	await lobbyCommand.handler({
+		guild_id: "111111111111111111",
+		member: { permissions: "8", user: { id: "222222222222222222" } },
+		options: {
+			getSubcommand: () => subcommand,
+			getString: (name: string, required?: boolean) => {
+				asked.push([name, required]);
+				return "not a channel";
+			},
+		},
+		reply: async (payload: { content?: string }) => {
+			reply = payload;
+		},
+		deferReply: () => assert.fail("an invalid channel is refused before deferring"),
+	} as never);
+	assert.deepEqual(asked, [["channel", false]], `/lobby ${subcommand} reads its channel option`);
+	assert.match(String((reply as { content?: string } | null)?.content), wording);
+}
+
 // `/daily` takes one optional, autocompleted character.
 const daily = dailyCommand.data.toJSON() as {
 	name: string;
