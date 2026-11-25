@@ -282,7 +282,7 @@ try {
 		const run = await runLobbyChat(NEW_CHANNEL, textChannel, "timeout");
 		assert.equal(run.gameRequests.length, 1);
 		assert.match(run.embed.title ?? "", /unknown/);
-		assert.match(run.text, /`\/lobby-chat` with no channel/);
+		assert.match(run.text, /`\/lobby world` with no channel/);
 		assert.doesNotMatch(run.text, /Lobby linked to|not moved/);
 	}
 

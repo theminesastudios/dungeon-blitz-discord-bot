@@ -1,5 +1,5 @@
 /**
- * The Discord channel an in-game guild's chat is linked to, for `/guild-chat`.
+ * The Discord channel an in-game guild's chat is linked to, for `/lobby guild`.
  *
  * Guild chat works the way lobby chat does (Discord "Linked Channels"): the game
  * server keeps a Discord lobby for the guild, linked to the channel, and each

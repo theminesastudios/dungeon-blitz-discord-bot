@@ -7,8 +7,11 @@ dotenv.config({ path: [".env.production.local", ".env"] });
 /**
  * Command registration for a public bot (issue #60):
  *
- * - The player-facing commands are registered **globally**, so every guild the
- *   bot is added to offers them. Global commands take up to an hour to appear.
+ * - The public commands (`/account`, `/player`, `/daily`, `/lobby`) are
+ *   registered **globally**, so every guild the bot is added to offers them.
+ *   Global commands take up to an hour to appear.
+ * - `/packs`, `/authorize` and `/report-bug` are registered on the one
+ *   community guild (DISCORD_GUILD_ID), next to the staff commands.
  *   The Activity's Entry Point command is global by nature and is kept.
  * - The staff commands stay on the one community guild (DISCORD_GUILD_ID):
  *   `default_member_permissions` Administrator would otherwise let an
@@ -39,10 +42,10 @@ for (const [name, value] of [
 	}
 }
 if (!guildId) {
-	console.log("⚠️ DISCORD_GUILD_ID not found. Staff commands will not be registered on the community guild.");
+	console.log("⚠️ DISCORD_GUILD_ID not found. The community guild's commands (shop, staff tools) will not be registered.");
 }
 
-const { publicCommandData, staffCommandData } = await import("../api/interactions");
+const { publicCommandData, guildCommandData } = await import("../api/interactions");
 
 const linkedRoleMetadata = [
 	{
@@ -118,9 +121,9 @@ async function globalEntryPoints(): Promise<GlobalCommand[]> {
 		}));
 }
 
-// The staff set goes first: if it is refused, the global commands are left alone.
+// The community guild's set goes first: if it is refused, the global commands are left alone.
 if (guildId) {
-	await put(`/guilds/${guildId}/commands`, staffCommandData, "register staff commands on the community guild");
+	await put(`/guilds/${guildId}/commands`, guildCommandData, "register the community guild's commands");
 }
 await put(
 	"/commands",
@@ -131,6 +134,6 @@ await put("/role-connections/metadata", linkedRoleMetadata, "sync linked role me
 
 console.log(
 	`Registered ${publicCommandData.length} commands globally` +
-		(guildId ? ` and ${staffCommandData.length} staff commands on guild ${guildId}` : "") +
+		(guildId ? ` and ${guildCommandData.length} commands on guild ${guildId}` : "") +
 		`, synced linked role metadata.`,
 );
