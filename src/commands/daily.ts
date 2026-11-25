@@ -99,7 +99,8 @@ export async function handleDaily(interaction: CommandInteraction) {
 				);
 			}
 		} else {
-			const played = await listSaveCharacters(account.userId).catch(() => []);
+			// A failed read must not fall back to "nobody played", which would pay the wrong character.
+			const played = await listSaveCharacters(account.userId);
 			target = pickDailyCharacter(
 				options,
 				new Map(played.map((character) => [character.characterName.toLowerCase(), character.lastPlayedMs])),
