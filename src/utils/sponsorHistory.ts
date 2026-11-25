@@ -137,6 +137,40 @@ export function githubEventsFromActivities(
 	return events.filter((event) => event.atMs <= nowMs);
 }
 
+/**
+ * Fallback for when GitHub's sponsor activity log cannot be read: the sponsorship itself still
+ * says what an active sponsor pays and since when. Only an active sponsorship is estimated, since
+ * a cancelled one has no end date to stop counting at. Tier changes are not replayed, so the
+ * estimate prices every month at the current tier.
+ */
+export function estimatedSponsorshipHistory(
+	sponsorship: {
+		isActive: boolean;
+		isOneTimePayment: boolean;
+		estimatedTotalInCents: number | null;
+		totalEstimateStartsAt: string;
+		tierName: string | null;
+	},
+	nowMs: number,
+): SponsorHistory | null {
+	if (!sponsorship.isActive || sponsorship.estimatedTotalInCents === null) return null;
+	if (sponsorship.estimatedTotalInCents <= 0) return null;
+	const atMs = Date.parse(sponsorship.totalEstimateStartsAt);
+	if (!Number.isFinite(atMs)) return null;
+	const total: SponsorEvent = {
+		atMs,
+		source: "github",
+		kind: sponsorship.isOneTimePayment ? "one-time" : "payment",
+		cents: Math.round(sponsorship.estimatedTotalInCents),
+		tierName: sponsorship.tierName,
+	};
+	// A monthly sponsor also gets a subscription event, which is what marks the history active.
+	const events: SponsorEvent[] = sponsorship.isOneTimePayment
+		? [total]
+		: [{ atMs, source: "github", kind: "subscribed", cents: 0, tierName: sponsorship.tierName }, total];
+	return buildSponsorHistory(events, nowMs);
+}
+
 /* ------------------------------------------------------------------
  * Patreon
  * ------------------------------------------------------------------ */
