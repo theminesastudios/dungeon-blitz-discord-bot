@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { maxUsedCentsBeforeCharge } from "../src/utils/sponsorPacks.js";
 import {
 	buildSponsorHistory,
+	estimatedSponsorshipHistory,
 	formatSponsorHistory,
 	githubEventsFromActivities,
 	patreonEventsFromPledges,
@@ -75,3 +76,25 @@ assert.ok(charges(1_300, 4_000, 2_500), "$27 left buys the $25 Hero Pack after $
 assert.ok(charges(0, 2_500, 2_500), "a first purchase may spend the whole balance");
 assert.ok(charges(1_500, 4_000, 2_500), "spending exactly the rest is affordable");
 assert.ok(!charges(1_600, 4_000, 2_500), "$24 left cannot buy the $25 Hero Pack");
+
+// GitHub's activity log unreadable: an active sponsorship is counted from the sponsorship itself
+// (the estimate is already the total, here $40), and a cancelled one is not estimated at all.
+const fallback = estimatedSponsorshipHistory(
+	{ isActive: true, isOneTimePayment: false, estimatedTotalInCents: 4_000, totalEstimateStartsAt: "2026-10-15T00:00:00Z", tierName: "Tier" },
+	now,
+);
+assert.equal(fallback?.totalCents, 4_000, "estimate is the sponsorship's own total, one event");
+assert.equal(fallback?.active, true);
+assert.equal(
+	estimatedSponsorshipHistory(
+		{ isActive: false, isOneTimePayment: false, estimatedTotalInCents: 4_000, totalEstimateStartsAt: "2026-10-15T00:00:00Z", tierName: "Tier" },
+		now,
+	),
+	null,
+	"a cancelled sponsorship is not estimated",
+);
+const oneTimeFallback = estimatedSponsorshipHistory(
+	{ isActive: true, isOneTimePayment: true, estimatedTotalInCents: 2_500, totalEstimateStartsAt: "2026-02-01T00:00:00Z", tierName: null },
+	now,
+);
+assert.equal(oneTimeFallback?.totalCents, 2_500);

@@ -23,9 +23,11 @@ import {
 import { emoji, type EmojiName } from "../ui/emojis.js";
 import {
 	buildSponsorHistory,
+	estimatedSponsorshipHistory,
 	loadSponsorHistory,
 	type SponsorHistory,
 } from "./sponsorHistory.js";
+import { getSponsorDonationInfo } from "./githubSponsors.js";
 
 export type { GameCharacterOption } from "./gameRewards.js";
 
@@ -435,6 +437,12 @@ export type SponsorCredit = {
 	purchases: PackPurchase[];
 };
 
+async function currentGithubSponsorshipHistory(githubUsername: string): Promise<SponsorHistory | null> {
+	const sponsorship = await getSponsorDonationInfo(githubUsername);
+	if (!sponsorship) return null;
+	return estimatedSponsorshipHistory(sponsorship, Date.now());
+}
+
 /**
  * A player's Royal Sigils: 100 for every $1 they have paid on GitHub Sponsors (monthly and
  * one-time) and Patreon, plus admin-granted bonus, minus what they have spent on packs. The
@@ -460,6 +468,11 @@ export async function getSponsorCredit(
 		const kept = loaded.history.events.filter((event) => !failed.has(event.source));
 		const fallback = (stored?.events ?? []).filter((event) => failed.has(event.source));
 		history = stored || kept.length > 0 ? buildSponsorHistory([...kept, ...fallback], loaded.history.fetchedAtMs) : null;
+		// GitHub's activity log is unreadable and nothing is stored yet: count an active sponsorship
+		// from the sponsorship itself, so a paying sponsor is not locked out of packs. Not stored.
+		if (!history && profile.githubUsername) {
+			history = await currentGithubSponsorshipHistory(profile.githubUsername).catch(() => null);
+		}
 	} else {
 		await saveSponsorHistory(normalized, loaded.history).catch((error) =>
 			console.warn(`[sponsorPacks] Could not store donation history for ${normalized}:`, error),

@@ -1,17 +1,24 @@
 /**
- * The Discord channel an in-game guild's chat is linked to, for `/guild-chat`.
+ * The Discord channel an in-game guild's chat is linked to, for `/lobby guild`.
  *
- * Unlike `/lobby-chat` there is no Discord lobby behind a guild link: the game
- * server relays the guild's chat into the channel by webhook (or as the bot) and
- * polls the channel back into guild chat. So the game server only stores the
- * mapping — `POST /api/admin/guild-chat` — and its `200` means the link was
- * stored, nothing about Discord having accepted anything. Which channel is
- * linkable is therefore checked here, with Discord, before the server is asked.
+ * Guild chat works the way lobby chat does (Discord "Linked Channels"): the game
+ * server keeps a Discord lobby for the guild, linked to the channel, and each
+ * member's launcher talks in that lobby as the member — their lines land in the
+ * channel under their own name, and the channel's messages reach the guild in
+ * game tagged `[Discord]`. Officer chat never leaves the game.
  *
- * Who may link is also settled here: the game trusts the shared admin secret, so
- * the command reads the caller's save and only sends the name of the in-game
- * guild one of their characters leads (`guild.rank` 0, Guild Master). A caller
- * who leads no guild never reaches the game server.
+ * `POST /api/admin/guild-chat` makes the guild's lobby and gives the Guild Master
+ * `CanLinkLobby` in it. Discord lets only a user link a lobby to a channel, not
+ * a bot, and the channel is in the caller's own server, so the link is finished
+ * by the Guild Master's launcher: the link answers `status: "pending"` until the
+ * Guild Master opens the game from the launcher, then `"linked"`. Which channel is
+ * linkable is checked here, with Discord, before the server is asked; the server
+ * checks it again.
+ *
+ * Who may link is settled here and on the game server: the command reads the
+ * caller's save and only sends the name of the in-game guild one of their
+ * characters leads (`guild.rank` 0, Guild Master), and the game server checks the
+ * Discord account in `requestedBy` leads that guild before it makes the lobby.
  */
 
 import {
@@ -27,8 +34,14 @@ const DISCORD_API_BASE = "https://discord.com/api/v10";
 /** A channel read must not hold an interaction open while Discord stalls. */
 const DISCORD_READ_TIMEOUT_MS = 6_000;
 
-/** Only a plain server text channel can hold a chat relay. */
+/** The only channel type Discord links to a lobby: `ChannelType.GuildText`. */
 const GUILD_TEXT_CHANNEL_TYPE = 0;
+
+/**
+ * The game server checks the channel and makes the guild's lobby with Discord
+ * before it answers, so a link takes longer than the other admin routes.
+ */
+const GUILD_CHAT_LINK_TIMEOUT_MS = 20_000;
 
 /** One stored link, as the game server reports it. */
 export type GuildChatLink = {
@@ -38,6 +51,13 @@ export type GuildChatLink = {
 	channelName: string | null;
 	updatedAt: string;
 	updatedBy: string | null;
+	/** The guild's Discord lobby on the game server. */
+	lobbyId: string | null;
+	/**
+	 * `pending` until the Guild Master's launcher links the lobby to the channel;
+	 * null from a game server too old to report it.
+	 */
+	status: "linked" | "pending" | null;
 };
 
 export type GuildChatLinkResult =
@@ -54,6 +74,11 @@ function isSnowflake(value: string): boolean {
 	return /^\d{5,32}$/.test(value);
 }
 
+function parseLinkStatus(value: unknown): GuildChatLink["status"] {
+	const status = String(value ?? "").trim().toLowerCase();
+	return status === "linked" || status === "pending" ? status : null;
+}
+
 function parseGuildChatLink(raw: unknown): GuildChatLink | null {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
 	const record = raw as Record<string, unknown>;
@@ -67,6 +92,8 @@ function parseGuildChatLink(raw: unknown): GuildChatLink | null {
 		channelName: optionalString(record.channelName ?? record.channel_name),
 		updatedAt: optionalString(record.updatedAt ?? record.updated_at) ?? "",
 		updatedBy: optionalString(record.updatedBy ?? record.updated_by ?? record.requestedBy),
+		lobbyId: optionalString(record.lobbyId ?? record.lobby_id),
+		status: parseLinkStatus(record.status),
 	};
 }
 
@@ -112,7 +139,7 @@ export async function setGuildChatLink(options: {
 
 	let answer: Awaited<ReturnType<typeof postGameServerAdmin>>;
 	try {
-		answer = await postGameServerAdmin(GUILD_CHAT_PATH, body);
+		answer = await postGameServerAdmin(GUILD_CHAT_PATH, body, GUILD_CHAT_LINK_TIMEOUT_MS);
 	} catch (error) {
 		const name = error instanceof Error ? error.name : "";
 		const message = error instanceof Error ? error.message : String(error);
@@ -162,6 +189,7 @@ type DiscordChannel = {
 	name?: unknown;
 	type?: unknown;
 	guild_id?: unknown;
+	nsfw?: unknown;
 	permission_overwrites?: unknown;
 };
 
@@ -172,18 +200,18 @@ export type GuildChatChannelCheck =
 			channelName: string;
 			/**
 			 * The channel has role or member permission overrides. Those apply in the
-			 * Discord client only: every guild member reads the relayed lines in game.
+			 * Discord client only: every guild member reads and writes the linked
+			 * channel in game.
 			 */
 			restrictedInDiscord: boolean;
 	  }
 	| { ok: false; reason: string };
 
 /**
- * Confirms the channel is one a chat relay can live in: a text channel in the
- * guild the command was run in, that the bot can see. Discord answers `404` both
- * for an id that does not exist and for one the bot cannot see, so the reason
- * names both rather than claiming the id is wrong. Age restriction does not
- * matter here — nothing is linked as a lobby.
+ * Confirms the channel is one Discord links to a lobby: a text channel in the
+ * guild the command was run in, that the bot can see, and not age-restricted.
+ * Discord answers `404` both for an id that does not exist and for one the bot
+ * cannot see, so the reason names both rather than claiming the id is wrong.
  */
 export async function checkGuildChatChannel(
 	channelId: string,
@@ -235,7 +263,7 @@ export async function checkGuildChatChannel(
 		return {
 			ok: false,
 			reason:
-				"That is not a text channel. Guild chat can only be relayed to a normal server text channel (not announcement, voice, forum or thread).",
+				"That is not a text channel. Guild chat can only be linked to a normal server text channel (not announcement, voice, forum or thread).",
 		};
 	}
 
@@ -249,6 +277,14 @@ export async function checkGuildChatChannel(
 		return {
 			ok: false,
 			reason: "That channel belongs to a different server than the one this command was run in.",
+		};
+	}
+
+	if (channel.nsfw === true) {
+		return {
+			ok: false,
+			reason:
+				"That channel is marked age-restricted, and Discord does not allow an age-restricted channel to be linked to a lobby. Link a channel that is not age-restricted.",
 		};
 	}
 
